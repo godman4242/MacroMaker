@@ -1,0 +1,117 @@
+{
+  "integrity": "Every finding cites a file:line read in full this session (cat -n / grep output shown in evidence). Grep counts are from real runs on Sources/. No finding is inferred without a pasted citation. Empty-set risk avoided by including only verified items.",
+  "wrote_to": "/Users/kheshav/Projects/macro-maker/docs/review/crossplatform.json",
+  "summary": "Repo-wide grep for CGEvent/AppKit/NSApplication/Carbon/osascript/CoreGraphics/AXUIElement/HIToolbox/CGWindow/WebKit returned 71 hits across 25 of 43 source files (verified count via 'grep -rn ... | wc -l' -> 71). Classification: 12 SwiftUI view files = discarded in a Tauri port (frontend is rewritten anyway); 2 App-layer files (AppDelegate, WindowCoordinator, NSApplicationDelegateAdaptor) = replaced by Tauri lifecycle; Models layer is the portability chokepoint because the persisted macro schema itself embeds raw macOS virtual keycodes, raw CGEventFlags UInt64, and macOS top-left absolute screen coordinates (Models/Macro.swift:12-16, Models/Macro.swift:81-89). Pure-logic portable layer: Utilities/TickSchedule.swift, Utilities/RecordingCleaner.swift, Services/RunSession.swift, Utilities/WorkerThread.swift, and the bulk of Utilities/KeyStrokeParser.swift (CharacterKeyMap protocol already abstracts layout). Rewrite-needed: Services/EventSynthesizer.swift (CGEvent posting -> enigo), Services/MacroRecorder.swift (CGEvent tap -> platform input hook), Services/HotkeyService.swift (Carbon RegisterEventHotKey -> global-hotkey crate), Utilities/KeyboardLayout.swift (UCKeyTranslate/TIS), Services/PermissionService.swift (AXIsProcessTrusted -> per-OS model), Services/MacroFiles.swift (NSSavePanel -> tauri dialogs). Entirely macOS-by-design: Services/BrowserScripting.swift + Services/WebClicker.swift (NSAppleScript 'JavaScript from Apple Events' has no Windows/Linux equivalent without CDP). The macro JSON v1 schema is portable in shape but NOT in key semantics: a file saved on macOS replays wrong keys on Windows/Linux because keyCode is a macOS virtual keycode. Feed docs/MACRO_SCHEMA.md: v2 needs keysym/name-based key identity, named modifier arrays instead of raw CGEventFlags, and explicit coordinate-space semantics.",
+  "findings": [
+    {
+      "id": "XP-1",
+      "claim": "The persisted macro schema stores keyboard events as raw macOS virtual keycodes ('keyCode' is documented in-file as 'a macOS virtual key code'), so a shared cross-platform schema cannot be achieved without a v2 key-identity change. A macro recorded on macOS replays the wrong keys on Windows/Linux.",
+      "cite": "Sources/MacroMaker/Models/Macro.swift:16 (doc comment: \"`keyCode` is a macOS virtual key code\"), :81 (.keyDown(CGKeyCode,...)), :128-131 (decode of CGKeyCode into 'keyCode'); Utilities/KeyCodes.swift:19-53 (whole table keyed on Carbon kVK_* constants)",
+      "evidence": "Macro.swift:12 doc example: { \"t\": 1.5, \"type\": \"keyDown\", \"keyCode\": 0, ... }  -- keyCode 0 = kVK_ANSI_A on macOS, an unrelated VK code on Windows. MacroEvent.Action is typed on CGKeyCode (Macro.swift:81-82) and MacroEvent: Codable decodes 'keyCode' straight into CGKeyCode (line 128). Tests pin the wire format: Tests/MacroMakerTests/MacroFileTests.swift:27 { \"t\": 0.5, \"type\": \"keyDown\", \"keyCode\": 36, ... } (36 = kVK_Return). grep -rn 'CGKeyCode|keyCode|kVK_' Models/KeyStroke.swift Models/Macro.swift -> 17 hits.",
+      "severity": "kills-project",
+      "rule_targeted": "docs/MACRO_SCHEMA.md key-identity rule: portable schema must identify keys by name/keysym, not raw platform code",
+      "proposed_change": "Schema v2: replace/augment 'keyCode' (UInt16 macOS virtual code) with 'key' (canonical key name from the KeyCodes.names vocabulary, e.g. \"space\", \"enter\", \"a\"-style names) and optional per-platform hints {\"macKeyCode\": 0, \"winVK\": 65}. Keep v1 read support: map legacy keyCode via the existing KeyCodes table on macOS, and warn on non-macOS that v1 files are best-effort. Enigo accepts both Key layout-independent variants and unicode; global-hotkey uses its own Code enum -- name-based keysym is the intersection all three can map to.",
+      "is_deletion": false,
+      "word_delta": 140
+    },
+    {
+      "id": "XP-2",
+      "claim": "Every persisted event carries 'flags' as a raw CGEventFlags UInt64 -- a macOS-only bit layout (device-dependent left/right modifier bits, maskSecondaryFn, maskAlphaShift) that is meaningless on Windows/Linux and also encodes transient state (Caps Lock) the player must special-case.",
+      "cite": "Models/Macro.swift:16 (\"`flags` the raw CGEventFlags\"), :89 (var flags: UInt64), :117 (decode default 0); Utilities/KeyCodes.swift:97-105 (deviceMask left/right bits 0x1..0x2000 are macOS event-flag layout); Services/MacroPlayer.swift:100 (flags = CGEventFlags(rawValue:).subtracting(.maskAlphaShift) -- Caps Lock toggle stripped at replay)",
+      "evidence": "Tests pin raw flag values on the wire: Tests/MacroMakerTests/MacroFileTests.swift:10-13 pass flags: 256 and 0x20_0100 (maskSecondaryFn|maskNumericPad composite). MacroPlayer.swift:99-100 comment: \"Caps Lock is a toggle... replaying its flag would force uppercase\" -- proof the raw flags field leaks macOS-specific modifier-state semantics into the file.",
+      "severity": "expensive",
+      "rule_targeted": "MACRO_SCHEMA modifier encoding: named modifiers instead of raw event-flag words",
+      "proposed_change": "Schema v2: encode modifiers per event as an array of canonical names [\"ctrl\",\"shift\",\"alt\",\"meta\"] plus optional 'rawFlags' (UInt64, macOS-only, kept for lossless macOS round-trip). Decoder: v1 files synthesize the named list from CGEventFlags using the KeyModifiers mapping (KeyModifiers.swift:26-30); v2 files ignore rawFlags off the source platform. Removes the Caps Lock subtracting hack from the portable player.",
+      "is_deletion": false,
+      "word_delta": 110
+    },
+    {
+      "id": "XP-3",
+      "claim": "Mouse events persist absolute global screen coordinates in macOS's top-left-origin main-display space with no display, scale-factor, or resolution metadata, so coordinates do not survive any change of machine, monitor arrangement, or OS -- even macOS-to-macOS.",
+      "cite": "Models/Macro.swift:15 (\"`x`/`y` are global screen points (origin top-left of the main display)\"); Services/MacroPlayer.swift:103-111 (replay posts those absolute points directly, deriving drag from downPoint != point); Services/MacroRecorder.swift:106-109 (recorder must convert top-left event-tap coords to AppKit's bottom-left coords -- proof the space is macOS-specific)",
+      "evidence": "Recorder's own comment: \"Event taps use a top-left origin; AppKit uses bottom-left\" (MacroRecorder.swift:108) with manual flip via primaryScreen.frame.maxY - point.y (line 109). No display identifier or bounds field exists anywhere in the schema (Macro.swift CodingKeys: format, version, name, createdAt, events; event keys: t, type, button, x, y, clickCount, keyCode, repeat, flags -- Macro.swift:107).",
+      "severity": "expensive",
+      "rule_targeted": "MACRO_SCHEMA coordinate semantics",
+      "proposed_change": "Document the existing semantics precisely (macOS CG global coordinates, top-left origin, points not pixels, main display space) as a warning, and add an optional 'coords' field to v2: {\"space\":\"global-main-display\"|\"virtual-desktop\"|\"cursor-relative\", \"dpiHint\":number}. For the Tauri port, replay code should treat point-macros as machine-local artifacts (like HotkeyService combos) rather than promising cross-platform portability of coordinates; keys and timing are the portable parts.",
+      "is_deletion": false,
+      "word_delta": 120
+    },
+    {
+      "id": "XP-4",
+      "claim": "Service-layer portability map: exactly four non-UI services are portable logic; the remaining six are macOS-bound by their imports; one feature (Web Target) has no cross-platform equivalent strategy at all.",
+      "cite": "Portable: Utilities/TickSchedule.swift:3 (\"kept pure so it can be tested\", imports Foundation only), Utilities/RecordingCleaner.swift:1 (imports CoreGraphics solely for CGKeyCode/CGPoint types), Services/RunSession.swift:1 (Foundation only), Utilities/WorkerThread.swift:1-2 (Foundation + os). macOS-bound: Services/EventSynthesizer.swift:1,18,36 (CGEvent posting), Services/MacroRecorder.swift:27 (CGEvent.tapCreate), Services/HotkeyService.swift:82 (RegisterEventHotKey), Utilities/KeyboardLayout.swift:48,78 (TISCopyCurrentKeyboardLayoutInputSource/UCKeyTranslate), Services/PermissionService.swift:18-20 (AXIsProcessTrusted/CGPreflightListenEventAccess), Services/MacroFiles.swift:36-53 (NSSavePanel/NSOpenPanel). macOS-only feature: Services/BrowserScripting.swift:47,125 (NSAppleScript)",
+      "evidence": "grep -rn 'CGEvent|AppKit|NSApplication|Carbon|osascript|CoreGraphics|CGWindow|AXUIElement|HIToolbox|import Cocoa|import SwiftUI|Combine|WebKit|CGDisplay|CGMouse|kCGEvent|kCGHID' Sources -> 71 hits across 25 files; per-file breakdown in the main grep output shows Views/* = 12 files import SwiftUI only (frontends replaced by Tauri), App/* = AppKit/SwiftUI lifecycle, plus the service files cited above. BrowserScripting builds on AppleScript 'JavaScript from Apple Events' (FeatureSettings.swift:51-55 javaScriptSettingPath strings are Safari/Chrome-macOS-only UI paths).",
+      "severity": "expensive",
+      "rule_targeted": "Tauri port checklist section 2 (Services: pure logic vs AppKit-bound)",
+      "proposed_change": "Port as-is (rename CGKeyCode->u16 type alias): TickSchedule, RecordingCleaner, RunSession, WorkerThread (Foundation/os has direct Rust analogues: crossbeam/atomic waits). Port behind a trait: EventSynthesizer -> enigo (Button/Controllable), MacroRecorder -> a per-OS input-hook crate (rdev/device_query; note listen-only global hooks need admin on Windows), HotkeyService -> global-hotkey crate (already on the owner's stack), PermissionService -> per-OS stubs (Windows: none needed; Linux: X11/Wayland differs radically). KeyboardLayout maps to enigo's layout-independent keys; CharacterKeyMap protocol (KeyStrokeParser.swift:11-14) is the seam -- keep it. Rewrite, don't port: BrowserScripting/WebClicker (see XP-5). Views/App layers: discard.",
+      "is_deletion": false,
+      "word_delta": 200
+    },
+    {
+      "id": "XP-5",
+      "claim": "The Web Target feature is architecturally macOS-only: it drives browsers via NSAppleScript (Apple Events), and its browser enum hardcodes Safari and macOS Chrome with macOS-only settings paths. A Tauri port must replace the whole transport (e.g. Chrome DevTools Protocol over websocket) or drop the feature.",
+      "cite": "Services/BrowserScripting.swift:2 (import Carbon), :41 (\"Main-actor only: NSAppleScript is not thread-safe\"), :47 (compiled: [Browser: NSAppleScript]), :125 (NSAppleScript(source:)); Models/FeatureSettings.swift:31-57 (Browser enum: .safari/.chrome with bundleIdentifier com.apple.Safari / com.google.Chrome and javaScriptSettingPath strings referencing 'Allow JavaScript from Apple Events')",
+      "evidence": "grep for NSAppleScript -> BrowserScripting.swift:47,94,95,101,123,125. BrowserScripting.swift is 200 lines (grep -c) built entirely around AppleScript handlers. WebClicker.swift:1 imports AppKit and drives BrowserScripting. Safari does not exist on Windows/Linux; Chrome's 'JavaScript from Apple Events' toggle does not exist off macOS.",
+      "severity": "expensive",
+      "rule_targeted": "Tauri port checklist section 2 + feature-parity disclosure in MACRO_SCHEMA.md",
+      "proposed_change": "Do not attempt to port NSAppleScript. For the sibling: implement Web Target on Chrome DevTools Protocol (works on all three OSes for Chromium browsers; Safari excluded) -- same WebTargetSettings JSON (FeatureSettings.swift:67-88 is already portable: browser enum, urlMatch, locatorKind css/xpath/coordinates, intervalMs) can be reused with browser enum extended beyond safari/chrome. Mark the feature 'parity differs' in the port doc rather than claiming drop-in.",
+      "is_deletion": false,
+      "word_delta": 130
+    },
+    {
+      "id": "XP-6",
+      "claim": "Modifier vocabulary is macOS-shaped end to end: the persisted/settings model names the four keys control/option/shift/command, and the user-facing token parser accepts cmd/opt/apple symbols. 'command' has no cross-platform meaning (Win: no Cmd key; Linux: Super), so the shared schema and parser need a canonical cross-platform modifier set.",
+      "cite": "Models/KeyModifiers.swift:9-12 (static let control/option/shift/command, rawValue bits 1<<0..1<<3), :15-20 (ordered table with CGEventFlags + Carbon controlKey/optionKey/shiftKey/cmdKey); Utilities/KeyStrokeParser.swift:27-32 (modifiersByName: \"cmd\",\"command\",\"\\u2318\" / \"opt\",\"option\",\"alt\" / \"ctrl\",\"control\")",
+      "evidence": "KeyModifiers is Codable (KeyModifiers.swift:6) and is embedded in the persisted KeyCombo (HotkeyAction.swift:4-7) and in KeyStroke -- so the macOS-specific names are already on-disk state, not just in-memory. The 'alt' alias already exists in the parser (KeyStrokeParser.swift:30), which shows the naming seam is viable.",
+      "severity": "minor",
+      "rule_targeted": "MACRO_SCHEMA canonical modifier names",
+      "proposed_change": "Schema v2 canonical modifiers: ctrl, alt, shift, meta (meta maps to Cmd on macOS, Win-key discouraged on Windows, Super on Linux; document that meta+letter hotkeys are reserved by the OS on Win/Linux). Parser keeps existing aliases (cmd->meta on macOS build, opt/alt->alt). KeyModifiers rawValue bit order (ctrl=1, opt=2, shift=4, cmd=8) should be preserved as the v2 wire order to keep macOS round-trips lossless.",
+      "is_deletion": false,
+      "word_delta": 100
+    },
+    {
+      "id": "XP-7",
+      "claim": "Global-hotkey settings persist raw macOS virtual keycodes (KeyCombo.keyCode: UInt32 fed straight to RegisterEventHotKey), so saved hotkey settings do not survive the port and defaults are expressed in kVK_ANSI_* constants.",
+      "cite": "Models/HotkeyAction.swift:4-7 (struct KeyCombo: Codable { var keyCode: UInt32; var modifiers: KeyModifiers }), :31-41 (defaultCombo switches on kVK_ANSI_C/K/W/R/P/S); Services/HotkeyService.swift:82-83 (RegisterEventHotKey(combo.keyCode, combo.modifiers.carbonFlags, ...)), :17 (storageKey = \"hotkeys\")",
+      "evidence": "HotkeyService.swift:22 loads Persistence.load([HotkeyAction: KeyCombo?].self, key: \"hotkeys\") -- UserDefaults-persisted Codable with the raw macOS keycode inside. The global-hotkey crate's API is Code-based (physical-position scancodes), not macOS-VK-based; a straight data migration is impossible without a mapping table (KeyCodes.swift's namedKeys table is the seed for one).",
+      "severity": "minor",
+      "rule_targeted": "settings migration plan for the Tauri port",
+      "proposed_change": "Do not share hotkey settings across platforms; re-derive defaults per platform from the same action list (HotkeyAction.swift:9-15 is portable as enum names). If settings sync is wanted, persist {action -> {key: canonical-name, mods: [names]}} and map per-OS at load time.",
+      "is_deletion": false,
+      "word_delta": 70
+    },
+    {
+      "id": "XP-8",
+      "claim": "All app settings go through UserDefaults via a tiny Codable wrapper, keyed by five stable strings plus a dock-icon bool; the macro-file layer adds a macOS UTType declaration. These are the two persistence surfaces a Tauri port must replace (tauri-plugin-store + per-OS file associations).",
+      "cite": "Utilities/Persistence.swift:5-13 (UserDefaults.standard JSON Codable load/save); Services/AutoClicker.swift:6, Services/KeyPresser.swift:5, Services/WebClicker.swift:15, Services/HotkeyService.swift:17, Services/MacroPlayer.swift:11 (storageKeys \"autoClicker\",\"keyPresser\",\"webTarget\",\"hotkeys\",\"playback\"); App/AppModel.swift:28-30 (dockIconKey via raw UserDefaults.bool); Services/MacroFiles.swift:7 (UTType(exportedAs: \"com.kheshav.macromaker\", conformingTo: .json)), :10-13 (autosave path Application Support/Macro Maker/)",
+      "evidence": "grep -rn 'UserDefaults|storageKey' Sources (excluding Persistence.swift) returns exactly the 6 sites listed: 5 Codable settings blobs + 1 raw bool. Settings structs themselves (Models/FeatureSettings.swift:3-94: AutoClickerSettings, KeyPresserSettings, WebTargetSettings, PlaybackSettings) are plain Codable with portable field types (Double/Bool/String/enum-rawString) -- only MouseButton and KeyModifiers embed platform semantics (see XP-2/XP-6).",
+      "severity": "minor",
+      "rule_targeted": "Tauri port checklist (settings persistence)",
+      "proposed_change": "Map 1:1 to tauri-plugin-store under the same five keys so settings JSON stays diffable against the macOS originals. Replace UTType with tauri.conf.json file-association config per platform (extension .macromaker, mime application/json). Keep the autosave filename/path shape ('Last Recording.macromaker' under an app-data dir) using Tauri's app_data_dir.",
+      "is_deletion": false,
+      "word_delta": 90
+    },
+    {
+      "id": "XP-9",
+      "claim": "The schema's versioning rule is forward-safe (rejects newer files, accepts missing optional fields with defaults) but has no migration path and no deprecation story; any v2 key-identity change (XP-1/XP-2) must land as version 2 with a v1 reader, not in-place edits to v1.",
+      "cite": "Models/Macro.swift:20 (static let formatVersion = 1), :44-47 (guard version <= Self.formatVersion else throw \"saved by a newer version\"), :117 (decodeIfPresent flags ?? 0), :123 (clickCount ?? 1), :129 (isRepeat ?? false)",
+      "evidence": "Exact optional-field defaults verified in the decoder (Macro.swift:117,123,129) and pinned by Tests/MacroFileTests.swift:38 (\"missing flags default to 0\") and :26-27 (round-trip fixture). Encoder pins output shape: Macro.swift:63-65 (.prettyPrinted, .sortedKeys, .withoutEscapingSlashes; dateEncodingStrategy .iso8601) and :71 (.iso8601 decode) -- dates are ISO8601 with no fractional seconds.",
+      "severity": "minor",
+      "rule_targeted": "MACRO_SCHEMA versioning section",
+      "proposed_change": "Document v1 exactly as implemented (field names, optionality, defaults: clickCount=1, repeat=false, flags=0; ISO8601 date; encoder settings sortedKeys/prettyPrinted). Define v2 as additive: keep every v1 field name, add 'key' (name-based), 'modifiers' (array), optional 'rawFlags'; bump formatVersion to 2; decoders accept v1 and v2, writers emit v2. The existing guard (version <= formatVersion) then does the right thing on both platforms.",
+      "is_deletion": false,
+      "word_delta": 110
+    },
+    {
+      "id": "XP-10",
+      "claim": "Two smaller macOS-only behaviours need explicit port decisions: hold-mode auto-repeat reads macOS user key-repeat rates, and the recorder's self-event exclusion relies on tagging CGEvents via eventSourceUserData, which has no equivalent when posting through enigo.",
+      "cite": "Services/KeyPresser.swift:57-58 (let repeatDelay = NSEvent.keyRepeatDelay; let repeatInterval = NSEvent.keyRepeatInterval); Services/MacroRecorder.swift:134 (isOwnEvent = event.getIntegerValueField(.eventSourceUserData) == EventSynthesizer.eventTag); Services/EventSynthesizer.swift:8 (static let eventTag: Int64 = 0x4D_4143_524F), :95 (event.setIntegerValueField(.eventSourceUserData, value: eventTag))",
+      "evidence": "KeyPresser hold-mode comment: \"Held keys repeat at the user's own System Settings > Keyboard rates\" (KeyPresser.swift:56) -- NSEvent.keyRepeatDelay/Interval are AppKit-only APIs. The recorder's event-tap callback filters its own synthesized output purely by the tag (MacroRecorder.swift:74 guard !event.isOwnEvent); enigo's injected events carry no inspectable user tag, so the sibling's recorder will re-capture its own clicks unless it suppresses by timestamp window or hook-level injection flag.",
+      "severity": "minor",
+      "rule_targeted": "port checklist: platform-behaviour parity notes",
+      "proposed_change": "Hold-mode: replace NSEvent rates with configurable constants (or per-OS registry/Setting lookup); the TickSchedule math already takes them as plain TimeIval parameters (KeyPresser.swift:111-131), so only the source of the two values is platform-bound. Self-event exclusion: design per-OS (Windows: SendInput-injected events are distinguishable via extraInfo; X11: XTEST client check; or simplest, ignore own-window events like isOverOwnWindow already does, MacroRecorder.swift:106-112) -- flag it as an open port task, not a schema one.",
+      "is_deletion": false,
+      "word_delta": 120
+    }
+  ]
+}

@@ -1,0 +1,183 @@
+{
+  "integrity": "high — every verdict below was traced to a source file read in full this session; negative claims are backed by grep runs whose exit codes/output are quoted in evidence. No file was fabricated.",
+  "wrote_to": "/Users/kheshav/Projects/macro-maker/docs/review/features.json",
+  "summary": "All four headline features (Auto Clicker, Key Presser, Web Target, Macro Recorder/Player) plus global hotkeys, file save/open, autosave, and menu-bar control are REAL, not stubs — every promised README feature traces to concrete CGEvent/AppleScript/tap logic and 37 unit tests exist. No telemetry and no Electron dependency anywhere. However, against the original spec ('records and replays clicks, keystrokes, typed text and waits, global hotkeys, per-app window binding') the per-app window binding clause is entirely MISSING (no frontmost-app gating anywhere), and macro editing/hand-built step lists (incl. explicit waits) are MISSING — the recorder table is read-only. v1.1 gaps vs MimicDeck/Mimic/othyn: repeat-until-keypress stop, position jitter/humanization (only interval jitter exists), cursor-move/scroll capture (documented limitation), relative/anchored replay coordinates (documented limitation), and macro chaining.",
+  "findings": [
+    {
+      "id": "F-01",
+      "claim": "Global hotkeys: REAL. Carbon RegisterEventHotKey with per-action configurable combos, conflict handling (refused combos tracked), suspend/resume while re-capturing, and wiring into AppModel.",
+      "cite": "Sources/MacroMaker/Services/HotkeyService.swift:82-88 (RegisterEventHotKey call + failed-set tracking); Services/HotkeyService.swift:98-115 (InstallEventHandler + signature check 0x4D4D_4B52); Models/HotkeyAction.swift:31-41 (defaults matching README.md:86-91); App/AppModel.swift:52 (hotkeys.onTrigger routed to perform(action:trigger:))",
+      "evidence": "HotkeyService.registerAll() loops HotkeyAction.allCases, calls RegisterEventHotKey(combo.keyCode, combo.modifiers.carbonFlags, id, GetApplicationEventTarget(), 0, &ref) and records failures into `unavailable`. installHandler verifies hotKeyID.signature == HotkeyService.signature before dispatching. AppModel.perform() (AppModel.swift:61-70) switches all six actions to the right feature.",
+      "severity": "minor",
+      "rule_targeted": "feature-completeness:global-hotkeys",
+      "proposed_change": "None — feature verified. No change needed.",
+      "is_deletion": false,
+      "word_delta": 0
+    },
+    {
+      "id": "F-02",
+      "claim": "Auto Clicker core (left/right/middle, interval, jitter, cursor/fixed-point target, stop-after-clicks, stop-after-duration): REAL, with drift-free scheduling and testable timing math.",
+      "cite": "Sources/MacroMaker/Services/AutoClicker.swift:73-97 (clickLoop: EventSynthesizer.click per tick, maxClicks break at :85, maxDuration end at :76); Services/AutoClicker.swift:100-117 (pickFixedPoint 3s hover capture); Utilities/TickSchedule.swift:8-25 (delay jitter, nextDeadline drift-free resync, pressDuration); Models/FeatureSettings.swift:3-19 (all settings fields backing README.md:8); Views/AutoClickerView.swift:51-59 (Stop-automatically UI)",
+      "evidence": "Plan init clamps: maxClicks = s.stopAfterClicks ? max(1, s.maxClicks) : nil; maxDuration likewise (AutoClicker.swift:39-40). clickLoop loop condition `!worker.isCancelled, DispatchTime.now() < end` and `if let maxClicks = plan.maxClicks, count >= maxClicks { break }` — both self-stop paths implemented. Grep for jitter found the real wiring: AutoClicker.swift:92 `TickSchedule.delay(interval: plan.interval, jitter: plan.jitter, random: .random(in: -1...1))`.",
+      "severity": "minor",
+      "rule_targeted": "feature-completeness:auto-clicker",
+      "proposed_change": "None — feature verified. No change needed.",
+      "is_deletion": false,
+      "word_delta": 0
+    },
+    {
+      "id": "F-03",
+      "claim": "Key Presser (any key incl. !@#$, named keys, F1-F20, combos, auto-press + hold-with-key-repeat, layout-aware lookup, text fallback): REAL.",
+      "cite": "Sources/MacroMaker/Services/KeyPresser.swift:84-107 (autoPressLoop), :111-131 (holdLoop with NSEvent.keyRepeatDelay/Interval at :57-58); Utilities/KeyStrokeParser.swift:34-90 (parse + token round-trip); Utilities/KeyStrokeParser.swift:77-82 (layout.keyPress lookup, .text fallback for off-layout chars); Services/EventSynthesizer.swift:74-80 (postText via keyboardSetUnicodeString)",
+      "evidence": "stroke(for:) tries layout.keyPress(for: character) first, falls back to KeyStroke(key: .text(...)) only without modifiers (:80-81) — matching README.md:160 claim. holdLoop posts keyDown then repeats with isRepeat:true at keyRepeatInterval, and modifier keys correctly skip repeat (:120-123). 12 parser tests exist in Tests/MacroMakerTests/KeyStrokeParserTests.swift.",
+      "severity": "minor",
+      "rule_targeted": "feature-completeness:key-presser",
+      "proposed_change": "None — feature verified. No change needed.",
+      "is_deletion": false,
+      "word_delta": 0
+    },
+    {
+      "id": "F-04",
+      "claim": "Web Target (CSS/XPath/page-coordinates locator, background-tab JS injection, Safari+Chrome, compiled-once AppleScript with parameter passing): REAL.",
+      "cite": "Sources/MacroMaker/Services/WebClicker.swift:116-140 (tick -> runJavaScript, isElementMissing keeps trying at :133-135); Services/BrowserScripting.swift:150-198 (source(for:) with Safari 'do JavaScript js in tab i of w' vs Chrome 'execute (tab i of w) javascript js'); Services/WebClickScript.swift:21-45 (pointerdown->mousedown->pointerup->mouseup->click sequence); Models/FeatureSettings.swift:60-88 (ElementLocator css/xpath/point)",
+      "evidence": "The AppleScript compiles once per browser (compiled:[Browser:NSAppleScript], BrowserScripting.swift:47,123-134) and passes urlFragment+js as Apple Event parameters (call(), :101-121) so selectors need no escaping — matching README.md:162. Tab matching loops windows x tabs on URL contains urlFragment (:159-170). 5 JS tests run against JavaScriptCore (Tests/MacroMakerTests/WebClickScriptTests.swift, 5 @Test).",
+      "severity": "minor",
+      "rule_targeted": "feature-completeness:web-target",
+      "proposed_change": "None — feature verified; iframes and other browsers are documented limitations (README.md:167), not stubs.",
+      "is_deletion": false,
+      "word_delta": 0
+    },
+    {
+      "id": "F-05",
+      "claim": "Macro Recorder (system-wide listen-only event tap, own-window and own-event exclusion, start/stop artifact cleanup): REAL.",
+      "cite": "Sources/MacroMaker/Services/MacroRecorder.swift:23-34 (.listenOnly tapCreate; CGRequestListenEventAccess on failure at :31); :80-91 (own-window click exclusion, !NSApp.isActive key exclusion); Utilities/RecordingCleaner.swift:5-40 (orphan-up drop, trailing-held-key trim, time shift); Services/EventSynthesizer.swift:7-8 + MacroRecorder.swift:134 (eventSourceUserData tag 0x4D_4143_524F ignores own synthetic output)",
+      "evidence": "Tap mask includes left/right/other MouseDown/Up + keyDown/keyUp + flagsChanged (MacroRecorder.swift:23-24), so modifier press/release is recorded as key events — README.md:163 'listen-only event tap' is accurate. flagsChanged->keyDown/keyUp conversion at :93-97. 4 RecordingCleanerTests cover the cleanup contract.",
+      "severity": "minor",
+      "rule_targeted": "feature-completeness:recorder",
+      "proposed_change": "None — feature verified. No change needed.",
+      "is_deletion": false,
+      "word_delta": 0
+    },
+    {
+      "id": "F-06",
+      "claim": "Playback with repeat count / loop-forever / 0.25x-4x speed: REAL.",
+      "cite": "Sources/MacroMaker/Services/MacroPlayer.swift:45-47 (Plan: repeats = loopForever ? nil : max(1, repeatCount); speed clamp 0.1...10), :66-95 (play loop with per-pass defer release of held keys/buttons at :75), :107-110 (drag detection posts drag event before mouseUp); Views/RecorderView.swift:98-108 (Loop toggle, Repeat stepper 1...10_000, Speed picker [0.25,0.5,1,2,4])",
+      "evidence": "playback: while plan.repeats.map({ progress.iteration < $0 }) ?? true — nil repeats means infinite loop; worker.sleep returns false on cancel to break out (MacroPlayer.swift:71,80). Speed picker tags match README.md:11 '0.25x-4x'.",
+      "severity": "minor",
+      "rule_targeted": "feature-completeness:playback",
+      "proposed_change": "None — feature verified. No change needed.",
+      "is_deletion": false,
+      "word_delta": 0
+    },
+    {
+      "id": "F-07",
+      "claim": "Macro save/open/import-export as .macromaker files + autosave of last recording: REAL (single-file import/export; chaining does not exist, see F-15).",
+      "cite": "Sources/MacroMaker/Services/MacroFiles.swift:35-54 (saveWithPanel NSSavePanel / openWithPanel NSOpenPanel with UTType com.kheshav.macromaker), :9-28 (autosave to ~/Library/Application Support/Macro Maker/Last Recording.macromaker); Models/Macro.swift:38-51 (version guard: version <= 1 rejects newer files); Support/Info.plist:39-73 (CFBundleDocumentTypes + UTExportedTypeDeclarations); App/AppModel.swift:109-150 (saveMacro/openMacroWithPanel/load)",
+      "evidence": "Exporter/decoder round-trips format/version/name/createdAt/events with .iso8601 dates (Macro.swift:62-73); version guard throws 'saved by a newer version' (Macro.swift:45-47). 3 MacroFileTests pin the v1 sample. Info.plist declares the UTType so double-click open works.",
+      "severity": "minor",
+      "rule_targeted": "feature-completeness:file-format",
+      "proposed_change": "None — feature verified. No change needed.",
+      "is_deletion": false,
+      "word_delta": 0
+    },
+    {
+      "id": "F-08",
+      "claim": "No telemetry / no Electron / native SwiftUI: REAL. Zero analytics code, zero third-party dependencies, pure SwiftUI app target.",
+      "cite": "grep -rn -i 'telemetry|analytics|Electron' Sources/ project.yml -> exit=1 (no matches, output captured this session); Package.swift:4-22 (package has NO dependencies: only MacroMaker executableTarget + testTarget); Support/Info.plist:1-75 (no analytics-related keys); Sources/MacroMaker/Views/ — AutoClickerView/KeyPresserView/WebTargetView/RecorderView/SettingsView all import SwiftUI",
+      "evidence": "The grep returned nothing (exit code 1 = no matches). Package.swift declares no external packages at all, so no SDK that could phone home exists. All UI is SwiftUI; project.yml:11-13 sets deploymentTarget macOS 14.0 and SWIFT_VERSION 6.0.",
+      "severity": "minor",
+      "rule_targeted": "spec:no-telemetry",
+      "proposed_change": "None — constraint verified as satisfied.",
+      "is_deletion": false,
+      "word_delta": 0
+    },
+    {
+      "id": "F-09",
+      "claim": "PER-APP WINDOW BINDING: MISSING. The original spec (K4ryuu/MimicDeck: 'records and replays ... with global hotkeys and per-app window binding') promises restricting/auto-gating features to a bound app; macro-maker has no frontmost-app check anywhere. README.md does not even claim the feature, so this is a spec-vs-implementation gap, not a doc bug.",
+      "cite": "grep -rn -i 'frontmost|perApp|appFilter|onlyIn|targetApp|windowNumber|scroll' Sources/ -> only 3 hits: HotkeyService.swift:5 (comment), MacroRecorder.swift:110-111 (NSWindow.windowNumber used ONLY to exclude Macro Maker's own windows from recording); no hit in AutoClicker.swift, KeyPresser.swift, MacroPlayer.swift, EventSynthesizer.swift. NSRunningApplication.frontmostApplication appears nowhere in Sources/ (grep exit=1 for 'frontmost' outside the comment).",
+      "evidence": "The only window-identity logic in the codebase is MacroRecorder.isOverOwnWindow (MacroRecorder.swift:106-112), which answers 'is this click on my own window?' — the inverse of binding a run to a target app. AutoClicker.clickLoop (AutoClicker.swift:82-95) posts clicks unconditionally; MacroPlayer.play (MacroPlayer.swift:71-93) replays unconditionally. A user who switches apps mid-run gets clicks/keys sprayed into the wrong app with no guard.",
+      "severity": "expensive",
+      "rule_targeted": "spec:per-app-window-binding",
+      "proposed_change": "Add optional per-feature target-app binding: store bundleID in FeatureSettings (e.g. AutoClickerSettings.targetAppBundleID: String?), and in each loop tick (AutoClicker.swift:82, KeyPresser.swift:92, MacroPlayer event loop) check NSWorkspace.shared.frontmostApplication?.bundleIdentifier against it before posting; skip (or pause) when it doesn't match. Use NSRunningApplication for a picker UI. ~100-150 lines across Model + 3 services + picker view.",
+      "is_deletion": false,
+      "word_delta": 150
+    },
+    {
+      "id": "F-10",
+      "claim": "MACRO EDITING / HAND-BUILT STEP LISTS (incl. explicit waits): MISSING. Recorder can capture and replay but nothing can be edited, reordered, deleted, or hand-authored; 'waits' exist only as implicit recorded timing gaps.",
+      "cite": "Sources/MacroMaker/Views/RecorderView.swift:123-135 (Table renders rows read-only — TableColumn '#', 'Time', 'Event' with no editing affordance, no context menu, no delete); Sources/MacroMaker/Models/Macro.swift:17-36 (var events is mutable but the ONLY mutation anywhere is name: AppModel.swift:113 'self.macro?.name = url...lastPathComponent' — no insert/remove call sites on events); MacroEvent.Action (Macro.swift:77-83) has no explicit 'wait' step — timing is absolute t only.",
+      "evidence": "Competitor MimicDeck 1.0.0 commit message (github.com/K4ryuu/MimicDeck commit 276a062, fetched this session): 'a macro engine that records, EDITS and replays click, key, typed-text, wait and cursor-move steps'. Macro Maker has the record+replay halves only; RecorderView.swift:116-121 shows a ContentUnavailableView or the table, nothing else. A user who records one stray click has exactly two options: re-record everything or edit the JSON in a text editor.",
+      "severity": "expensive",
+      "rule_targeted": "spec:macro-editing-and-waits",
+      "proposed_change": "Phase 1 (v1.1): make the event table row-selectable with delete + nudge-timing (+/-100ms) via a Macro.events mutation on AppModel; MacroEvent is already an Equatable value type so diffing is free. Phase 2: add a 'wait' pseudo-event (Action case .wait(TimeInterval)) the user can insert, encoded as {type:\"wait\", duration: s} in format v2 with the existing version guard (Macro.swift:45-47) keeping v1 files readable.",
+      "is_deletion": false,
+      "word_delta": 250
+    },
+    {
+      "id": "F-11",
+      "claim": "REPEAT-UNTIL-KEYPRESS STOP: MISSING. Playback and the clicker can stop by count or duration (or loop forever), but there is no 'loop until I press key X' stop condition.",
+      "cite": "grep -rn -i 'stopOnKey|untilKey|abortKey|breakKey' Sources/ -> exit=1 (no matches). Sources/MacroMaker/Models/FeatureSettings.swift:90-94 (PlaybackSettings has only repeatCount/loopForever/speed); Services/MacroPlayer.swift:71 (playback loop condition is count-or-infinite only); Models/FeatureSettings.swift:15-18 (AutoClicker stop conditions: clicks or duration only); Views/AutoClickerView.swift:51-59 (only those two toggles rendered).",
+      "evidence": "Both stop paths are enumerated above — nothing listens for a keypress during a run. HotkeyService only fires registered combos, and the existing stopAll hotkey is the manual substitute, but it is not a 'repeat until F8' semantic bound to the run.",
+      "severity": "minor",
+      "rule_targeted": "parity:repeat-until-keypress",
+      "proposed_change": "Add PlaybackSettings.stopOnKey: KeyCombo? and AutoClickerSettings.stopOnKey: KeyCombo?; while a run is active, install a dynamic Carbon hotkey (reuse HotkeyService.registerAll machinery) whose handler stops only the owning RunSession. UI: one 'Stop when I press...' HotkeyField under the loop controls. ~80 lines.",
+      "is_deletion": false,
+      "word_delta": 80
+    },
+    {
+      "id": "F-12",
+      "claim": "POSITION JITTER / HUMANIZATION: MISSING for click position. Interval jitter exists (REAL), but every click lands on the exact same pixel — trivially detectable, unlike timing.",
+      "cite": "Sources/MacroMaker/Services/AutoClicker.swift:83 (EventSynthesizer.click(plan.button, at: plan.point, holdFor: hold) — plan.point is a single fixed CGPoint for the whole run, AutoClicker.swift:36); Services/EventSynthesizer.swift:25-30 (click posts down+up at `location` with zero offset); contrast timing jitter which IS implemented: Models/FeatureSettings.swift:10-11 (randomizeInterval/randomOffsetMs), AutoClicker.swift:38, :92, Utilities/TickSchedule.swift:9-10; Views/AutoClickerView.swift:16-19 (interval-jitter UI only).",
+      "evidence": "The only randomization in the codebase is the interval offset (grep for 'jitter|random' returned exactly 9 hits, all timing-related; no position field is ever randomized). Recorded-macro replay likewise posts at recorded absolute points (MacroPlayer.swift:102-105). beyondthecode-bc/Mimic (GitHub topics include 'humanizer', fetched this session) sells this exact feature.",
+      "severity": "minor",
+      "rule_targeted": "parity:position-humanization",
+      "proposed_change": "Add AutoClickerSettings.positionJitterPt: Double (default 0) — in AutoClicker.clickLoop, offset plan.point by Double.random(in: -j...j) on both axes before EventSynthesizer.click; clamp to screen frame via NSScreen. ~20 lines; same hook could later serve macro replay.",
+      "is_deletion": false,
+      "word_delta": 25
+    },
+    {
+      "id": "F-13",
+      "claim": "CURSOR-MOVE AND SCROLL CAPTURE: MISSING (documented limitation). Replay of a recorded drag interpolates nothing between press and release; scroll wheel events are neither captured nor replayed.",
+      "cite": "README.md:168 ('Recorder captures clicks and key presses, not cursor movement or scrolling. A drag is replayed as press at the start point, then release at the end point.') — matches implementation: MacroRecorder.swift:23-24 tap mask contains NO .scrollWheel and NO .mouseMoved; MacroPlayer.swift:107-110 synthesizes a single drag event only when the down/up points differ (no intermediate movement); grep 'scroll' in Sources/ -> zero implementation hits.",
+      "evidence": "MimicDeck 1.0.0 commit 276a062 (fetched this session) explicitly includes 'cursor-move steps' in its macro engine — so cursor-move capture is a competitor-parity gap. Drag replay does work one level better than the README admits (MacroPlayer posts button.dragEventType when downPoint != point, MacroPlayer.swift:107-110), but nothing moves the cursor between the two points, so apps doing per-pixel drag hit-testing see a teleport.",
+      "severity": "minor",
+      "rule_targeted": "parity:move-and-scroll-steps",
+      "proposed_change": "Two options for v1.1: (a) document-only — README already discloses it, keep scope tight; (b) capture .scrollWheel deltas as new MacroEvent cases, format v2. Recommend interpolating N move events between a down/up pair (~30 lines in MacroPlayer.post) as the cheaper 80% win for drags, and leaving scroll for v2.",
+      "is_deletion": false,
+      "word_delta": 40
+    },
+    {
+      "id": "F-14",
+      "claim": "RELATIVE / WINDOW-ANCHORED REPLAY COORDINATES: MISSING (documented limitation) — replay is absolute-only, so window moves or display rearrangement silently retarget clicks.",
+      "cite": "README.md:169 ('Replayed clicks land at the same screen positions as when recorded, so a different display arrangement or window position changes where they land.'); Models/Macro.swift:15-16 ('x/y are global screen points (origin top-left of the main display)'); MacroPlayer.swift:102-105 (posts recorded point verbatim). grep -rn 'relative' Sources/ -> exit=1 (no match).",
+      "evidence": "Absolute-only is confirmed by the encode/decode path: MacroEvent encodes raw x/y (Macro.swift:143-144) with no anchor metadata in the v1 format (Macro.swift:28-30 CodingKeys: format, version, name, createdAt, events).",
+      "severity": "minor",
+      "rule_targeted": "parity:relative-coordinates",
+      "proposed_change": "Optional v1.1/v2 mode: at record time, for each mouseDown store the frontmost app bundleID + window frame origin (CGWindowListCopyWindowInfo / AXUIElement); at replay, translate point by (currentWindowOrigin - recordedWindowOrigin) before posting. Gate behind a PlaybackSettings toggle 'Follow the window' so plain absolute replay stays default. ~120 lines.",
+      "is_deletion": false,
+      "word_delta": 120
+    },
+    {
+      "id": "F-15",
+      "claim": "MACRO CHAINING (run macro A then macro B, or trigger a macro from another macro): MISSING. Exactly one Macro lives in memory and one Plan per play run.",
+      "cite": "Sources/MacroMaker/App/AppModel.swift:23 ('var macro: Macro?' — a single optional macro, not a list); Services/MacroPlayer.swift:27-32 (Plan holds one [MacroEvent] + repeats + speed — no successor/completion hook), :94-95 (play reports finished and stops; no 'then run' callback); Views/RecorderView.swift:60-69 (single macro name field + one event table).",
+      "evidence": "AppModel holds no collection of macros; MacroFiles (MacroFiles.swift:30-54) reads/writes one file at a time via panels. togglePlayback passes the single macro (AppModel.swift:101-107). Import/export of individual files exists (F-07, REAL), so the file side of chaining exists — only orchestration is absent.",
+      "severity": "minor",
+      "rule_targeted": "parity:macro-chaining",
+      "proposed_change": "Lowest-cost v1.1: a macro library folder (~/Library/Application Support/Macro Maker/Macros/) listed in the recorder tab with a 'Play after current' queue flag; MacroPlayer.finish funnels through RunSession.finish (MacroPlayer.swift:58) — hook the queue there. ~100 lines. Full chaining UI can wait for v2.",
+      "is_deletion": false,
+      "word_delta": 100
+    },
+    {
+      "id": "F-16",
+      "claim": "STOP-AFTER LIMITS exist only on Auto Clicker: Key Presser (auto-press mode) and Web Target run until manually stopped — no press/click cap or time limit, unlike othyn/macos-auto-clicker where 'for a given amount of times' applies to both clicks and keys.",
+      "cite": "Sources/MacroMaker/Services/KeyPresser.swift:92 (autoPressLoop: `while !worker.isCancelled` — no count/duration exit), :84-85 (loop signature takes no limit); Models/FeatureSettings.swift:21-29 (KeyPresserSettings has only keyText/mode/intervalMs — no maxPresses fields, contrast AutoClickerSettings:15-18); Services/WebClicker.swift:80 (`while !Task.isCancelled` — unbounded) and Models/FeatureSettings.swift:67-88 (WebTargetSettings has no stop-limit fields).",
+      "evidence": "othyn/macos-auto-clicker README (fetched this session) lists 'for a given amount of presses per interval ... for a given amount of times ... after a delayed start' for both pressing and clicking. Macro Maker covers click-limits and (via repeatCount) macro limits, but the Key Presser and Web Target loops have no terminal condition besides Stop/stop-all hotkey.",
+      "severity": "minor",
+      "rule_targeted": "parity:stop-limits-everywhere",
+      "proposed_change": "Mirror AutoClicker's stopAfterClicks/stopAfterDuration pattern (AutoClicker.swift:39-40) into KeyPresserSettings and WebTargetSettings: add optional maxPresses/maxClicks and maxDurationSeconds, break the loop on the same conditions, and reuse the AutoClickerView 'Stop automatically' section markup. ~60 lines.",
+      "is_deletion": false,
+      "word_delta": 60
+    }
+  ]
+}

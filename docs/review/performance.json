@@ -1,0 +1,40 @@
+{
+  "integrity": "arch-a",
+  "wrote_to": "/Users/kheshav/Projects/macro-maker/docs/review/performance.json",
+  "summary": "Performance & resource review of the six target files (read as Sources/MacroMaker/{Services,Utilities}/*.swift \u2014 the repo has no top-level Services/ dir). Timing architecture is fundamentally sound: no busy-wait anywhere (grep of all sources shows the only sleep mechanisms are DispatchSemaphore.wait in WorkerThread.swift:50, bounded Thread.sleep for key-hold at KeyPresser.swift:94/EventSynthesizer.swift:28, and a 1.5 s permission poll). Ticks are drift-free deadline-scheduled (TickSchedule.nextDeadline) and progress UI reports are throttled to 50 ms in all three loops (AutoClicker.swift:88, KeyPresser.swift:99, MacroPlayer.swift:85). The event tap exists only while recording, is listen-only and mask-filtered to 9 event types (MacroRecorder.swift:23-27), and hotkeys use Carbon RegisterEventHotKey, not a permanent tap (HotkeyService.swift:82). Micro-benchmarks run this session: CGEventSource creation 0.729 us, the app's 1 kHz tick skeleton via semaphore sleep ~0.4-0.6% CPU (busy-wait strawman measured 96% to calibrate). Replay memory is bounded: MacroPlayer snapshots plan.events and resets heldKey/heldButton sets per pass (MacroPlayer.swift:71-75); no growth over hour-long replays found. Real findings are in the recorder: the liveEvents array grows unbounded and feeds the Recorder tab UI, where each appended event re-evaluates the whole view and rebuilds the full row array (O(n^2) over a long recording), and makeSource() allocates a fresh CGEventSource per posted event instead of one cached source. Nothing rises to kills-project.",
+  "findings": [
+    {
+      "id": "PERF-1",
+      "claim": "During recording, every captured event appends to liveEvents and, whenever the Recorder tab is visible, SwiftUI re-evaluates the whole view body and materialises a brand-new array of Row structs for ALL events (enumerated().map) \u2014 O(n) work per event, O(n^2) over a long recording. A 30-minute recording with a key held (autorepeat recorded as events, MacroRecorder.swift:92) accumulates tens of thousands of events; with the tab open each new event re-diffs a list that size on the main thread, progressively janking the UI.",
+      "cite": "Sources/MacroMaker/Services/MacroRecorder.swift:102 (`liveEvents.append(MacroEvent(...))` on every tap event) + Sources/MacroMaker/Views/RecorderView.swift:114,123 (`let events = model.recorder.isRecording ? model.recorder.liveEvents : ...` and `Table(events.enumerated().map { Row(id: $0.offset, event: $0.element) })`)",
+      "evidence": "grep -rn liveEvents Sources/MacroMaker --include='*.swift' returns exactly 5 hits: the @Observable property (MacroRecorder.swift:10), the reset at :43/:65, the append at :102, and the single UI consumer RecorderView.swift:114. The body of RecorderView reads model.recorder.liveEvents directly, and @Observable tracking means each append invalidates the body. The Table's rows are lazily rendered by AppKit, but the `events.enumerated().map` array construction itself is eager and runs on every body evaluation.",
+      "severity": "minor",
+      "rule_targeted": "resource-efficiency",
+      "proposed_change": "Decouple the live view from the raw array: either (a) render only the tail during recording (e.g. show last 100 events with an 'N more' caption, materialise the full table only after stop()), or (b) keep an @ObservationIgnored events buffer in MacroRecorder and publish a lightweight count for the UI, building the Table from the buffer only when recording ends.",
+      "is_deletion": false,
+      "word_delta": -10
+    },
+    {
+      "id": "PERF-2",
+      "claim": "liveEvents grows without any cap or retention policy for the entire recording session. An hour-long recording of gameplay/typing (autorepeat alone fires at the user's key-repeat rate, ~20-30 events/s) accumulates 70k-100k+ MacroEvents, and they are retained until stop() is called.",
+      "cite": "Sources/MacroMaker/Services/MacroRecorder.swift:10 (`private(set) var liveEvents: [MacroEvent] = []`), :102 (append), :64-65 (only cleared in stop())",
+      "evidence": "cat -n MacroRecorder.swift shows liveEvents is cleared only in stop() (:65) and reset in start() (:43); no cap, no compaction, no streaming to disk anywhere in the file (grep 'liveEvents' = 5 hits, none a limit). MacroEvent holds time + action + flags; at ~100 B/event, 100k events is ~10 MB \u2014 bounded in practice by session length, so memory only, not a leak.",
+      "severity": "minor",
+      "rule_targeted": "resource-efficiency",
+      "proposed_change": "Either cap liveEvents (drop autorepeat keyDowns at record time \u2014 MacroRecorder.swift:92 already receives isAutorepeat and could skip storing repeats, which also shrinks replays) or compact liveEvents incrementally via RecordingCleaner.clean every N events. Skipping isAutorepeat events is a net deletion (~4 lines).",
+      "is_deletion": false,
+      "word_delta": -15
+    },
+    {
+      "id": "PERF-3",
+      "claim": "EventSynthesizer creates a brand-new CGEventSource (plus a suppression-interval property write) for every single event posted \u2014 2 sources per click, per key transition. The source is stateless for this app's usage (only localEventsSuppressionInterval=0 is set), so it can be created once and reused.",
+      "cite": "Sources/MacroMaker/Services/EventSynthesizer.swift:84-89 (`private static func makeSource() -> CGEventSource?` called from :18 (postMouse) and :36 (postKey) on every post) + :27-29 (click() posts down and up = 2 makeSource calls per click)",
+      "evidence": "Micro-benchmark compiled with `swiftc -O` and run 2026-09-16 (output pasted): 'CGEventSource create+release: 0.729 us each', 'CGEvent create (shared source): 1.179 us each', 'app pattern (2 sources + 2 events, NO post): 1.425 us per click'. At the 1 kHz floor that is ~1.5 us/tick of waste (~0.15% of the tick budget) \u2014 real but small; measured app-pattern CPU for the 1 kHz skeleton via the real semaphore-sleep path was 0.4-0.6% (ps -o %cpu: 0.6/0.4).",
+      "severity": "minor",
+      "rule_targeted": "resource-efficiency",
+      "proposed_change": "Cache one CGEventSource(stateID: .hidSystemState) with localEventsSuppressionInterval = 0 in a static (created lazily on first use); makeSource() returns it. Deletes the per-event allocation and the repeated property write. Net code deletion (~5 lines removed, 3 added).",
+      "is_deletion": true,
+      "word_delta": -5
+    }
+  ]
+}

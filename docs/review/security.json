@@ -1,0 +1,73 @@
+{
+  "integrity": "reviewed",
+  "wrote_to": "/Users/kheshav/Projects/macro-maker/docs/review/security.json",
+  "summary": "Security & parsing review of MacroMaker (local-only macOS autoclicker, untrusted .macromaker files + AppleScript JS injection into Safari/Chrome). The AppleScript surface is genuinely well-designed: user selectors/JS travel as Apple Event string parameters into a compiled script, never spliced into source (BrowserScripting.swift:99-114), so classic osascript injection is structurally absent. The WebClickScript jsString() JSON-escaping for CSS/XPath is correct in practice (JSON string literals are valid JS string literals) but has one sharp edge: U+2028/U+2029 in a selector are legal JSON but can break JS string parsing — a minor robustness issue, not injection. Real findings are in the untrusted-macro-file path: no size cap on Data(contentsOf:) before JSONDecoder (huge-file DoS via Finder double-click), no clamp on decoded event coordinates/times/flags (CGEvent posts to arbitrary global points with arbitrary modifier flags from a hand-edited file), and Macro.version accepts negative values. Entitlements are minimal and correct (no sandbox is justified and documented). No URL scheme handler exists. No critical/kills-project findings.",
+  "findings": [
+    {
+      "id": "SEC-1",
+      "claim": "Macro loading has no payload size cap: a maliciously large .macromaker file is fully read into memory and JSON-decoded before any guard, enabling a memory-exhaustion DoS when the app is the default handler for the type and Finder double-click feeds arbitrary files straight to Macro(jsonData:).",
+      "cite": "Sources/MacroMaker/Services/MacroFiles.swift:30-32 (read(from:) does Data(contentsOf: url) unbounded, then Macro(jsonData:)); Sources/MacroMaker/App/AppDelegate.swift:22-25 (application(_:open:) passes any Finder-opened URL to AppModel.openMacro(at:)); Support/Info.plist:39-53 (CFBundleDocumentTypes registers com.kheshav.macromaker so the app opens these by default).",
+      "evidence": "PASTED command: grep -rn 'macromaker|NSOpenPanel|jsonData|write(to|contents(of|FileManager' Sources/MacroMaker --include='*.swift' — output shows MacroFiles.swift:31 `try Macro(jsonData: Data(contentsOf: url))` with no size check anywhere in the call chain (grep for a cap across Sources returned only jsonData save/load sites). A multi-GB file opened by double-click is read wholesale before the format/version guard inside Macro.init(from:) (Macro.swift:38-51) ever runs.",
+      "severity": "minor",
+      "rule_targeted": "untrusted-input-handling / DoS",
+      "proposed_change": "In MacroFiles.read(from:) (and loadAutosave), stat the file first and reject anything over a few MB (a real recording is tiny: a 10-minute macro at 60 events/s is ~36k events, about 3 MB JSON). e.g. guard fileSize <= 8_000_000 else throw MacroFileError.tooLarge.",
+      "is_deletion": false,
+      "word_delta": 15
+    },
+    {
+      "id": "SEC-2",
+      "claim": "Decoded macro events are replayed verbatim with attacker-controlled CGEventFlags and unclamped coordinates: a hand-edited .macromaker posts events with arbitrary raw flags at arbitrary global screen points the moment the user presses Play, so a macro file shared by a stranger is effectively a keyboard/mouse-injection script.",
+      "cite": "Sources/MacroMaker/Models/Macro.swift:117 (flags = decodeIfPresent(UInt64) ?? 0 — raw UInt64 from file), Macro.swift:122 (x/y decoded as arbitrary Double, no range check); Sources/MacroMaker/Services/MacroPlayer.swift:100 (CGEventFlags(rawValue: event.flags) — straight into posted events); Sources/MacroMaker/Services/EventSynthesizer.swift:16-22,35-40 (postMouse/postKey pass point and flags to CGEvent with no bounds check).",
+      "evidence": "PASTED — decode path: MacroEvent.init(from:) (Macro.swift:114-133) decodes x/y as arbitrary Double (line 122) and flags as raw UInt64 (line 117) with no range validation; MacroPlayer.play -> post -> EventSynthesizer consumes them unchanged (MacroPlayer.swift:79-118, EventSynthesizer.swift:16-40). grep found no clamp on x/y/flags anywhere in Services (only WebClicker.swift:40 clamps intervalMs).",
+      "severity": "minor",
+      "rule_targeted": "untrusted-input-validation",
+      "proposed_change": "Inherent to the tool's purpose (macros ARE synthetic input), so treat as documented trust boundary, not a code bug: (a) clamp decoded x/y to the union of NSScreen frames and drop non-finite values, (b) mask decoded flags to the four modifier masks the way MacroPlayer already subtracts .maskAlphaShift (MacroPlayer.swift:100), (c) state in the README that opening someone else's .macromaker file = running their keyboard input.",
+      "is_deletion": false,
+      "word_delta": 30
+    },
+    {
+      "id": "SEC-3",
+      "claim": "Macro format-version guard is one-sided: guard version <= 1 accepts any negative or zero version, so a file claiming version -1 or 0 decodes silently instead of being rejected as corrupt.",
+      "cite": "Sources/MacroMaker/Models/Macro.swift:44-47 (guard version <= Self.formatVersion else throw — no lower-bound counterpart).",
+      "evidence": "PASTED — Macro.init(from:) lines 44-47: `let version = try container.decode(Int.self, forKey: .version); guard version <= Self.formatVersion else { throw DecodingError... }`. Test check: Tests/MacroMakerTests/MacroFileTests.swift covers newer-version rejection; no test pins version 0 or negative (grep 'version' Tests/MacroMakerTests/MacroFileTests.swift — only the newer-version case).",
+      "severity": "minor",
+      "rule_targeted": "input-validation",
+      "proposed_change": "Two-line fix in Macro.init(from:): guard version >= 1, version <= Self.formatVersion else { throw ... }, plus a test asserting version 0 and -1 throw.",
+      "is_deletion": false,
+      "word_delta": 8
+    },
+    {
+      "id": "SEC-4",
+      "claim": "jsString() escapes user CSS/XPath selectors via JSONSerialization — safe for JS string literals in ES2019+ engines — but leaves U+2028/U+2029 (LINE/PARAGRAPH SEPARATOR) unescaped; these are valid JSON yet act as string-terminating line terminators in older JS parsing contexts, so a selector containing them yields a script-error instead of a click. Robustness gap, not injection.",
+      "cite": "Sources/MacroMaker/Utilities/WebClickScript.swift:50-54 (jsString builds the literal from JSONSerialization output and only strips the array brackets); WebClickScript.swift:12,15 (literal embedded into document.querySelector / document.evaluate source sent via BrowserScripting.runJavaScript:49-54).",
+      "evidence": "PASTED — jsString (WebClickScript.swift:51-53): JSONSerialization.data(withJSONObject: [value], options: [.withoutEscapingSlashes]) then dropFirst/dropLast. JSONSerialization escapes quotes/backslashes/control chars but passes U+2028/U+2029 through verbatim. Test suite check: grep '2028' Tests/MacroMakerTests/WebClickScriptTests.swift returned nothing — only quote/backslash cases are pinned.",
+      "severity": "minor",
+      "rule_targeted": "injection-robustness",
+      "proposed_change": "One line in jsString: after building the array string, replace occurrences of \\u{2028} and \\u{2029} with \\u2028 / \\u2029 escapes. This hardens the good design rather than redesigning it — the JSON-literal-as-JS-literal approach is the right call.",
+      "is_deletion": false,
+      "word_delta": 5
+    },
+    {
+      "id": "SEC-5",
+      "claim": "Web Target tab matching is unanchored substring containment returning the FIRST matching tab in window enumeration order, so a broad fragment fires injected clicks into whichever tab merely contains the fragment (webmail, banking tabs included) rather than the one the user intends — a wrong-target footgun, not a third-party exploit.",
+      "cite": "Sources/MacroMaker/Services/BrowserScripting.swift:166-168 (`if tabURL contains urlFragment then return do JavaScript ...` — substring match, first match wins); Sources/MacroMaker/Services/WebClicker.swift:46-48 (problem only rejects an entirely-empty urlMatch); Sources/MacroMaker/Views/WebTargetView.swift:27 (picker sets urlMatch to the tab's full URL as a default, but the user can shorten it).",
+      "evidence": "PASTED — AppleScript source (BrowserScripting.swift:156-174): repeat with w in windows ... if tabURL contains urlFragment then return runInTab. No uniqueness or exact-match mode exists (grep 'contains urlFragment' — single occurrence, no alternative matcher).",
+      "severity": "minor",
+      "rule_targeted": "scope-of-effect / wrong-target injection",
+      "proposed_change": "Optional hardening: warn in the UI when a fragment matches more than one open tab (compare list_tabs output before starting), or prefer exact-prefix matching over contains.",
+      "is_deletion": false,
+      "word_delta": 12
+    },
+    {
+      "id": "SEC-6",
+      "claim": "list_tabs() fabricates tab identity from enumeration order (id: index) rather than a real browser tab id — harmless today because the picker stores tab.url (matched back by the same contains-logic), but a latent sharp edge if tab identity is ever persisted.",
+      "cite": "Sources/MacroMaker/Services/BrowserScripting.swift:56-63 (openTabs assigns id: index from split lines); Sources/MacroMaker/Views/WebTargetView.swift:27 (selection writes tab.url, not tab.id, into settings.urlMatch — no exploit in the current data flow).",
+      "evidence": "PASTED — BrowserScripting.openTabs (lines 56-63): output.split(separator: \"\\n\").enumerated().compactMap { index, line in ... BrowserTab(id: index, url: ...) }. The stored URL (WebTargetView.swift:27) is matched back by the contains-logic at BrowserScripting.swift:166, so current behavior is consistent.",
+      "severity": "minor",
+      "rule_targeted": "identity-stability",
+      "proposed_change": "Nothing to change now; if tab identity is ever persisted, key it on the URL fragment, never the enumeration index (a comment in openTabs would pin that).",
+      "is_deletion": false,
+      "word_delta": 5
+    }
+  ]
+}

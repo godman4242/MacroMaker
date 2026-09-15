@@ -1,0 +1,74 @@
+{
+  "integrity": true,
+  "wrote_to": "/Users/kheshav/Projects/macro-maker/docs/review/tests.json",
+  "summary": "Test adequacy review (red-first). Verified by execution: plain `swift test` FAILS to compile all 6 swift-testing suites ('no such module Testing', Swift 6.3.3 CLT); the suites only pass through scripts/test.sh which injects -F linker/swiftc flags (37 tests, 7 suites, all green). 10 of ~12 service/utility files have ZERO test references (grep over Tests/ exits 1 for HotkeyService, AutoClicker, MacroPlayer, EventSynthesizer, RunSession, WorkerThread, MacroRecorder, MacroFiles, Persistence, KeyPresser). The 3 highest-value untested paths: (1) MacroPlayer.play replay-loop stop conditions (repeats bound, mid-sleep cancel, held-key release-on-stop) — private static, untestable as written; (2) AutoClicker.clickLoop stop conditions (maxClicks break, maxDuration end, min(deadline,end) sleep) — same coupling; (3) RecordingCleaner trailing-mouseDown case — trailing keyDown is stripped but trailing mouseDown is kept, an asymmetry with no test pinning either intended behavior. Schema round-trip exists (MacroFileTests.roundTrip) but omits empty-events and drag (mouseUp at a different point than mouseDown, which drives MacroPlayer's drag branch).",
+  "findings": [
+    {
+      "id": "T1",
+      "claim": "All 6 test suites fail to compile under plain `swift test` on this machine's toolchain (Swift 6.3.3 CLT): 'no such module Testing'. They only pass via scripts/test.sh, which wraps swift test with -Xswiftc -F/-Xlinker -F/-rpath flags pointing at the CLT swift-testing frameworks. Package.swift's comment claims 'build and test with only the Command Line Tools', but the bare command any CI or collaborator will reach for first fails hard.",
+      "cite": "PASTED OUTPUT (ran 2026-09-16, repo copy at .build-clean): swift test -> '[54/61] ... BrowserScriptingTests.swift:2:8: error: no such module Testing ... error: fatalError' repeated for all 6 test files; then scripts/test.sh -> 'Test run with 37 tests in 7 suites passed after 0.121 seconds.' Package.swift:15-19 (.testTarget has no swiftSettings/linkerSettings); Package.swift:2 comment; scripts/test.sh:11-17 (flag injection); README.md:43 documents ./scripts/test.sh",
+      "evidence": "swift test 2>&1 | tail: 6x 'error: no such module Testing'; scripts/test.sh run: 37/37 pass. Toolchain: Apple Swift 6.3.3, xcode-select -p = /Library/Developer/CommandLineTools, /Library/Developer/CommandLineTools/Library/Developer/Frameworks contains Testing.framework.",
+      "severity": "minor",
+      "rule_targeted": "test-runnability: the conventional entrypoint must not silently 0-out the suite",
+      "proposed_change": "Encode the CLT flag injection in Package.swift so plain `swift test` works: add to the .testTarget linkerSettings/swiftSettings the -F and -rpath flags for the CommandLineTools Frameworks path (accept .unsafeFlags trade-off in a non-published package), or at minimum add a Package.swift comment + README:43 cross-reference stating that bare `swift test` does NOT work with CLT-only installs and scripts/test.sh is required.",
+      "is_deletion": false,
+      "word_delta": 40
+    },
+    {
+      "id": "T2",
+      "claim": "10 of the app's 12 service/utility source files have ZERO test references: HotkeyService, AutoClicker, MacroPlayer, EventSynthesizer, RunSession, WorkerThread, MacroRecorder, MacroFiles, Persistence, KeyPresser. A grep for these names across Tests/ returns no matches. The user-facing guarantees of the app — replay stops when told, keys/buttons never left stuck down, autosave round-trips — rest on code with no executable safety net.",
+      "cite": "PASTED OUTPUT: `grep -rln 'HotkeyService|AutoClicker|MacroPlayer|EventSynthesizer|RunSession|WorkerThread|MacroRecorder|MacroFiles|Persistence|KeyPresser' Tests/` -> EXIT:1 (no matches). File inventory: find Tests -name '*.swift' -> 6 files covering only RecordingCleaner, KeyStrokeParser, Macro schema, TickSchedule, KeyCodes, WebClickScript, BrowserScripting.",
+      "evidence": "grep exit 1; test.sh run shows 37 tests in 7 suites, none touching the 10 files above.",
+      "severity": "expensive",
+      "rule_targeted": "coverage floor for behavior-bearing code",
+      "proposed_change": "Add three suites in priority order: (1) MacroPlayerPlanTests — extract MacroPlayer.play's loop into an internal, injectable static (worker + event-post closures) and test stop conditions (T3); (2) AutoClickerLoopTests — same extraction for clickLoop's maxClicks/maxDuration guards (T4); (3) PersistenceTests — round-trip PlaybackSettings/FeatureSettings through Persistence.save/load with a temp directory. HotkeyService/EventSynthesizer are CGEventSource-bound; leave them to integration but note it in README's 'tests cover' list (README.md:46-54) so the claim stays honest.",
+      "is_deletion": false,
+      "word_delta": 90
+    },
+    {
+      "id": "T3",
+      "claim": "MacroPlayer's replay loop (the app's highest-risk loop: it posts synthetic input) has zero tests and is structurally untestable: `play` is a private static coupled directly to EventSynthesizer and DispatchTime. Untested stop conditions: repeats bound at line 71, mid-pass cancel via worker.sleep returning false (line 79 break playback), held-key/button release on every exit path via defer (line 75), and the zero-length-macro breather guard (lines 91-92) whose failure mode is a CPU spin.",
+      "cite": "Sources/MacroMaker/Services/MacroPlayer.swift:71 ('playback: while plan.repeats.map({ progress.iteration < $0 }) ?? true'), :75 ('defer { release(keys: heldKeys, buttons: heldButtons) }'), :79 ('guard worker.sleep(untilUptime: due) else { break playback }'), :91-92 (breather comment + sleep), :66 ('nonisolated private static func play'). grep Tests/ for 'MacroPlayer' -> no matches (exit 1).",
+      "evidence": "Read full MacroPlayer.swift (123 lines): stop-condition logic at lines 71-92 depends on WorkerThread + DispatchTime.now + EventSynthesizer with no seams.",
+      "severity": "expensive",
+      "rule_targeted": "red-first coverage of stop conditions on an input-synthesizing loop",
+      "proposed_change": "Extract the loop: `nonisolated static func runLoop(events:[MacroEvent], repeats:Int?, speed:Double, worker:WorkerThread, post:(MacroEvent, inout HeldState)->Void, clock:(@Sendable ()->UInt64)->`-style injection (post + now closures default to EventSynthesizer/DispatchTime in production). Then add MacroPlayerLoopTests: (a) repeats=3 with zero-length events terminates in 3 iterations; (a2) repeats=nil runs until worker.cancel(); (b) cancel mid-pass still releases every held key/button (assert post received keyUp/up for all downs); (c) zero-length macro with repeats=nil does not busy-loop when cancelled (bounded iteration count under a fake now that doesn't advance).",
+      "is_deletion": false,
+      "word_delta": 110
+    },
+    {
+      "id": "T4",
+      "claim": "AutoClicker's clickLoop stop conditions are equally untested: maxClicks break at line 85, time-limit end computed at line 76 (`maxDuration.map { start + ... } ?? .max`), the sleep clamp `min(deadline, end)` at line 93 (untested: ensures a late deadline cannot blow past the time limit), and the final report(count, true) that the UI's 'stopped by itself' path depends on.",
+      "cite": "Sources/MacroMaker/Services/AutoClicker.swift:76 ('let end = plan.maxDuration.map { start + UInt64($0 * 1_000_000_000) } ?? .max'), :82 ('while !worker.isCancelled, DispatchTime.now().uptimeNanoseconds < end'), :85 ('if let maxClicks = plan.maxClicks, count >= maxClicks { break }'), :93 ('guard worker.sleep(untilUptime: min(deadline, end)) else { break }'). grep Tests/ for 'AutoClicker' -> no matches (exit 1).",
+      "evidence": "Read AutoClicker.swift:73-95; TickSchedule (its timing core) IS tested (TimingAndKeyCodeTests.swift:5-24) but the loop that consumes it is not.",
+      "evidence_note": "maxClicks=1 break-before-report ordering: break at :85 happens AFTER count += 1 but BEFORE report(count,false) at :89 — the progress UI never sees intermediate counts for a 1-click run; only report(count,true) at :95 fires. Pin that in a test so a refactor doesn't break the stop-after-N-clicks UI flow.",
+      "severity": "expensive",
+      "rule_targeted": "stop-condition coverage parity with TickSchedule's existing tests",
+      "proposed_change": "Apply the same extraction pattern as T3 to clickLoop (inject click + now + sleep seams) and add AutoClickerLoopTests: (a) maxClicks=5 stops with count==5 and exactly one finished report; (b) maxDuration respected — with a fake now advancing past end, loop exits without an extra click; (c) deadline clamp: fake now where nextDeadline returns a value past `end` asserts sleep received min(deadline, end).",
+      "is_deletion": false,
+      "word_delta": 100
+    },
+    {
+      "id": "T5",
+      "claim": "RecordingCleaner's trailing-artifact logic is asymmetric and the asymmetry is unpinned by any test: the while-loop strips trailing keyDowns still held at stop (line 30-32), but a trailing mouseDown (button still held when recording stopped) is KEPT. Replay then holds that button for the whole macro until MacroPlayer's defer-release (MacroPlayer.swift:75). Whether that's intended (drag start) or an artifact (same class as the keyDown case) is undocumented and untested — a refactor can flip it silently in either direction.",
+      "cite": "Sources/MacroMaker/Utilities/RecordingCleaner.swift:30 ('while let last = kept.last, case let .keyDown(code, _) = last.action, heldKeys.contains(code)') — no MouseButton branch exists; RecordingCleanerTests.swift has 4 tests (removesStartAndStopShortcutArtifacts, keepsHeldKeyThatIsNotAtTheEnd, dropsOrphanMouseUp, emptyAndStopOnlyRecordingsBecomeEmpty), none with a trailing mouseDown.",
+      "evidence": "Read full RecordingCleaner.swift (38 lines) + RecordingCleanerTests.swift (46 lines); grep confirms call site MacroRecorder.swift:64 is the only consumer.",
+      "severity": "minor",
+      "rule_targeted": "pin intended behavior of untested branch",
+      "proposed_change": "Add RecordingCleanerTests test: `trailingMouseDownIsHandled` — clean([keyDown(A), keyUp(A), mouseDown(.left, p, 1)]) and #expect the intended outcome. If keep is intended (drag), assert count==3 with a doc comment explaining the player's defer-release makes it safe; if strip is intended, extend the line-30 loop to also match mouseDown on heldButtons. One test, one decision recorded.",
+      "is_deletion": false,
+      "word_delta": 70
+    },
+    {
+      "id": "T6",
+      "claim": "The schema round-trip test's sample is too thin to guard the format it pins: MacroFileTests.roundTrip (line 17-19) omits (a) empty events — `Macro(jsonData:)` round-trip of an empty macro and the `duration == 0` edge, and (b) the drag shape — mouseUp at a different point than mouseDown, which is the exact input that drives MacroPlayer's drag branch (post() compares heldButtons downPoint != point, MacroPlayer.swift:108-111). rejectsOtherFormatsAndNewerVersions does cover negative coordinates and missing-flags defaults, so only these two shapes are holes.",
+      "cite": "Tests/MacroMakerTests/MacroFileTests.swift:6-13 (sample events: mouseDown left double-click, mouseUp right at negative point, keyDown repeat, keyUp — no drag, no empty), :17-19 (roundTrip), Sources/MacroMaker/Services/MacroPlayer.swift:108-111 (drag branch keyed on downPoint != point), Sources/MacroMaker/Models/Macro.swift:26 ('var duration: TimeInterval { events.last?.time ?? 0 }').",
+      "evidence": "Read full MacroFileTests.swift (48 lines): 3 tests, sample has 4 events, none a drag, none empty.",
+      "severity": "minor",
+      "rule_targeted": "format round-trip completeness",
+      "proposed_change": "Extend roundTrip's sample with a drag event pair (mouseDown at (10,10), mouseUp at (50,60), same button) and add one assertion test: round-trip of Macro(name:, createdAt:, events: []) succeeds, events.isEmpty, duration == 0. Keeps the version-1 pin honest as event shapes grow.",
+      "is_deletion": false,
+      "word_delta": 60
+    }
+  ]
+}

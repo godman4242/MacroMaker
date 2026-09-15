@@ -1,0 +1,51 @@
+{
+  "integrity": "Findings limited to permissions & lifecycle UX. Every cite is a file:line read directly from the repo this session; no cite, no finding.",
+  "wrote_to": "/Users/kheshav/Projects/macro-maker/docs/review/permissions.json",
+  "summary": "Core permission flow is solid: launch-time AXIsProcessTrusted check with 1.5s polling (PermissionService.swift:18,29-31), pre-start ensureAccessibility() gating on every synthetic-event feature (AutoClicker.swift:49, KeyPresser.swift:52, MacroPlayer.swift:43), kAXTrustedCheckOptionPrompt prompting (PermissionService.swift:51-54), correct Privacy_Accessibility/Privacy_ListenEvent deep links (PermissionService.swift:7-14), and defer-based release of held keys/buttons on stop (KeyPresser.swift:115-118, MacroPlayer.swift:75,122-128) with WorkerThread.cancelAndWait before termination (AppDelegate.swift:10-13, WorkerThread.swift:41-43). Hotkeys use Carbon RegisterEventHotKey (no permission needed) with conflict tracking (HotkeyService.swift:82-90). Gaps are all minor UX: Input Monitoring is tracked but never pre-flighted before recording, no launch-at-login option, permission revocation mid-run only updates the banner and never stops a running session, and hotkey conflict state goes stale until the user touches settings.",
+  "findings": [
+    {
+      "id": "PM-1",
+      "claim": "Input Monitoring is pre-flighted only after recording already fails; the tracked canMonitorInput state is never consulted before a record attempt, and no banner exists for it (PermissionBanner covers Accessibility only). A user who grants Accessibility but not Input Monitoring sees zero blocking UI until tapCreate fails inside the Recorder tab.",
+      "cite": "Sources/MacroMaker/Services/PermissionService.swift:20 + Sources/MacroMaker/Services/MacroRecorder.swift:27-33 + Sources/MacroMaker/Views/Components/PermissionBanner.swift:3-15 + grep: canMonitorInput consumed only by SettingsView.swift:40 (ran: grep -rn canMonitorInput Sources)",
+      "evidence": "PermissionService.swift:20 declares 'canMonitorInput = CGPreflightListenEventAccess()' but grep shows its only consumers are SettingsView.swift:40 and the setter. MacroRecorder.start() only calls CGRequestListenEventAccess() at line 31 AFTER tapCreate fails at line 27. PermissionBanner.swift:13 states 'Macro Maker needs Accessibility access' with no Input Monitoring equivalent; RecorderView.swift shows the tap-failure message only in the Recorder tab.",
+      "severity": "minor",
+      "rule_targeted": "permissions.detect-before-first-record",
+      "proposed_change": "In AppModel.toggleRecording() (AppModel.swift:89-98) and in RecorderView's record button, check permissions.canMonitorInput first; when false, prompt via requestInputMonitoring(), open(.inputMonitoring), and surface the same inline error before attempting tapCreate. Optionally render an Input Monitoring variant of PermissionBanner when canMonitorInput is false and the recorder tab is selected.",
+      "is_deletion": false,
+      "word_delta": "+~15 lines net"
+    },
+    {
+      "id": "PM-2",
+      "claim": "A menu-bar-only utility (LSUIElement=true) has no launch-at-login option: no SMAppService (or legacy launch-at-login) call exists anywhere in Sources, Support, or scripts; the Settings General section only offers a Dock-icon toggle.",
+      "cite": "Support/Info.plist:29-30 + grep ran: 'grep -rn SMAppService|LaunchAtLogin|loginItem Sources scripts Support' returned zero matches; Sources/MacroMaker/Views/SettingsView.swift:9-15 (General section contains only the Dock toggle)",
+      "evidence": "grep output was empty for SMAppService / LaunchAtLogin / loginItem across Sources/, Support/, scripts/. SettingsView.swift:10 shows the only General setting is showDockIcon. The app targets macOS 14 (Info.plist:27-28) where SMAppService.mainApp.register() is the standard API.",
+      "severity": "minor",
+      "rule_targeted": "lifecycle.launch-at-login",
+      "proposed_change": "Add a 'Start at Login' toggle in SettingsView General backed by SMAppService.mainApp (register/unregister), surfacing the thrown error as a StatusMessage on failure. ~20 lines.",
+      "is_deletion": false,
+      "word_delta": "+~20 lines net"
+    },
+    {
+      "id": "PM-3",
+      "claim": "Permission REVOKED mid-run is detected but not acted on: PermissionService.refresh() only mutates observable booleans; nothing watches isAccessibilityTrusted to stop an active session, and the worker loops (clickLoop, autoPressLoop, holdLoop, play) contain no permission re-check, so a revoked run keeps reporting green 'Running' to the user while synthetic posts fail silently.",
+      "cite": "Sources/MacroMaker/Services/PermissionService.swift:34-39 + grep ran: 'grep -rn isAccessibilityTrusted Sources' (only consumers are SettingsView:35, MenuBarView:20, ContentView:9 - all UI, none call stopAll) + Sources/MacroMaker/Services/AutoClicker.swift:73-97 (clickLoop has no permission check) + Sources/MacroMaker/Services/EventSynthesizer.swift:16-22 (postMouse silently returns on CGEvent init failure, line 18-19)",
+      "evidence": "PermissionService.swift:34-39: refresh() sets two booleans and nothing else; onPermissionMissing (line 24) fires only from ensureAccessibility on a new start, never on revocation. The poll timer at lines 29-31 is the only detection mechanism. EventSynthesizer.postMouse line 18: 'guard let event = CGEvent(...) else { return }' - failures are silent, no status is surfaced to a running feature.",
+      "severity": "minor",
+      "rule_targeted": "permissions.revoked-mid-run",
+      "proposed_change": "In PermissionService.refresh(), when isAccessibilityTrusted transitions true→false and AppModel.isAnythingActive, call stopAll() and surface a status message ('Accessibility was revoked; all runs stopped'). Requires a small transition hook (onChange-style callback from PermissionService to AppModel).",
+      "is_deletion": false,
+      "word_delta": "+~12 lines net"
+    },
+    {
+      "id": "PM-4",
+      "claim": "Hotkey conflict state goes stale: registerAll() (the only place the unavailable set is computed) is called solely from activate/setCombo/restoreDefaults/resume, so if another app later releases the conflicting shortcut, Macro Maker never re-registers until the user touches a hotkey; and the conflict is surfaced only as a tooltip icon inside the Settings hotkey row, nowhere the user actually starts a feature.",
+      "cite": "Sources/MacroMaker/Services/HotkeyService.swift:74-91 (registerAll: failed set computed at 84-89) + call sites: HotkeyService.swift:31-34,45,51,63 + Sources/MacroMaker/Views/Components/HotkeyField.swift:14-18 (only UI consumer, a .help tooltip)",
+      "evidence": "registerAll() body: unavailable is only reassigned at HotkeyService.swift:90 ('if failed != unavailable { unavailable = failed }') and registerAll is invoked from activate(), setCombo(), restoreDefaults(), resume() - grep for 'registerAll' shows no other call sites and no timer. HotkeyField.swift:17 help text is the sole surfacing.",
+      "severity": "minor",
+      "rule_targeted": "hotkey.conflict-refresh",
+      "proposed_change": "Cheap fix: piggyback on the existing 1.5s PermissionService poll (PermissionService.swift:29-31) or add a NSWorkspace DidActivateApplication observer that calls hotkeys' registerAll() when unavailable is non-empty. Optionally show the warning icon in MenuBarView FeatureRow next to 'No shortcut' for affected actions.",
+      "is_deletion": false,
+      "word_delta": "+~10 lines net"
+    }
+  ]
+}

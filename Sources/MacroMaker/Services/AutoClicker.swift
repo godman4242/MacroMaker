@@ -105,7 +105,7 @@ final class AutoClicker {
                 try? await Task.sleep(for: .seconds(1))
                 if Task.isCancelled { return }
             }
-            guard let self else { return }
+            guard let self, !Task.isCancelled else { return }
             let location = EventSynthesizer.cursorLocation
             var updated = settings
             updated.x = location.x.rounded()

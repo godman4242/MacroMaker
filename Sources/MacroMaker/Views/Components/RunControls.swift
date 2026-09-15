@@ -29,7 +29,8 @@ struct RunControls: View {
             HStack(spacing: 6) {
                 statusLine
                 Spacer()
-                if let shortcut = model.hotkeys.label(for: hotkey) {
+                // Idle countdown status already names the shortcut; avoid printing it twice.
+                if let shortcut = model.hotkeys.label(for: hotkey), !(usesCountdown && session.phase == .idle) {
                     Text("Shortcut \(shortcut)").monospacedDigit()
                 }
             }

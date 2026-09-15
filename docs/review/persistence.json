@@ -1,0 +1,74 @@
+{
+  "integrity": "ARCH-A",
+  "wrote_to": "/Users/kheshav/Projects/macro-maker/docs/review/persistence.json",
+  "summary": "Persistence layer is fundamentally sound: versioned file format with format+version gate (newer-version files throw, never crash — proven by bench run), .atomic writes on every file save (MacroFiles.swift:27,42), Application Support location with no sandbox conflict (entitlements app-sandbox=false), and a pinned v1 fixture test. 10k-event files: 1.65 MB JSON, encode 57ms / decode 35ms — no perf problem. Four real findings, all minor: (1) .iso8601 date strategy truncates sub-second createdAt, so save→load does NOT return an Equal macro — proven by bench (wholeEqual false for half-second epoch); the roundTrip test only passes because it happens to use an integral-epoch date, masking the broken invariant. (2) The hotkeys UserDefaults blob is all-or-nothing: Swift encodes [HotkeyAction: KeyCombo?] as a flat alternating array, and one unknown enum rawValue (case added then app downgraded, or case renamed) throws during decode, Persistence.load's try? returns nil, and ALL custom hotkeys silently reset to defaults — proven by bench (DecodingError on 'futureAction'). Settings structs have no schema version either. (3) Persistence.load/save swallow every error silently — corrupt settings are indistinguishable from first launch. (4) Decode validates nothing: negative/unsorted event times decode fine and duration reports -2.0 to the UI. Exact v1 schema field list captured below for docs/MACRO_SCHEMA.md. Nothing rises to expensive or kills-project.",
+  "findings": [
+    {
+      "id": "P1",
+      "claim": "createdAt loses sub-second precision on every save→load round trip, so Macro Codable+Equatable round-trip identity is broken and the suite's roundTrip test masks it by using an integral epoch.",
+      "cite": "Sources/MacroMaker/Models/Macro.swift:65 (encoder.dateEncodingStrategy = .iso8601) and :71 (decoder mirror); default init at :32 (createdAt: Date() — always sub-second); test at Tests/MacroMakerTests/MacroFileTests.swift:8 uses Date(timeIntervalSince1970: 1_789_000_000) — integral, so truncation is invisible to it.",
+      "evidence": "Pasted bench output (sources copied verbatim from Models/, compiled -O, run on macOS arm64): 'iso8601DateEncoding: \"2026-09-10T00:26:40Z\"' then 'subSecondSurvived: false delta_ms: -123.45600128173828'. Round-trip isolation run: 'integral: eventsEqual true createdAtEqual true wholeEqual true' vs 'halfSecond: eventsEqual true createdAtEqual false wholeEqual false' — events survive exactly (TimeInterval doubles), only createdAt truncates.",
+      "severity": "minor",
+      "rule_targeted": "ARCH-A / forward-compat: save→load must return what was saved; Equatable round-trip invariant is silently violated for every real macro (Date() default always has sub-second precision).",
+      "proposed_change": "Encode dates losslessly: either ISO8601DateFormatter with .withFractionalSeconds via .custom strategies on both encoder and decoder in jsonData()/init(jsonData:), or switch the wire format to createdAt as Double timeIntervalSince1970 (bump version to 2 with a v1 fallback decode path). Add a test with a sub-second createdAt asserting whole-macro equality after round trip.",
+      "is_deletion": false,
+      "word_delta": "+8 (one test, two strategy lines)"
+    },
+    {
+      "id": "P2",
+      "claim": "The hotkeys settings blob is all-or-nothing: one unknown HotkeyAction rawValue throws during decode, Persistence.load's try? returns nil, and every customized hotkey silently resets to defaults. Settings structs carry no schema version, so any enum case add/rename across app versions destroys user hotkey config on downgrade/upgrade.",
+      "cite": "Sources/MacroMaker/Services/HotkeyService.swift:22 (Persistence.load([HotkeyAction: KeyCombo?].self, ...) ?? [:]) and :71 (save overwrites blob with current combos); Sources/MacroMaker/Utilities/Persistence.swift:7 (return try? JSONDecoder()...); no version field anywhere in FeatureSettings.swift / HotkeyAction.swift.",
+      "evidence": "Pasted bench output (verbatim enum/struct semantics): encoding [HotkeyAction: KeyCombo?] yields flat array form '[\"toggleAutoClicker\",null,\"toggleKeyPresser\",{\"keyCode\":5}]'; decoding that form with an unknown key throws — 'THROWS on unknown action in array form: DecodingError / detail: DecodingError.dataCorrupted: Data was corrupted. Path: [2]. Debug description: Cannot initialize HotkeyAction from invalid String value futureAction'. Dictionary-form blob also throws entirely ('Expected to decode Array<Any> but found a dictionary instead').",
+      "severity": "minor",
+      "rule_targeted": "Schema versioning / migration strategy: settings persistence has no version field and no tolerant decode — enum-rawValue-keyed storage breaks on case churn with total silent data loss.",
+      "proposed_change": "Decode hotkeys tolerantly: persist as [String: KeyCombo?] or decode [String: KeyCombo?] then compactMap into valid HotkeyActions, dropping unknown keys instead of failing the whole blob. Optionally prefix settings payloads with a version field for future migration. Then downgrade keeps all still-valid customizations.",
+      "is_deletion": false,
+      "word_delta": "+12 (one tolerant decode helper)"
+    },
+    {
+      "id": "P2-note-atomic-ok",
+      "claim": "SKIPPED AS NON-FINDING: atomic writes are already correct.",
+      "cite": "Sources/MacroMaker/Services/MacroFiles.swift:27 (try? macro.jsonData().write(to: url, options: .atomic)) and :42 (saveWithPanel also .atomic).",
+      "evidence": "Both file write sites use .atomic (write-to-temp-then-rename); autosave removes via try? removeItem. No plain writes exist (grep for write(to: across Sources returns only these two).",
+      "severity": "minor",
+      "rule_targeted": "n/a — positive verification, not a defect; recorded so MACRO_SCHEMA.md can state power-loss safety.",
+      "proposed_change": "None.",
+      "is_deletion": false,
+      "word_delta": "0"
+    },
+    {
+      "id": "P3",
+      "claim": "Persistence.load and Persistence.save swallow every error: a corrupt settings blob is indistinguishable from first launch, with no log, and encode failures silently skip the save.",
+      "cite": "Sources/MacroMaker/Utilities/Persistence.swift:6-7 (guard let data ... return try? JSONDecoder().decode) and :11 (guard let data = try? JSONEncoder().encode(value) else { return }).",
+      "evidence": "Direct read of the 14-line file; all five call sites (AutoClicker.swift:8, KeyPresser.swift:7, WebClicker.swift:17, MacroPlayer.swift:13, HotkeyService.swift:22) inherit the silent-fallback behavior — no logging anywhere in Persistence.swift.",
+      "severity": "minor",
+      "rule_targeted": "Fail-visible persistence: corrupt settings should be observable (log + optionally surface 'settings were reset'), not silently reset.",
+      "proposed_change": "On decode failure, log the key and error via Logger(subsystem: category:) before returning nil; on encode failure, log too. ~4 lines, no behavior change otherwise.",
+      "is_deletion": false,
+      "word_delta": "+4"
+    },
+    {
+      "id": "P4",
+      "claim": "Macro decode validates nothing about event times: negative and out-of-order times decode fine, and duration (events.last?.time) then reports garbage to the UI.",
+      "cite": "Sources/MacroMaker/Models/Macro.swift:26 (var duration: TimeInterval { events.last?.time ?? 0 }) and :114-133 (init(from:) decodes times with no ordering/non-negativity check); UI consumer Sources/MacroMaker/Views/RecorderView.swift:65 renders macro.duration directly.",
+      "evidence": "Pasted bench output (verbatim model sources): decoding a file with events t=5.0 then t=-2.0 succeeds — 'negative-time events decode fine, duration: -2.0'. RecorderView would display '-2 s'.",
+      "severity": "minor",
+      "rule_targeted": "Decode-time validation: hand-edited or corrupted .macromaker files should fail loudly or be normalized, not produce negative durations.",
+      "proposed_change": "In Macro.init(from:), after decoding events, either throw dataCorrupted if any time < 0, or clamp/sort events by time. Prefer throw for hand-edited files (matches the existing strictness of the format/version gate at Macro.swift:41-47).",
+      "is_deletion": false,
+      "word_delta": "+6"
+    },
+    {
+      "id": "P5-evidence-schema",
+      "claim": "EXACT current v1 on-disk schema field list (evidence for docs/MACRO_SCHEMA.md), verified by decode probes — not copied from comments.",
+      "cite": "Sources/MacroMaker/Models/Macro.swift:28-30 (CodingKeys format, version, name, createdAt, events), :106-108 (MacroEvent CodingKeys t, type, button, x, y, clickCount, keyCode, repeat, flags), :110-112 (EventType mouseDown|mouseUp|keyDown|keyUp), :117/:123/:129 (flags/clickCount/repeat optional with defaults 0/1/false).",
+      "evidence": "Pasted bench outputs confirming behavior: unknown top-level and per-event fields are dropped on round trip ('unknownFieldDecodes: true', 'unknownFieldSurvivesRoundTrip: false') — safe today only because the version gate (Macro.swift:45-47) rejects version > 1 outright ('v99: throws -> DecodingError'); optional-field defaults proven by Tests/MacroMakerTests/MacroFileTests.swift:28 (keyUp without flags) + :38 ('missing flags default to 0'). Field list — top level: format:String(=\"macromaker\", required), version:Int(=1, required, must be <= current), name:String(required), createdAt:ISO8601-string(required), events:Array(required); per event: t:Double(required, seconds), type:String(enum, required), flags:UInt64(optional, default 0); mouse events add button:String(left|right|middle), x:Double, y:Double, clickCount:Int(optional, default 1); keyDown adds keyCode:UInt16, repeat:Bool(optional, default false); keyUp adds keyCode:UInt64. Encoding is [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]. UserDefaults settings inventory (no schema versions, all plaintext, nothing sensitive): 'autoClicker'→AutoClickerSettings, 'keyPresser'→KeyPresserSettings, 'webTarget'→WebTargetSettings, 'playback'→PlaybackSettings, 'hotkeys'→[HotkeyAction:KeyCombo?] as flat alternating array, 'showDockIcon'→Bool (AppModel.swift:11,28-30).",
+      "evidence_extra": "Unknown-field round-trip bench output pasted in P1 session log; hotkey array-form encode output pasted in P2 bench ('[\"toggleAutoClicker\",null,\"toggleKeyPresser\",{\"keyCode\":5}]').",
+      "severity": "minor",
+      "rule_targeted": "Documentation deliverable: exact schema for docs/MACRO_SCHEMA.md.",
+      "proposed_change": "Paste the field list above into docs/MACRO_SCHEMA.md verbatim.",
+      "is_deletion": false,
+      "word_delta": "+40 (doc file)"
+    }
+  ]
+}

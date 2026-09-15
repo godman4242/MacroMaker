@@ -1,0 +1,40 @@
+{
+  "integrity": "All cited file:line references were read in full this session (cat -n over every file named in the brief, plus RunSession.swift, WebClicker.swift, KeyCapture.swift, PermissionService.swift, RecordingCleaner.swift, Macro.swift, FeatureSettings.swift, NumberField.swift, AutoClickerView.swift, HotkeyField.swift, AppDelegate.swift). The one runtime claim (UInt64 conversion trap) was reproduced with a program I wrote and ran (/tmp/trapdemo.swift, output pasted below). No findings were padded; the start/stop-race, retain-cycle, event-tap-threading, and drift hunts came up clean and those negatives are stated in the summary.",
+  "wrote_to": "/Users/kheshav/Projects/macro-maker/docs/review/concurrency.json",
+  "summary": "The concurrency architecture is sound: all shared state is @MainActor @Observable, worker loops are nonisolated static functions taking Sendable snapshots (Plan, KeyStroke), progress hops to main via a FIFO main-queue trampoline (WorkerThread.swift:61-65), and the RunSession generation token correctly discards stale finish reports from old runs. Event-tap callbacks run on the main run loop (MacroRecorder.swift:35-36, 138-147), so the MainActor.assumeIsolated in the callback is correct, not a violation. WorkerThread's cancel/sleep semaphore design has no double-start or stop-during-run hole I could find; cancelAndWait cannot deadlock because worker bodies never block on the main thread. Recorder-vs-replay overlap is guarded on both sides (AppModel.swift:90, 102) and self-inflicted events are filtered by the eventSourceUserData tag (EventSynthesizer.swift:95, MacroRecorder.swift:134). Real findings: (1) a crash \u2014 MacroPlayer converts event times to UInt64 without clamping, so a .macromaker file with a negative t (the JSON format is documented as open, Macro.swift:6-16, and the decoder accepts any Double, Macro.swift:116) traps the process during playback \u2014 reproduced with exit 133; (2) RecordingCleaner trims trailing held keys but not trailing held mouse buttons, an asymmetry that lets a hotkey-stopped-during-drag recording end with a dangling mouseDown; (3) zero test coverage for the concurrency layer (RunSession, WorkerThread, all Services) \u2014 only pure math (TickSchedule, RecordingCleaner, parsers) is tested.",
+  "findings": [
+    {
+      "id": "CC-1",
+      "claim": "MacroPlayer.play traps (crashes the whole app) when replaying a macro whose JSON contains a negative event time, because `UInt64(event.time / plan.speed * 1_000_000_000)` is a fatal Double\u2192UInt64 conversion for negative values and nothing between file load and playback clamps `time`.",
+      "cite": "Sources/MacroMaker/Services/MacroPlayer.swift:79 (`let due = start + UInt64(event.time / plan.speed * 1_000_000_000)`); Sources/MacroMaker/Models/Macro.swift:116 (`time = try c.decode(TimeInterval.self, forKey: .time)` \u2014 no clamp); Sources/MacroMaker/Models/Macro.swift:6-16 (the .macromaker format is documented open JSON, and AppModel.openMacro(at:) accepts any URL). Repro output I ran: `swift /tmp/trapdemo.swift` with body `let t: TimeInterval = -0.5; let start: UInt64 = 1_000; print(\"about to trap:\", start + UInt64(t / 1.0 * 1_000_000_000))` \u2192 \"Fatal error: Double value cannot be converted to UInt64 because the result would be less than UInt64.min\", process exit 133 (Trace/BPT trap).",
+      "evidence": "The app's own recorder always emits monotonic non-negative times (MacroRecorder.swift:101-102, differences of DispatchTime.now()), so only externally produced or hand-edited files hit the path \u2014 but MacroMaker's file format is deliberately plain documented JSON that users can edit or generate with scripts, MacroFiles.read(from:) does no semantic validation, and one bad field turns a file open into a hard crash instead of the friendly DecodingError path (AppModel.swift:163-166 shows malformed files are otherwise handled gracefully).",
+      "severity": "expensive",
+      "rule_targeted": "correctness: never trap on untrusted input; fail closed with an error message instead",
+      "proposed_change": "Clamp at the conversion site: `let due = start &+ UInt64(max(0, event.time / plan.speed) * 1_000_000_000)`, or reject non-finite/negative times in MacroEvent.init(from:) so the existing \"It isn't a valid Macro Maker file.\" error path catches them.",
+      "is_deletion": false,
+      "word_delta": 6
+    },
+    {
+      "id": "CC-2",
+      "claim": "RecordingCleaner removes trailing keyDowns left held at stop but not trailing mouseDowns, so a recording stopped (via hotkey) while the user was mid-drag produces a macro whose last event is a dangling mouseDown; on playback the button is pressed and only released by MacroPlayer's pass-end defer (MacroPlayer.swift:75), leaving the saved file permanently unbalanced.",
+      "cite": "Sources/MacroMaker/Utilities/RecordingCleaner.swift:30-32 (`while let last = kept.last, case let .keyDown(code, _) = last.action, heldKeys.contains(code) { kept.removeLast() }` \u2014 no mouse-button analogue, despite heldButtons being tracked at lines 12/22-26); the reachable producer is MacroRecorder: stop-by-hotkey mid-drag records mouseDown but its mouseUp never comes because the \u2303\u2325R stop press is the last thing captured. Tests/MacroMakerTests/RecordingCleanerTests.swift:35-48 cover trailing keys implicitly via removesStartAndStopShortcutArtifacts and orphan mouseUp, but no trailing-held-mouseDown case exists.",
+      "evidence": "The asymmetry is directly visible in the code: heldKeys drives a trailing trim loop, heldButtons does not, even though both sets are maintained side by side. MacroPlayer.swift:75's own comment (\"nothing is left pressed\") shows the author intends replay to end clean \u2014 the cleaner just doesn't guarantee it for the mouse half.",
+      "severity": "minor",
+      "rule_targeted": "symmetry of input-pair invariants (down/up) in recorded data",
+      "proposed_change": "Extend the trailing trim to buttons: `while let last = kept.last, case let .mouseDown(button, _, _) = last.action, heldButtons.contains(button) { kept.removeLast() }` (loop while last is either a still-held keyDown or still-held mouseDown), plus a RecordingCleanerTests case for a trailing mouseDown.",
+      "is_deletion": false,
+      "word_delta": 14
+    },
+    {
+      "id": "CC-3",
+      "claim": "The entire concurrency layer has zero test coverage: RunSession's generation-token state machine (the core defense against stale-callback races), WorkerThread's cancel/wake semantics, and all five Services are untested; only pure utilities (TickSchedule, RecordingCleaner, parsers, file format) are exercised.",
+      "cite": "Grep I ran: `grep -rn \"RunSession|WorkerThread|MacroPlayer|AutoClicker|KeyPresser|WebClicker|AppModel|HotkeyService\" Tests/` \u2192 no matches, exit 1. `ls Tests/MacroMakerTests/` \u2192 exactly 6 files: BrowserScriptingTests.swift, KeyStrokeParserTests.swift, MacroFileTests.swift, RecordingCleanerTests.swift, TimingAndKeyCodeTests.swift, WebClickScriptTests.swift. TimingAndKeyCodeTests.swift:5-27 covers TickSchedule only; RecordingCleanerTests.swift covers only the cleaner.",
+      "evidence": "RunSession.swift:21-57 is the trickiest logic in the app (generation bump on start AND stop, finish token guard, countdown task cancellation between iterations at line 31) and is pure @MainActor logic with no CGEvent dependency \u2014 it is cheaply testable, and its regressions (e.g. a future edit that lets finish() accept a stale token) would be invisible to the current suite.",
+      "severity": "minor",
+      "rule_targeted": "test coverage for race-prone state machines",
+      "proposed_change": "Add RunSessionTests: idle\u2192countdown\u2192running transitions, stop during countdown cancels without invoking begin, a finish() from a stale token is ignored, and double-start is a no-op. All are synchronous @MainActor tests, no sleeps needed if countdown is bypassed via withCountdown: false.",
+      "is_deletion": false,
+      "word_delta": 30
+    }
+  ]
+}

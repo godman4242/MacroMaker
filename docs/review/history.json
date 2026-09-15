@@ -1,0 +1,40 @@
+{
+  "integrity": "verified-with-limits",
+  "wrote_to": "/Users/kheshav/Projects/macro-maker/docs/review/history.json",
+  "summary": "Repo is a single-commit v1.0 harness build (92289cc, 62 files, 5289 insertions) plus 2 uncommitted files. Delivery parity is complete: Package.swift and project.yml/pbxproj cover the same Sources+Tests; Support/ has Info.plist, MacroMaker.entitlements, AppIcon.icns; scripts/ has build-app.sh (universal lipo + codesign + plist drift guards), test.sh, make-icon.swift. No TODO/FIXME/XXX/HACK markers in Sources (grep exit=1). swift/swift-build is blocked by this reviewer sandbox, but the delivered build/Macro Maker.app binary is a verified 2-arch universal Mach-O (x86_64+arm64, built 2026-09-16 02:25). Of the two queued polish items: (1) duplicate shortcut label in the RunControls bottom bar is STILL PRESENT; (2) Safari wording in WebTargetView tips reads Copy selector/Selector Path and Copy XPath for Chrome/Safari respectively, which matches Safari Web Inspector menu naming as shipped — no verifiable defect found, so not filed. Uncommitted drift widens the auto-clicker interval floor to 0.1 ms, which the engine silently clamps back to 1 ms (TickSchedule.minimumDelay) with no UI feedback, and is not committed.",
+  "findings": [
+    {
+      "id": "F1",
+      "claim": "Queued polish item not delivered: the shortcut is shown twice simultaneously in the same RunControls bottom-bar row on every tab that uses the countdown (AutoClicker, KeyPresser) — statusLine prints \"Starts after 3 s — <shortcut> starts instantly\" while the HStack next to it unconditionally appends \"Shortcut <shortcut>\".",
+      "cite": "Sources/MacroMaker/Views/Components/RunControls.swift:30-33 (HStack: statusLine + Text(\"Shortcut \\(shortcut)\")) and :52-56 (idle case: Text(\"Starts after \\(RunSession.countdownSeconds) s — \\(shortcut) starts instantly\")); default usesCountdown=true at RunControls.swift:9; AutoClickerView.swift and KeyPresserView.swift pass no usesCountdown override (verified in full file reads), so both render the pair.",
+      "evidence": "grep -n on RunControls.swift returns: 30:statusLine, 33:Text(\"Shortcut \\(shortcut)\").monospacedDigit(), 56:Text(\"Starts after \\(RunSession.countdownSeconds) s — \\(shortcut) starts instantly\"). Only WebTargetView.swift:103 overrides usesCountdown: false.",
+      "severity": "minor",
+      "rule_targeted": "UI duplication / polish backlog (ARCH-A verified)",
+      "proposed_change": "In RunControls, suppress the trailing \"Shortcut <shortcut>\" Text when statusLine already renders the shortcut (i.e. when phase == .idle && usesCountdown && shortcut != nil), or drop the countdown-start-instantly phrasing to just the countdown text.",
+      "is_deletion": false,
+      "word_delta": -25
+    },
+    {
+      "id": "F2",
+      "claim": "Uncommitted drift on a single-commit repo: AutoClickerView.swift and NumberField.swift are modified but not in commit 92289cc, and the 02:25 build artifacts (build/Macro Maker.app, build/MacroMaker.zip) postdate the commit, so the repo tip does not correspond to the shipped binary.",
+      "cite": "git -C /Users/kheshav/Projects/macro-maker status --porcelain=v1 → \" M Sources/MacroMaker/Views/AutoClickerView.swift\", \" M Sources/MacroMaker/Views/Components/NumberField.swift\"; git diff shows intervalMs range 1...3_600_000 → 0.1...3_600_000 and fractionLength 0...2 → 0...3; stat on build/Macro Maker.app/Contents/MacOS/MacroMaker → Sep 16 02:25:17 2026 vs commit date Wed Sep 16 02:24:00 2026.",
+      "evidence": "git status/diff output captured in this review; HEAD:Sources/.../AutoClickerView.swift line 15 confirms committed range is 1...3_600_000 while working tree is 0.1...3_600_000.",
+      "severity": "minor",
+      "rule_targeted": "Repo hygiene / reproducibility (commit-or-revert policy)",
+      "proposed_change": "Either commit the two polish edits with a message describing the sub-1ms interval intent, or revert them; do not leave the shipped binary built from uncommitted source.",
+      "is_deletion": false,
+      "word_delta": 0
+    },
+    {
+      "id": "F3",
+      "claim": "The uncommitted interval-range widening (0.1 ms floor in the UI) is silently ignored by the engine: Plan clamps interval to TickSchedule.minimumDelay (0.001 s = 1 ms = max 1000 clicks/s), so a user who sets 0.1 ms gets 1 ms with no warning, and the footer rate text caps its displayed rate at 1000 clicks/s via max(intervalMs, 1), hiding the discrepancy.",
+      "cite": "Sources/MacroMaker/Views/AutoClickerView.swift:15 (range: 0.1...3_600_000, uncommitted) vs Sources/MacroMaker/Services/AutoClicker.swift:37 (interval = max(TickSchedule.minimumDelay, s.intervalMs / 1000)) and Sources/MacroMaker/Utilities/TickSchedule.swift:9 (minimumDelay = 0.001); AutoClickerView.swift:81 (perSecond = 1000 / max(settings.intervalMs, 1)).",
+      "evidence": "Plan init at AutoClicker.swift:37 clamps to TickSchedule.minimumDelay=0.001; TickSchedule.delay() also floors every tick at minimumDelay (TickSchedule.swift:14). UI floor 0.1 ms < engine floor 1 ms.",
+      "severity": "minor",
+      "rule_targeted": "UI/engine contract consistency",
+      "proposed_change": "Set the UI range floor to 1 ms (matching TickSchedule.minimumDelay) or surface a footer note when the entered interval is below the engine floor, e.g. \"clamped to 1 ms\".",
+      "is_deletion": false,
+      "word_delta": 0
+    }
+  ]
+}

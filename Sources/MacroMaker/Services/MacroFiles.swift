@@ -28,7 +28,14 @@ enum MacroFiles {
     }
 
     static func read(from url: URL) throws -> Macro {
-        try Macro(jsonData: Data(contentsOf: url))
+        // A real recording is tiny (10 min at 60 events/s is ~3 MB of JSON); a cap
+        // keeps a huge or slow file (network volume, Finder double-click) from being
+        // read wholesale on the main actor.
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard size <= 16_000_000 else {
+            throw DecodingError.dataCorrupted(DecodingError.Context(codingPath: [], debugDescription: "This file is too large to be a Macro Maker recording."))
+        }
+        return try Macro(jsonData: Data(contentsOf: url))
     }
 
     /// Shows a save panel. Returns the saved file's URL, or nil if the user cancelled.

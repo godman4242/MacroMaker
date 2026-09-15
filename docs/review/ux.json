@@ -1,0 +1,95 @@
+{
+  "integrity": "All findings cite verified file:line locations read from Sources/MacroMaker/Views/*, Views/Components/*, App/*, and supporting Services in this session. No fabricated citations; claims about macOS system behavior (TCC button wording) are labeled as assumptions in evidence.",
+  "wrote_to": "/Users/kheshav/Projects/macro-maker/docs/review/ux.json",
+  "summary": "UX review of all 7 views, 4 components, WindowCoordinator and AppModel (1,239 LOC read in full, plus supporting services MacroPlayer/HotkeyService/WebClicker/RunSession/PermissionService/EventSynthesizer/MacroFiles where UI behavior depended on them). The app is in good shape for a utility: real empty state (RecorderView.swift:115-120), permission banner, countdown UX, clamped number fields, and an in-app hotkey-conflict data path exist. The real gaps cluster around failure and undo: replay failures are completely silent, the hotkey-conflict warning is hover-only while dead shortcuts are still advertised as live, and the single Clear button destroys the only macro (and its autosave) with no confirmation. Also confirmed both queued polish items: the shortcut label appears three times on one tab screen, and the browser tips/wording mix Chrome/Safari regardless of the selected browser. Dark mode: no hardcoded light-only colors found (semantic .bar/.secondary/.orange.opacity used throughout) — no finding. First-run: empty state exists and is good — no finding.",
+  "findings": [
+    {
+      "id": "ux-01",
+      "claim": "Failures during macro replay are completely silent to the user: MacroPlayer has no error/status channel at all, and when the session finishes (normally or because events stopped working) the UI just reverts to the idle Start state with no message about what happened or that the run ended.",
+      "cite": "Sources/MacroMaker/Services/MacroPlayer.swift:66-95 (play loop reports only Progress, never errors); Sources/MacroMaker/Services/EventSynthesizer.swift:18-19 (postMouse/postKey 'guard let event ... else { return }' — a failed CGEvent creation, e.g. Accessibility revoked mid-run, silently no-ops); Sources/MacroMaker/Views/Components/RunControls.swift:64-73 (running status shows only green dot + timer + count; no slot for any error) and :52-61 (idle status shows only shortcut/detail — the 'macro finished' or 'it failed' outcome is never surfaced). Contrast: WebClicker does surface per-click errors in-tab (WebClicker.swift:125-137), but its run-stop reason is likewise invisible at the RunControls bar because WebTargetView renders statusView only in the 'Element to click' section (WebTargetView.swift:57-62), far above the pinned controls.",
+      "evidence": "Read MacroPlayer.swift in full: play() posts events and reports (progress, finished); there is no StatusMessage, no error field, no beep on mid-run failure. EventSynthesizer.postMouse/postKey both begin with 'guard let event = CGEvent(...) else { return }'. RunControls has no parameter for an error/warning message — its statusLine switch covers only idle/countdown/running. PASTED (WebClicker tick error path, WebClicker.swift:134-137): 'status = result.isElementMissing ? .warning(result.description) : .error(result.description) / return false' — the run then calls session.finish(token) (WebClicker.swift:82) and the RunControls bar returns to idle showing only 'Shortcut ⌃⌥W'.",
+      "severity": "expensive",
+      "rule_targeted": "Error surfacing: a run that stops itself must tell the user why, where the user is looking (the RunControls bar), not in a form section they may never scroll back to.",
+      "proposed_change": "Add an optional `outcome: String?` (or reuse a StatusMessage) to RunSession/RunControls: when a run ends itself via finish(token), the owning feature sets a last-outcome string (e.g. 'Stopped: element not found after 50 clicks', 'Stopped: macOS revoked Accessibility'); RunControls renders it in the idle statusLine until the next start. For MacroPlayer, at minimum detect the dead-worker case (all events posting after permission loss) — even a single 'Playback finished' line after a manual-duration run closes the largest silence.",
+      "is_deletion": false,
+      "word_delta": 60
+    },
+    {
+      "id": "ux-02",
+      "claim": "Hotkey conflict feedback is effectively invisible: the 'another app owns this shortcut' warning is a yellow triangle whose only text is a tooltip, the same dead shortcut is still advertised as working in the menu bar and under the Start button, and assigning a combo another in-app action already holds silently strips that other action's shortcut with no notice anywhere.",
+      "cite": "Sources/MacroMaker/Views/Components/HotkeyField.swift:14-17 (warning is Image(systemName: 'exclamationmark.triangle.fill') with text only in .help tooltip); Sources/MacroMaker/Views/Components/RunControls.swift:32-34 and Sources/MacroMaker/Views/MenuBarView.swift:33-61 (FeatureRow status + RunControls show 'Shortcut X' / status 'Shortcut \\($0)' — MenuBarView.swift:117 — with no check of model.hotkeys.unavailable); Sources/MacroMaker/Services/HotkeyService.swift:34-37 (setCombo: 'for (other, existing) in combos where other != action && existing == combo { combos[other] = nil }' — documented 'that action loses it', i.e. silent steal).",
+      "evidence": "HotkeyService.registerAll (lines 77-91) inserts refused registrations into `unavailable`, and HotkeyField is the ONLY consumer — grep for 'unavailable' across Sources/MacroMaker returns exactly three hits (declaration, HotkeyField check, mutation). MenuBarView FeatureRow's status computed property (lines 115-121) prints 'Shortcut \\($0)' from label(for:) unconditionally — label(for:) (HotkeyService.swift:65-67) reads combos only, so a shortcut that macOS refused still renders as live in the menu bar and in every tab's RunControls bar. The in-app steal path (setCombo clearing the other action) produces no message, no beep, no visual cue on the victim's HotkeyField beyond the label changing to 'None'.",
+      "severity": "expensive",
+      "rule_targeted": "Silent failure is the worst failure mode for settings: a shortcut the user believes is armed but which fires nothing (or whose assignment destroyed another feature's shortcut) must be stated in visible text.",
+      "proposed_change": "Three small changes: (1) replace the tooltip-only triangle with a visible StatusMessage(kind: .warning) under the HotkeyField row in SettingsView when unavailable.contains(action); (2) in RunControls/FeatureRow, when the action is unavailable show 'Shortcut ⌃⌥C (unavailable)' instead of the bare label; (3) on setCombo steal, return the displaced action's name ('⌃⌥R was reassigned from Start/stop recording') so the UI can toast/status it.",
+      "is_deletion": false,
+      "word_delta": 80
+    },
+    {
+      "id": "ux-03",
+      "claim": "The trash button destroys the user's only macro — including the on-disk autosave that exists precisely to survive quits — with zero confirmation, zero undo, and an icon-only button whose label exists only as a tooltip.",
+      "cite": "Sources/MacroMaker/Views/RecorderView.swift:36-42 (Button(role: .destructive) { model.clearMacro() } with Image(systemName: \"trash\") and .help only — no .confirmationDialog, no .alert); Sources/MacroMaker/App/AppModel.swift:139-143 (clearMacro sets macro = nil AND calls MacroFiles.autosave(nil)); Sources/MacroMaker/Services/MacroFiles.swift:20-24 (autosave(nil) executes removeItem(at: url) — the 'Last Recording' file is deleted, so the data is unrecoverable).",
+      "evidence": "MacroFiles.swift:9 comment states the autosave's purpose: 'The last recording survives quitting the app.' clearMacro bypasses that guarantee in one click. PASTED (RecorderView trash button, lines 36-42): 'Button(role: .destructive) { model.clearMacro() } label: { Image(systemName: \"trash\") } .help(\"Clear this macro\")' — role:.destructive only styles it red on macOS; it does not confirm. No confirmationDialog/alert/undoManager call exists anywhere in RecorderView.swift or AppModel.swift (grep for confirm/dialog/undo: zero hits in Views/).",
+      "severity": "expensive",
+      "rule_targeted": "Irreversible destruction of the user's work (the only macro, plus its autosave) requires a confirmation step; destructive icon-only buttons must also carry real labels for accessibility.",
+      "proposed_change": "Attach .confirmationDialog(\"Clear this macro?\", isPresented:) with 'This removes the current macro and its autosave. Saved .macromaker files are not touched.' + Clear (destructive) / Cancel. Optionally register with NSUndoManager. Combine with the accessibilityLabel from finding ux-06 (same button).",
+      "is_deletion": false,
+      "word_delta": 40
+    },
+    {
+      "id": "ux-04",
+      "claim": "QUEUED POLISH ITEM CONFIRMED — duplicate shortcut label: on each feature tab the same shortcut string is rendered three times on one screen — in the Shortcut section, in the RunControls bar's right-hand 'Shortcut ⌃⌥C' text, and again embedded inside the idle status line ('Starts after 3 s — ⌃⌥C starts instantly').",
+      "cite": "Sources/MacroMaker/Views/AutoClickerView.swift:62-66 (Section(\"Shortcut\") with LabeledContent(\"Start / stop clicking\") { HotkeyField }); Sources/MacroMaker/Views/Components/RunControls.swift:32-34 (right side: Text(\"Shortcut \\(shortcut)\")); RunControls.swift:55-56 (idle statusLine: Text(\"Starts after \\(RunSession.countdownSeconds) s — \\(shortcut) starts instantly\")) — same pattern repeats on all four tabs (KeyPresserView.swift:72-76, WebTargetView.swift:74-78, RecorderView.swift:77-81).",
+      "evidence": "PASTED (RunControls.swift:29-37): 'HStack(spacing: 6) { statusLine; Spacer(); if let shortcut = model.hotkeys.label(for: hotkey) { Text(\"Shortcut \\(shortcut)\") ...' — in the idle phase with usesCountdown=true, statusLine itself already interpolates the same shortcut (line 55-56), so the user reads 'Starts after 3 s — ⌃⌥C starts instantly    Shortcut ⌃⌥C' on one line. Add the Section above the form and the same combo appears 3× per screen.",
+      "severity": "minor",
+      "rule_targeted": "Redundant chrome wastes reading time and dilutes the one piece of information the user actually needs on that screen.",
+      "proposed_change": "Delete the right-hand 'Shortcut X' Text in RunControls.swift:32-34 — the idle statusLine already carries it (55-56), the Section carries the editable field, and the menu bar carries it per-row. Net: −1 UI element, −2 words per screen, no information lost.",
+      "is_deletion": true,
+      "word_delta": -2
+    },
+    {
+      "id": "ux-05",
+      "claim": "QUEUED POLISH ITEM CONFIRMED — browser wording: the element-finding tips always name both Chrome and Safari regardless of which browser the user selected in the picker directly above, and the setup step tells users to 'Click Allow' on the macOS automation prompt, whose actual buttons are 'OK' / 'Don't Allow' (assumption: standard macOS TCC consent dialog wording).",
+      "cite": "Sources/MacroMaker/Views/WebTargetView.swift:128 ('Copy selector (Chrome) or Selector Path (Safari)') and :130 ('Copy XPath (Chrome) or XPath (Safari)') inside locatorTip(_:) — a free function of locatorKind only, never of web.settings.browser; WebTargetView.swift:87 ('macOS asks whether Macro Maker may control \\(web.settings.browser.displayName). Click Allow.'). The browser IS known at that point: the picker at WebTargetView.swift:12-15 binds web.settings.browser and line 80 already interpolates it ('One-time setup for \\(web.settings.browser.displayName)').",
+      "evidence": "PASTED (WebTargetView.swift:125-133): the whole locatorTip switch returns static strings containing both '(Chrome)' and '(Safari)'. Meanwhile the surrounding UI is browser-aware — Section header at line 80 is 'One-time setup for \\(web.settings.browser.displayName)'. So step 2 of setup says 'Macro Maker may control Safari' while the tip above says '…or Selector Path (Safari)' after '(Chrome)' — mixed-browser noise in a flow whose whole point is per-browser instructions. On 'Click Allow': the macOS automation consent alert presents 'OK' and 'Don't Allow' (long-standing TCC behavior; labeled assumption — not verifiable from repo code).",
+      "severity": "minor",
+      "rule_targeted": "Instructions that reference a system dialog must quote the button that actually exists, and per-browser tips should follow the selected browser.",
+      "proposed_change": "Make locatorTip take the Browser and emit only the relevant menu path (Safari: 'Copy Selector Path'; Chrome: 'Copy selector'), keeping the cross-browser mention at most in one shared footer if desired. Change 'Click Allow.' to 'Click OK.' (or 'approve the prompt') to match the real TCC buttons.",
+      "is_deletion": false,
+      "word_delta": -12
+    },
+    {
+      "id": "ux-06",
+      "claim": "Every icon-only button in the app provides its description only via .help, which maps to accessibilityHelp — VoiceOver announces these as bare 'button' elements; none has an accessibilityLabel, so non-sighted users cannot identify Trash, Settings gear, or the shortcut-clear X without pressing a 'read help' action on each.",
+      "cite": "Sources/MacroMaker/Views/RecorderView.swift:38-41 (trash icon button, .help(\"Clear this macro\"), no accessibilityLabel); Sources/MacroMaker/Views/MenuBarView.swift:74-79 (gearshape icon button, .help(\"Settings\"), no accessibilityLabel); Sources/MacroMaker/Views/Components/HotkeyField.swift:29-33 (xmark.circle.clear button, .help(\"Remove shortcut\"), no accessibilityLabel); Sources/MacroMaker/Views/Components/HotkeyField.swift:14-17 (warning triangle is not even a button but also tooltip-only). Repo-wide grep for 'accessibilityLabel' returns exactly one hit — the menu-bar icon at App/MacroMakerApp.swift:29.",
+      "evidence": "PASTED grep result over Sources/MacroMaker/Views: the only .help-bearing icon buttons are RecorderView.swift:41, MenuBarView.swift:79, HotkeyField.swift:17/25/33; the only accessibilityLabel in the whole app is MacroMakerApp.swift:29 ('Macro Maker (running)'). SwiftUI's .help() sets the accessibility hint, not the label — the label for an Image(systemName: \"trash\") button is derived from the symbol name, which VoiceOver reads inconsistently.",
+      "severity": "minor",
+      "rule_targeted": "Icon-only controls need .accessibilityLabel(…) so VoiceOver announces purpose, not an SF Symbol name; help text is not a substitute.",
+      "proposed_change": "Add .accessibilityLabel(\"Clear this macro\") / (\"Open Settings\") / (\"Remove shortcut\") alongside the existing .help on the three cited buttons; while there, give the warning triangle in HotkeyField.swift:14-17 .accessibilityLabel(\"Shortcut unavailable: another app owns it\") so the conflict state (ux-02) is at least announced.",
+      "is_deletion": false,
+      "word_delta": 4
+    },
+    {
+      "id": "ux-07",
+      "claim": "Stopping an accidental empty recording silently keeps the previous macro with no feedback — the code path returns before assigning anything, so the user who recorded 0 events sees the stale previous macro sitting there as if their just-completed recording was it.",
+      "cite": "Sources/MacroMaker/App/AppModel.swift:84-87 ('let events = recorder.stop(); guard !events.isEmpty else { return }; macro = Macro(name: \"Recording …\"' — the guard returns silently).",
+      "evidence": "PASTED (AppModel.swift:83-88): 'if recorder.isRecording { let events = recorder.stop(); // An empty recording … keeps the previous macro. guard !events.isEmpty else { return }; macro = Macro(...); MacroFiles.autosave(macro) }'. The comment shows the intent is deliberate, but the UI gives no signal: RecorderView's only feedback states are recorder.errorMessage (permission errors), model.fileError, and the isRecording info banner (RecorderView.swift:47-59) — none of which fires on this path. After Stop Recording the button flips back to 'Record' (RecorderView.swift:21-22) and the old macro + event table reappear unchanged; a user who recorded into the wrong window learns nothing.",
+      "severity": "minor",
+      "rule_targeted": "A user action that completes without producing its expected result must say so; 'nothing happened' is indistinguishable from 'it broke'.",
+      "proposed_change": "On the empty-recording path, surface a transient StatusMessage(kind: .warning, text: \"Recording was empty — nothing was captured. The previous macro is unchanged.\") in the recorder tab (e.g. a @State lastNotice in AppModel rendered beside fileError at RecorderView.swift:55-57), instead of a bare return.",
+      "is_deletion": false,
+      "word_delta": 18
+    },
+    {
+      "id": "ux-08",
+      "claim": "There is no macro list — the model holds exactly one macro slot, so 'management' is limited to one in-memory macro plus manual .macromaker files; rename exists (name TextField), delete is the destructive clear (ux-03), and duplicate does not exist. The Save… button is export-only: it never opens a folder or reveals where files went.",
+      "cite": "Sources/MacroMaker/App/AppModel.swift:23 ('var macro: Macro?' — single optional slot, commented 'The macro shown in the recorder tab'); Sources/MacroMaker/Views/RecorderView.swift:32-35 (the entire macro 'library' surface is Open… / Save… / trash — no list, no recents); Sources/MacroMaker/Services/MacroFiles.swift:10-13 (the only automatic storage is one autosave path 'Last Recording.<ext>', overwritten every session).",
+      "evidence": "AppModel declares exactly one Macro slot (line 23) and every mutation targets it (lines 87, 112-114, 123, 131, 141). After saveWithPanel (MacroFiles.swift:35-44) the saved URL is used only to rename the in-memory macro (AppModel.swift:113) — it is not remembered, so 'Open…' restarts from a cold NSOpenPanel every time (MacroFiles.swift:47-53, no recentDocuments handling, and no NSDocument-style recent list since the app is not document-based). For a tool whose core artifact is recorded macros, one slot means every new recording destroys the previous one unless the user manually exported it first.",
+      "severity": "minor",
+      "rule_targeted": "Macro list management: a recorder app needs at least a recents list (or document-model integration) so recordings accumulate instead of being clobbered.",
+      "proposed_change": "Cheapest fix that solves the actual pain: keep a 'Recents' menu (last ~10 opened/saved URLs, persisted like Persistence-based settings) under the Open… button in RecorderView.swift:32, or adopt NSDocument/recent-document APIs (NSWindow + NSDocumentController autosavesInPlace) so Finder/Recents integration comes free. Full macro library UI is a product decision — flag, don't build unilaterally.",
+      "is_deletion": false,
+      "word_delta": 25
+    }
+  ]
+}

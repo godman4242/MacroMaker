@@ -42,8 +42,8 @@ struct Macro: Codable, Equatable, Sendable {
             throw DecodingError.dataCorruptedError(forKey: .format, in: container, debugDescription: "Not a Macro Maker file.")
         }
         let version = try container.decode(Int.self, forKey: .version)
-        guard version <= Self.formatVersion else {
-            throw DecodingError.dataCorruptedError(forKey: .version, in: container, debugDescription: "This macro was saved by a newer version of Macro Maker.")
+        guard (1...Self.formatVersion).contains(version) else {
+            throw DecodingError.dataCorruptedError(forKey: .version, in: container, debugDescription: version > Self.formatVersion ? "This macro was saved by a newer version of Macro Maker." : "This macro's format version is not recognised.")
         }
         name = try container.decode(String.self, forKey: .name)
         createdAt = try container.decode(Date.self, forKey: .createdAt)

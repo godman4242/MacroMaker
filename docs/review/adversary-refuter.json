@@ -1,0 +1,95 @@
+{
+  "integrity": "Every finding cites a file:line verified by direct read at commit 92289cc (git log checked this session), or pasted grep/exec output shown in evidence. Candidate claims I could not cite were dropped, not softened.",
+  "wrote_to": "/Users/kheshav/Projects/macro-maker/docs/review/adversary-refuter.json",
+  "summary": "Stress-tested the five fix areas other lenses are most likely to propose. All five fail the ARCH-A gate as naive changes: (1) a structured-concurrency rewrite of WorkerThread loses the cancelAndWait release-before-return guarantee that MacroPlayer's held-key cleanup depends on; (2) an XCTest migration breaks the documented CLT-only test path in scripts/test.sh; (3) removing the 1.5s permission poll or throttling prompts breaks menu-bar-only operation and hotkey-started features; (4) strict macro-schema validation breaks the pinned v1 on-disk compatibility the decodeIfPresent defaults exist for; (5) schema-versioning machinery is premature at v1 (single version). Three small defects survived my own stress-test and are reported with rollback-sized fixes: silent autosave failure, a one-sided version gate, and a cancelled-pick race in AutoClicker.pickFixedPoint. Net: the only defensible changes to this commit are the minor fixes; everything else is a suggestion.",
+  "findings": [
+    {
+      "id": "ref-concurrency-rework",
+      "claim": "A structured-concurrency rewrite of WorkerThread/TickSchedule (Task/Task.sleep replacing Thread+semaphore) is a regression, not a fix: it destroys cancelAndWait's guarantee that held keys/buttons are released before Stop returns, and it cannot preserve the FIFO main-actor hop that keeps progress updates ordered before 'finished'.",
+      "cite": "Sources/MacroMaker/Utilities/WorkerThread.swift:38-44 ('cancelAndWait ... guarantees cleanup (releasing held keys) has happened before it returns'); Sources/MacroMaker/Services/MacroPlayer.swift:71-75 (defer { release(keys:heldButtons:) } runs when the worker body returns, i.e. inside cancelAndWait's wait); Sources/MacroMaker/Utilities/WorkerThread.swift:59-64 ('Hops to the main actor in FIFO order (unlike spawning a Task)'); Sources/MacroMaker/Services/EventSynthesizer.swift:25-30 (click() blocks the worker thread with Thread.sleep between down and up).",
+      "evidence": "PASTED: grep -rn 'WorkerThread.start' Sources -> AutoClicker.swift:61, KeyPresser.swift:72, MacroPlayer.swift:53 - all three call sites return '{ worker.cancelAndWait() }' as the session cancel closure and all three rely on the body's deferred release running before that call returns. Swift Tasks have no 'wait until cancelled work fully finished' primitive; replacing cancelAndWait with Task.cancel() makes session.stop() return before the worker's final EventSynthesizer posts, leaving keys/mouse buttons stuck down on quit (AppDelegate.swift:10-13 calls shutdown() -> stopAll() synchronously). At TickSchedule.minimumDelay = 0.001 (TickSchedule.swift:6) a per-click actor hop adds scheduler latency a semaphore wake does not have.",
+      "severity": "expensive",
+      "rule_targeted": "ARCH-A: proposed changes without a second-order consequence and a rollback plan are suggestions. This proposal's second-order consequence is stuck input state on stop/quit; no rollback plan can restore the blocking-cancel semantics without re-adding the semaphore.",
+      "proposed_change": "None. Keep WorkerThread as-is. If a reviewer insists, the only safe variant is adding tests around cancelAndWait ordering - which already exists implicitly via the three call sites.",
+      "is_deletion": false,
+      "word_delta": 0
+    },
+    {
+      "id": "ref-xctest-migration",
+      "claim": "Migrating the test suite from swift-testing to XCTest breaks the project's documented no-Xcode build path and buys nothing: zero XCTest usage exists today.",
+      "cite": "scripts/test.sh:2-9 ('With only the Command Line Tools installed (no Xcode), Swift Testing lives outside the default search paths, so point the compiler and loader at it' + the -F/-rpath workaround); Package.swift:2-4 ('lets you build and test Macro Maker with only the Command Line Tools (no Xcode)'); grep evidence below.",
+      "evidence": "PASTED OUTPUT: grep -rn 'XCTest' /Users/kheshav/Projects/macro-maker/Tests /Users/kheshav/Projects/macro-maker/Package.swift -> exit code 1, no matches. All six test files begin 'import Testing' (grep import across Tests/*.swift shows Testing in all 6, XCTest in 0). XCTest runtime libraries ship with Xcode, not CLT; migrating removes the ability to run `./scripts/test.sh` on a CLT-only machine, which Package.swift:2-4 names as a supported configuration.",
+      "severity": "expensive",
+      "rule_targeted": "ARCH-A: proposed changes without a second-order consequence and a rollback plan are suggestions.",
+      "proposed_change": "None. Keep swift-testing. A migration is only justified if CI infrastructure that cannot run swift-testing is introduced - at which point the migration plus its CI change go through the gate together.",
+      "is_deletion": false,
+      "word_delta": 0
+    },
+    {
+      "id": "ref-permission-flow-rework",
+      "claim": "Replacing the 1.5s permission poll with event-driven re-checks, and/or throttling ensureAccessibility's system prompt to 'once per session', both break real flows: macOS posts no notification when Accessibility/Input Monitoring is granted, and the app legitimately runs with zero windows.",
+      "cite": "Sources/MacroMaker/Services/PermissionService.swift:27-32 ('macOS doesn't notify apps when permissions change, so poll (cheap)'); PermissionService.swift:41-49 (ensureAccessibility -> requestAccessibility -> onPermissionMissing -> return false); PermissionService.swift:22-24 ('Called when a feature was blocked by a missing permission (e.g. started from a hotkey while the window is closed)'); Support/Info.plist:29-30 (LSUIElement true - menu-bar-only, may have no windows to focus); Sources/MacroMaker/Services/MacroRecorder.swift:30-33 (tapCreate failure path already re-prompts with CGRequestListenEventAccess).",
+      "evidence": "The polling timer (PermissionService.swift:29-31) is the only mechanism that flips the banner state after the user grants access in System Settings - for an LSUIElement app there is no window-did-become-key event to hook, because the granting happens in System Settings, not in this app. Throttling the AXIsProcessTrustedWithOptions(prompt:true) call (PermissionService.swift:51-54) would silently drop the prompt for a hotkey-started clicker while the window is closed: the beep + onPermissionMissing fallback assumes the prompt appeared. A naive 're-check only on window focus' fix leaves the banner stale indefinitely in the accessory (no-Dock) policy set by AppModel.applyActivationPolicy (AppModel.swift:152-154).",
+      "severity": "minor",
+      "rule_targeted": "ARCH-A second-order consequence gate: prompt-loop and latency regressions named in the review brief.",
+      "proposed_change": "None to the flow. Permissible micro-fix if the reviewer insists: skip timer ticks while all permissions are granted AND no feature has ever been blocked - but measured cost of the current poll is two C function calls per 1.5s; not worth new state.",
+      "is_deletion": false,
+      "word_delta": 0
+    },
+    {
+      "id": "ref-strict-macro-schema",
+      "claim": "Hardening macro file parsing by making all event fields required (dropping decodeIfPresent) breaks the pinned v1 file compatibility the decoder deliberately supports; and general 'schema versioning/migration machinery' is premature at formatVersion 1 with exactly one writer.",
+      "cite": "Sources/MacroMaker/Models/Macro.swift:117 (flags: decodeIfPresent ?? 0), Macro.swift:123 (clickCount: decodeIfPresent ?? 1), Macro.swift:129 (isRepeat: decodeIfPresent ?? false); Tests/MacroMakerTests/MacroFileTests.swift:21-22 ('Pins the on-disk format: files saved by version 1 must keep opening' / @Test func decodesVersionOneFile) with a sample that omits fields (MacroFileTests.swift:28); unknown 'type' strings already fail closed via the EventType decode (Macro.swift:110-118).",
+      "evidence": "The pinned v1 test file in MacroFileTests.swift:22-33 contains events with missing optional fields; making those keys required throws DecodingError on files the product explicitly promises keep opening (Macro.swift:5 'File format (version 1)'). The version gate already handles the forward case ('saved by a newer version' error, Macro.swift:45-47). The parser accepts no executable content: files decode to data-only MacroEvent values consumed by post() (MacroPlayer.swift:97-119); the only string that reaches an interpreter is the user's own selector passed through jsString (WebClickScript.swift:50-54), which is app input, not file input.",
+      "severity": "minor",
+      "rule_targeted": "ARCH-A second-order consequence gate: macro file compatibility named in the review brief.",
+      "proposed_change": "None for strictness. See finding def-version-gate-one-sided for the one-line version-gate fix that is actually defensible.",
+      "is_deletion": false,
+      "word_delta": 0
+    },
+    {
+      "id": "def-autosave-silent-failure",
+      "claim": "SURVIVES STRESS-TEST: every autosave and autosave-load error is swallowed with try?, so the promised 'last recording survives quitting the app' guarantee can silently fail (disk full, permissions, partially-written dir) and the user gets no signal - unlike the open path, which surfaces errors.",
+      "cite": "Sources/MacroMaker/Services/MacroFiles.swift:9 ('The last recording survives quitting the app.'); MacroFiles.swift:16-17 (loadAutosave: 'try? Data(contentsOf:)' then 'try? Macro(jsonData:)'); MacroFiles.swift:23 ('try? FileManager.default.removeItem'), MacroFiles.swift:26-27 ('try? ... createDirectory', 'try? macro.jsonData().write'); contrast Sources/MacroMaker/App/AppModel.swift:116-118 and AppModel.swift:124-126,132-134 (open/save paths set fileError).",
+      "evidence": "AppModel.shutdown (AppModel.swift:56-59) calls MacroFiles.autosave(macro) inside applicationWillTerminate (AppDelegate.swift:10-13); a throw is unusable there, but the write result is currently indistinguishable from success at every call site (AppModel.swift:88, 142, 149). Second-order check passes: surfacing does not change the file format, the shutdown timing, or any caller's contract - os_log + setting fileError on the next launch's load failure is additive.",
+      "severity": "minor",
+      "rule_targeted": "ARCH-A: this is the rare change that has both a consequence I can state (autosave remains best-effort on quit; errors are logged/surfaced, never fatal) and a rollback plan (revert the logging/flag; behavior identical to today).",
+      "proposed_change": "Log autosave failures with os.Logger (subsystem MacroMaker) and, in loadAutosave, distinguish 'no autosave' from 'autosave unreadable' so a corrupt Last Recording shows a fileError instead of a silently empty recorder tab. Keep best-effort semantics on quit.",
+      "is_deletion": false,
+      "word_delta": 12
+    },
+    {
+      "id": "def-version-gate-one-sided",
+      "claim": "SURVIVES STRESS-TEST: the format version gate only checks the upper bound, so version 0, negative versions, or any version <= 1 from a non-Macro-Maker writer pass the gate and decode with defaulted fields; a range check is the entire fix.",
+      "cite": "Sources/MacroMaker/Models/Macro.swift:44-47 ('let version = try container.decode(Int.self...) ; guard version <= Self.formatVersion else { throw ... }') - no lower bound; Macro.swift:20 (formatVersion = 1).",
+      "evidence": "A file with 'version': 0 or 'version': -5 is not a file any Macro Maker release wrote, yet it passes the check designed to reject foreign/newer files. This is also the honest rebuttal to the schema-versioning proposal: the current mechanism is fine for one version; it is one comparison short of correct.",
+      "severity": "minor",
+      "rule_targeted": "ARCH-A: small, consequential, reversible - the shape of a real change rather than a suggestion.",
+      "proposed_change": "Change the guard to require 1 <= version <= formatVersion (e.g. guard (1...Self.formatVersion).contains(version)). Rollback: revert one line; no stored data is affected because the writer always stamps formatVersion (Macro.swift:56).",
+      "is_deletion": false,
+      "word_delta": 1
+    },
+    {
+      "id": "def-pickfixedpoint-cancel-race",
+      "claim": "SURVIVES STRESS-TEST: cancelPick() during the final moments of pickFixedPoint's countdown can still persist the fixed point - the Task checks Task.isCancelled after each sleep but not between the last check and the settings write, so a 'cancelled' pick can silently change the clicker target to .fixedPoint.",
+      "cite": "Sources/MacroMaker/Services/AutoClicker.swift:100-117 (pickFixedPoint: per-iteration cancel check at line 106 'if Task.isCancelled { return }', then guard-let-self at 108 and the unconditional settings write at 110-115 with no cancellation re-check); AutoClicker.swift:119-123 (cancelPick cancels the task and clears pickCountdown, assuming no further writes).",
+      "evidence": "Window is small (between the line-106 check and line-114 'settings = updated', spanning EventSynthesizer.cursorLocation at line 109), but the write lands after cancelPick has already cleared state, so the UI shows no countdown while settings.target becomes .fixedPoint - the next clicker run silently clicks the stale picked coordinate. Second-order check passes: adding one cancellation check changes nothing for the non-racing path.",
+      "severity": "minor",
+      "rule_targeted": "ARCH-A: one-line fix, consequence and rollback both trivial.",
+      "proposed_change": "Insert 'if Task.isCancelled { return }' immediately after the loop (before 'guard let self else { return }' at AutoClicker.swift:108). Rollback: delete the inserted line.",
+      "is_deletion": false,
+      "word_delta": 1
+    },
+    {
+      "id": "def-open-main-thread-uncapped",
+      "claim": "SURVIVES STRESS-TEST: opening a .macromaker file does Data(contentsOf:) + full JSON decode synchronously on the main actor with no size cap, so an oversized or slow file (network volume, Finder double-click) hangs the UI thread; a size cap cannot break compatibility because every app-written file is a bounded recording.",
+      "cite": "Sources/MacroMaker/Services/MacroFiles.swift:30-32 ('static func read(from url: URL) throws -> Macro { try Macro(jsonData: Data(contentsOf: url)) }'); Sources/MacroMaker/App/AppDelegate.swift:22-25 (Finder double-click -> application(_:open:) -> AppModel.openMacro(at:)); Sources/MacroMaker/App/AppModel.swift:129-137 (openMacro runs on @MainActor, AppModel.swift:8-9).",
+      "evidence": "No FileWrapper/coordination or resource check precedes the synchronous read; Data(contentsOf:) on a FIFO or multi-GB file blocks the main run loop before any error surfaces. The recorder's output is a click/key sequence (MacroRecorder.swift:101-102) - realistic macros are kilobytes, so a cap (e.g. 16 MB) rejects nothing legitimate. Rollback: delete the size check; behavior returns to exactly today's.",
+      "severity": "minor",
+      "rule_targeted": "ARCH-A: bounded, reversible hardening - in contrast to the rejected strict-schema proposal.",
+      "proposed_change": "Before reading, check FileManager attributesOfItem for size and throw a descriptive error above a ~16 MB cap; keep the existing error surface (AppModel.fileError).",
+      "is_deletion": false,
+      "word_delta": 10
+    }
+  ]
+}
