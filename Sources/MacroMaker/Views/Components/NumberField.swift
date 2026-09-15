@@ -27,7 +27,7 @@ struct NumberField: View {
     var body: some View {
         LabeledContent(title) {
             HStack(spacing: 6) {
-                TextField(title, value: clamped, format: .number.precision(.fractionLength(0...2)))
+                TextField(title, value: clamped, format: .number.precision(.fractionLength(0...3)))
                     .labelsHidden()
                     .textFieldStyle(.roundedBorder)
                     .multilineTextAlignment(.trailing)

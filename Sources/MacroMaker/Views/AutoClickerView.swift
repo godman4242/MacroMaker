@@ -12,7 +12,7 @@ struct AutoClickerView: View {
                         ForEach(MouseButton.allCases) { Text($0.title).tag($0) }
                     }
                     .pickerStyle(.segmented)
-                    NumberField("Click every", value: $clicker.settings.intervalMs, unit: "ms", range: 1...3_600_000, step: 10)
+                    NumberField("Click every", value: $clicker.settings.intervalMs, unit: "ms", range: 0.1...3_600_000, step: 10)
                     Toggle("Add a random offset to each interval", isOn: $clicker.settings.randomizeInterval)
                     if clicker.settings.randomizeInterval {
                         NumberField("Offset up to ±", value: $clicker.settings.randomOffsetMs, unit: "ms", range: 0...60_000, step: 5)
