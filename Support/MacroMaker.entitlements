@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Not sandboxed: posting clicks/keys into other apps is impossible from the sandbox. -->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+	<!-- Hardened runtime needs this to send Apple Events to Safari/Chrome (Web Target). -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+</dict>
+</plist>

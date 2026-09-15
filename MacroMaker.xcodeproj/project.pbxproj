@@ -1,0 +1,678 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		018F60F75F56A780BA43CD24 /* WebTargetView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D056A05B1BBC5BC3556B128 /* WebTargetView.swift */; };
+		0DED0C440832DCCDC60E986C /* Persistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 229E2600D93310B6BFA9270E /* Persistence.swift */; };
+		0E5342511F5BCF2725B26BCD /* HotkeyField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64672C832EC6676B44ADD793 /* HotkeyField.swift */; };
+		1058A9121E733627CC3DC922 /* KeyStroke.swift in Sources */ = {isa = PBXBuildFile; fileRef = F051C4A1C8C7EF72BA89A4FE /* KeyStroke.swift */; };
+		10A32C4A2270826879FF5595 /* WindowCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3AF23B929F55E7FCAE558129 /* WindowCoordinator.swift */; };
+		1EA36FB0CA10E57D81A8CB30 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FADBA50A0DB8E983C3CEF78 /* SettingsView.swift */; };
+		24AFDB01FA5A212EE7E9E3E0 /* HotkeyService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48C8F6BDB0EA3A700D6F23A7 /* HotkeyService.swift */; };
+		253435F7492D9A6078DBA3A9 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC74A01DD4E6FE0289C95F9D /* AppModel.swift */; };
+		2CB2B6CB3033E73FDE59722B /* WebClicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82627F6189BA94F3D43E473D /* WebClicker.swift */; };
+		2CD8AEDB587A1C4438C2DB3F /* PermissionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E3BD0E9F1675C08206FF432 /* PermissionService.swift */; };
+		34BC480AB84C9A8F5AE45183 /* TimingAndKeyCodeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 961883915409325A61A44A81 /* TimingAndKeyCodeTests.swift */; };
+		3E5373D1D50364A7FE184855 /* RunControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0EEDE5DFF9694D5F77085A4B /* RunControls.swift */; };
+		43404EE4B19278658E282E5F /* KeyStrokeParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5452A47D5DA1CE6623D62901 /* KeyStrokeParser.swift */; };
+		437B561A5D224696A792D366 /* KeyPresser.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF556B4FE45215C38B83D886 /* KeyPresser.swift */; };
+		4A7AF4196424CFB9BD1C77AA /* TickSchedule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 953469E8BED7D987577B7875 /* TickSchedule.swift */; };
+		4AA3CBE5D4F5ED56B02B30F3 /* KeyModifiers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A5F960BD833927E4B50B43C /* KeyModifiers.swift */; };
+		52871FBB8E9BC4FAB4286B85 /* MacroPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2632563581023E7ADEC1360 /* MacroPlayer.swift */; };
+		55B91F4975D2BD6F70305288 /* HotkeyAction.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FE59B4EA5B38E0F12E324FB /* HotkeyAction.swift */; };
+		56CC224A12CE3211A360B2CC /* RecorderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DB216DEF27C24C0E3332F1C /* RecorderView.swift */; };
+		577C79BCA2ADAAEB38B4B1B8 /* AutoClicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41744E644314B4BF48255646 /* AutoClicker.swift */; };
+		62779C5C8723EC914882437F /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 841E52F4244411AF3C4173C9 /* ContentView.swift */; };
+		63254E676DD3412D20F58877 /* WorkerThread.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5CFCEEF0E1F17D11FF1D02A /* WorkerThread.swift */; };
+		658C6486A0B7B4FA16B62750 /* WebClickScriptTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F93029D686816E302842F3EB /* WebClickScriptTests.swift */; };
+		67C168362088D6405CFC01E7 /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = 155E57014279712220D35DCF /* AppIcon.icns */; };
+		6CC5B815BE79649600C4CDDF /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89D7098618F5FCE5DC43EA23 /* MenuBarView.swift */; };
+		6E1AD4503DD11E2C0C3AFCB7 /* KeyPresserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3DEA907A5C85C24517183B9 /* KeyPresserView.swift */; };
+		6EE859F513320D28A9CCA31A /* EventSynthesizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F41FECFE68C76C0F33110025 /* EventSynthesizer.swift */; };
+		724B7D2E536E48613B21F1CA /* RunPhase.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3891F99FAE6600C1720A77DC /* RunPhase.swift */; };
+		7B366A508421D2732B823768 /* RunSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = C74E114A6FB6F1763A4E6831 /* RunSession.swift */; };
+		8040C550CF7F7624813CC9C3 /* PermissionBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 618FD03C96ED549E09147B6A /* PermissionBanner.swift */; };
+		868688A76DAF5FD8B1B8AD46 /* BrowserScripting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50D19D105B912C6B6003A786 /* BrowserScripting.swift */; };
+		908CD265E666A3CA67293C3B /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 831DA16D67950AAF7C07894D /* AppDelegate.swift */; };
+		9D238F7F4207CE4E6D068482 /* KeyCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF4F2DA618DA213705AF6986 /* KeyCapture.swift */; };
+		A4CA04E731D3B87F578363BE /* FeatureSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56D4CDCB0A9E32C7DCF3677A /* FeatureSettings.swift */; };
+		B07594B7683A0C5FE8F1523A /* KeyCodes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C624DD9D58C308EB653D8C1 /* KeyCodes.swift */; };
+		B0C27CCDF10B589D25C806B0 /* MacroFileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C188ABEF35DA3E867F03B26B /* MacroFileTests.swift */; };
+		B2D70FC04265D93E63C7B43A /* MacroMakerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = BACAB13CEB11C5DF8FE3F849 /* MacroMakerApp.swift */; };
+		B4968B8C1A5A4F4C77FE169F /* WebClickScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7804CBEE72A007DC21E7F16 /* WebClickScript.swift */; };
+		CFE26172BC9ADBD8C500A8F3 /* KeyboardLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0D6F4D71FEBFFE48A85825E /* KeyboardLayout.swift */; };
+		D30F05A9AE6C7B4DA45AE4C8 /* RecordingCleanerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 655AD642AF6F7ABBA7D23409 /* RecordingCleanerTests.swift */; };
+		D6C6AF02C1E490D534BD7BEA /* RecordingCleaner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B622B8C2733C96C533A514A1 /* RecordingCleaner.swift */; };
+		DACECFA06B6A595029040C84 /* MouseButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E6BDB8AF2A152FBB893DC33 /* MouseButton.swift */; };
+		DD1F0D165E2E8106A2CAF6B2 /* AutoClickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E755D7F9D57778E6AA631E77 /* AutoClickerView.swift */; };
+		E89B1C6FF53A3F58D70869DF /* MacroFiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6251F3E81DC775CC88452F8B /* MacroFiles.swift */; };
+		F70AF0A08FF805D7AC01F779 /* KeyStrokeParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D89AD01E9ADAB428DB081D3A /* KeyStrokeParserTests.swift */; };
+		F8CD996241851235FDF1D3DA /* NumberField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95FA3FCE3386BAA4C79DB579 /* NumberField.swift */; };
+		FC6F7A354FD2AB5A236015EC /* MacroRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEBF542869EE6D7AE64DB304 /* MacroRecorder.swift */; };
+		FC97FA271BD0B567B47B3EC7 /* Macro.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB18F353CE5A9EB3B0BA3D81 /* Macro.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		C7FB1F27D5B9DB3A0ED275C6 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 8D5D45E3C3850A22F94B8A70 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B7772639BFDB7F2B92EEB425;
+			remoteInfo = MacroMaker;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		0D056A05B1BBC5BC3556B128 /* WebTargetView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebTargetView.swift; sourceTree = "<group>"; };
+		0EEDE5DFF9694D5F77085A4B /* RunControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunControls.swift; sourceTree = "<group>"; };
+		155E57014279712220D35DCF /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = AppIcon.icns; sourceTree = "<group>"; };
+		1C624DD9D58C308EB653D8C1 /* KeyCodes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyCodes.swift; sourceTree = "<group>"; };
+		1FE59B4EA5B38E0F12E324FB /* HotkeyAction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyAction.swift; sourceTree = "<group>"; };
+		229E2600D93310B6BFA9270E /* Persistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Persistence.swift; sourceTree = "<group>"; };
+		3891F99FAE6600C1720A77DC /* RunPhase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunPhase.swift; sourceTree = "<group>"; };
+		3AF23B929F55E7FCAE558129 /* WindowCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowCoordinator.swift; sourceTree = "<group>"; };
+		3FADBA50A0DB8E983C3CEF78 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		41744E644314B4BF48255646 /* AutoClicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutoClicker.swift; sourceTree = "<group>"; };
+		48C8F6BDB0EA3A700D6F23A7 /* HotkeyService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyService.swift; sourceTree = "<group>"; };
+		50D19D105B912C6B6003A786 /* BrowserScripting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserScripting.swift; sourceTree = "<group>"; };
+		5452A47D5DA1CE6623D62901 /* KeyStrokeParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyStrokeParser.swift; sourceTree = "<group>"; };
+		56D4CDCB0A9E32C7DCF3677A /* FeatureSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeatureSettings.swift; sourceTree = "<group>"; };
+		618FD03C96ED549E09147B6A /* PermissionBanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionBanner.swift; sourceTree = "<group>"; };
+		6251F3E81DC775CC88452F8B /* MacroFiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacroFiles.swift; sourceTree = "<group>"; };
+		64672C832EC6676B44ADD793 /* HotkeyField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyField.swift; sourceTree = "<group>"; };
+		655AD642AF6F7ABBA7D23409 /* RecordingCleanerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingCleanerTests.swift; sourceTree = "<group>"; };
+		69DF54F51F0F040D66C460F9 /* MacroMaker.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MacroMaker.entitlements; sourceTree = "<group>"; };
+		6DB216DEF27C24C0E3332F1C /* RecorderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderView.swift; sourceTree = "<group>"; };
+		6E6BDB8AF2A152FBB893DC33 /* MouseButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MouseButton.swift; sourceTree = "<group>"; };
+		73E157A5CF4E28CB1B61968E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		809219D7A70A3152F1B92A0C /* MacroMaker.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MacroMaker.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		82627F6189BA94F3D43E473D /* WebClicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebClicker.swift; sourceTree = "<group>"; };
+		831DA16D67950AAF7C07894D /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		841E52F4244411AF3C4173C9 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		89D7098618F5FCE5DC43EA23 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
+		8A5F960BD833927E4B50B43C /* KeyModifiers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyModifiers.swift; sourceTree = "<group>"; };
+		8E3BD0E9F1675C08206FF432 /* PermissionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionService.swift; sourceTree = "<group>"; };
+		953469E8BED7D987577B7875 /* TickSchedule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TickSchedule.swift; sourceTree = "<group>"; };
+		95FA3FCE3386BAA4C79DB579 /* NumberField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NumberField.swift; sourceTree = "<group>"; };
+		961883915409325A61A44A81 /* TimingAndKeyCodeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimingAndKeyCodeTests.swift; sourceTree = "<group>"; };
+		AC74A01DD4E6FE0289C95F9D /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		AEBF542869EE6D7AE64DB304 /* MacroRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacroRecorder.swift; sourceTree = "<group>"; };
+		AF4F2DA618DA213705AF6986 /* KeyCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyCapture.swift; sourceTree = "<group>"; };
+		B0D6F4D71FEBFFE48A85825E /* KeyboardLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardLayout.swift; sourceTree = "<group>"; };
+		B622B8C2733C96C533A514A1 /* RecordingCleaner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingCleaner.swift; sourceTree = "<group>"; };
+		BACAB13CEB11C5DF8FE3F849 /* MacroMakerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacroMakerApp.swift; sourceTree = "<group>"; };
+		BF2E54EF186002F0EED665B3 /* MacroMakerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MacroMakerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		BF556B4FE45215C38B83D886 /* KeyPresser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyPresser.swift; sourceTree = "<group>"; };
+		C188ABEF35DA3E867F03B26B /* MacroFileTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacroFileTests.swift; sourceTree = "<group>"; };
+		C2632563581023E7ADEC1360 /* MacroPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacroPlayer.swift; sourceTree = "<group>"; };
+		C74E114A6FB6F1763A4E6831 /* RunSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunSession.swift; sourceTree = "<group>"; };
+		CB18F353CE5A9EB3B0BA3D81 /* Macro.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Macro.swift; sourceTree = "<group>"; };
+		D5CFCEEF0E1F17D11FF1D02A /* WorkerThread.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkerThread.swift; sourceTree = "<group>"; };
+		D89AD01E9ADAB428DB081D3A /* KeyStrokeParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyStrokeParserTests.swift; sourceTree = "<group>"; };
+		E3DEA907A5C85C24517183B9 /* KeyPresserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyPresserView.swift; sourceTree = "<group>"; };
+		E755D7F9D57778E6AA631E77 /* AutoClickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutoClickerView.swift; sourceTree = "<group>"; };
+		F051C4A1C8C7EF72BA89A4FE /* KeyStroke.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyStroke.swift; sourceTree = "<group>"; };
+		F41FECFE68C76C0F33110025 /* EventSynthesizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventSynthesizer.swift; sourceTree = "<group>"; };
+		F7804CBEE72A007DC21E7F16 /* WebClickScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebClickScript.swift; sourceTree = "<group>"; };
+		F93029D686816E302842F3EB /* WebClickScriptTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebClickScriptTests.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		0391D2E64D1012607C9EDA28 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				FF3C944F4B042ADC16F0A9E8 /* MacroMakerTests */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
+		0D3A08A358CBEA4348DB4C74 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				E755D7F9D57778E6AA631E77 /* AutoClickerView.swift */,
+				841E52F4244411AF3C4173C9 /* ContentView.swift */,
+				E3DEA907A5C85C24517183B9 /* KeyPresserView.swift */,
+				89D7098618F5FCE5DC43EA23 /* MenuBarView.swift */,
+				6DB216DEF27C24C0E3332F1C /* RecorderView.swift */,
+				3FADBA50A0DB8E983C3CEF78 /* SettingsView.swift */,
+				0D056A05B1BBC5BC3556B128 /* WebTargetView.swift */,
+				2841EF7A95200104FA7640DE /* Components */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		224D7863D238064C7AA055B3 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				831DA16D67950AAF7C07894D /* AppDelegate.swift */,
+				AC74A01DD4E6FE0289C95F9D /* AppModel.swift */,
+				BACAB13CEB11C5DF8FE3F849 /* MacroMakerApp.swift */,
+				3AF23B929F55E7FCAE558129 /* WindowCoordinator.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		2841EF7A95200104FA7640DE /* Components */ = {
+			isa = PBXGroup;
+			children = (
+				64672C832EC6676B44ADD793 /* HotkeyField.swift */,
+				95FA3FCE3386BAA4C79DB579 /* NumberField.swift */,
+				618FD03C96ED549E09147B6A /* PermissionBanner.swift */,
+				0EEDE5DFF9694D5F77085A4B /* RunControls.swift */,
+			);
+			path = Components;
+			sourceTree = "<group>";
+		};
+		3667763713C037C7075C7776 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				56D4CDCB0A9E32C7DCF3677A /* FeatureSettings.swift */,
+				1FE59B4EA5B38E0F12E324FB /* HotkeyAction.swift */,
+				8A5F960BD833927E4B50B43C /* KeyModifiers.swift */,
+				F051C4A1C8C7EF72BA89A4FE /* KeyStroke.swift */,
+				CB18F353CE5A9EB3B0BA3D81 /* Macro.swift */,
+				6E6BDB8AF2A152FBB893DC33 /* MouseButton.swift */,
+				3891F99FAE6600C1720A77DC /* RunPhase.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		472DFA1082526AAE78F46597 /* Support */ = {
+			isa = PBXGroup;
+			children = (
+				155E57014279712220D35DCF /* AppIcon.icns */,
+				73E157A5CF4E28CB1B61968E /* Info.plist */,
+				69DF54F51F0F040D66C460F9 /* MacroMaker.entitlements */,
+			);
+			path = Support;
+			sourceTree = "<group>";
+		};
+		5162E0CCB341E0838FA44049 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				809219D7A70A3152F1B92A0C /* MacroMaker.app */,
+				BF2E54EF186002F0EED665B3 /* MacroMakerTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		9104CCAFDC010A8515698B0B /* Utilities */ = {
+			isa = PBXGroup;
+			children = (
+				B0D6F4D71FEBFFE48A85825E /* KeyboardLayout.swift */,
+				1C624DD9D58C308EB653D8C1 /* KeyCodes.swift */,
+				5452A47D5DA1CE6623D62901 /* KeyStrokeParser.swift */,
+				229E2600D93310B6BFA9270E /* Persistence.swift */,
+				B622B8C2733C96C533A514A1 /* RecordingCleaner.swift */,
+				953469E8BED7D987577B7875 /* TickSchedule.swift */,
+				F7804CBEE72A007DC21E7F16 /* WebClickScript.swift */,
+				D5CFCEEF0E1F17D11FF1D02A /* WorkerThread.swift */,
+			);
+			path = Utilities;
+			sourceTree = "<group>";
+		};
+		9FFE91109A9EB9344CB37913 = {
+			isa = PBXGroup;
+			children = (
+				D5A4A1CA2565995C3FD34FDA /* Sources */,
+				472DFA1082526AAE78F46597 /* Support */,
+				0391D2E64D1012607C9EDA28 /* Tests */,
+				5162E0CCB341E0838FA44049 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		D5A4A1CA2565995C3FD34FDA /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				E75FD66360B479273E00DB73 /* MacroMaker */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		E366BB627FF61433D629579F /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				41744E644314B4BF48255646 /* AutoClicker.swift */,
+				50D19D105B912C6B6003A786 /* BrowserScripting.swift */,
+				F41FECFE68C76C0F33110025 /* EventSynthesizer.swift */,
+				48C8F6BDB0EA3A700D6F23A7 /* HotkeyService.swift */,
+				AF4F2DA618DA213705AF6986 /* KeyCapture.swift */,
+				BF556B4FE45215C38B83D886 /* KeyPresser.swift */,
+				6251F3E81DC775CC88452F8B /* MacroFiles.swift */,
+				C2632563581023E7ADEC1360 /* MacroPlayer.swift */,
+				AEBF542869EE6D7AE64DB304 /* MacroRecorder.swift */,
+				8E3BD0E9F1675C08206FF432 /* PermissionService.swift */,
+				C74E114A6FB6F1763A4E6831 /* RunSession.swift */,
+				82627F6189BA94F3D43E473D /* WebClicker.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		E75FD66360B479273E00DB73 /* MacroMaker */ = {
+			isa = PBXGroup;
+			children = (
+				224D7863D238064C7AA055B3 /* App */,
+				3667763713C037C7075C7776 /* Models */,
+				E366BB627FF61433D629579F /* Services */,
+				9104CCAFDC010A8515698B0B /* Utilities */,
+				0D3A08A358CBEA4348DB4C74 /* Views */,
+			);
+			path = MacroMaker;
+			sourceTree = "<group>";
+		};
+		FF3C944F4B042ADC16F0A9E8 /* MacroMakerTests */ = {
+			isa = PBXGroup;
+			children = (
+				D89AD01E9ADAB428DB081D3A /* KeyStrokeParserTests.swift */,
+				C188ABEF35DA3E867F03B26B /* MacroFileTests.swift */,
+				655AD642AF6F7ABBA7D23409 /* RecordingCleanerTests.swift */,
+				961883915409325A61A44A81 /* TimingAndKeyCodeTests.swift */,
+				F93029D686816E302842F3EB /* WebClickScriptTests.swift */,
+			);
+			path = MacroMakerTests;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		1C448F97CB2A9F6671B11AC9 /* MacroMakerTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A8457ABE6CD43F8E74162FD8 /* Build configuration list for PBXNativeTarget "MacroMakerTests" */;
+			buildPhases = (
+				FE5A0D2E7FA147A36FA03446 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				C244D9A033AA83FD6E48140A /* PBXTargetDependency */,
+			);
+			name = MacroMakerTests;
+			packageProductDependencies = (
+			);
+			productName = MacroMakerTests;
+			productReference = BF2E54EF186002F0EED665B3 /* MacroMakerTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		B7772639BFDB7F2B92EEB425 /* MacroMaker */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 599BEAE31A8CE47198755EEE /* Build configuration list for PBXNativeTarget "MacroMaker" */;
+			buildPhases = (
+				87680EB12A83620FCEA1FE35 /* Sources */,
+				D38285F420A0E3E6F49DA2D4 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = MacroMaker;
+			packageProductDependencies = (
+			);
+			productName = MacroMaker;
+			productReference = 809219D7A70A3152F1B92A0C /* MacroMaker.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		8D5D45E3C3850A22F94B8A70 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					1C448F97CB2A9F6671B11AC9 = {
+						ProvisioningStyle = Manual;
+					};
+					B7772639BFDB7F2B92EEB425 = {
+						ProvisioningStyle = Manual;
+					};
+				};
+			};
+			buildConfigurationList = 012FCF248F198DA3C2BA2A84 /* Build configuration list for PBXProject "MacroMaker" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 9FFE91109A9EB9344CB37913;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 5162E0CCB341E0838FA44049 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				B7772639BFDB7F2B92EEB425 /* MacroMaker */,
+				1C448F97CB2A9F6671B11AC9 /* MacroMakerTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		D38285F420A0E3E6F49DA2D4 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				67C168362088D6405CFC01E7 /* AppIcon.icns in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		87680EB12A83620FCEA1FE35 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				908CD265E666A3CA67293C3B /* AppDelegate.swift in Sources */,
+				253435F7492D9A6078DBA3A9 /* AppModel.swift in Sources */,
+				577C79BCA2ADAAEB38B4B1B8 /* AutoClicker.swift in Sources */,
+				DD1F0D165E2E8106A2CAF6B2 /* AutoClickerView.swift in Sources */,
+				868688A76DAF5FD8B1B8AD46 /* BrowserScripting.swift in Sources */,
+				62779C5C8723EC914882437F /* ContentView.swift in Sources */,
+				6EE859F513320D28A9CCA31A /* EventSynthesizer.swift in Sources */,
+				A4CA04E731D3B87F578363BE /* FeatureSettings.swift in Sources */,
+				55B91F4975D2BD6F70305288 /* HotkeyAction.swift in Sources */,
+				0E5342511F5BCF2725B26BCD /* HotkeyField.swift in Sources */,
+				24AFDB01FA5A212EE7E9E3E0 /* HotkeyService.swift in Sources */,
+				9D238F7F4207CE4E6D068482 /* KeyCapture.swift in Sources */,
+				B07594B7683A0C5FE8F1523A /* KeyCodes.swift in Sources */,
+				4AA3CBE5D4F5ED56B02B30F3 /* KeyModifiers.swift in Sources */,
+				437B561A5D224696A792D366 /* KeyPresser.swift in Sources */,
+				6E1AD4503DD11E2C0C3AFCB7 /* KeyPresserView.swift in Sources */,
+				1058A9121E733627CC3DC922 /* KeyStroke.swift in Sources */,
+				43404EE4B19278658E282E5F /* KeyStrokeParser.swift in Sources */,
+				CFE26172BC9ADBD8C500A8F3 /* KeyboardLayout.swift in Sources */,
+				FC97FA271BD0B567B47B3EC7 /* Macro.swift in Sources */,
+				E89B1C6FF53A3F58D70869DF /* MacroFiles.swift in Sources */,
+				B2D70FC04265D93E63C7B43A /* MacroMakerApp.swift in Sources */,
+				52871FBB8E9BC4FAB4286B85 /* MacroPlayer.swift in Sources */,
+				FC6F7A354FD2AB5A236015EC /* MacroRecorder.swift in Sources */,
+				6CC5B815BE79649600C4CDDF /* MenuBarView.swift in Sources */,
+				DACECFA06B6A595029040C84 /* MouseButton.swift in Sources */,
+				F8CD996241851235FDF1D3DA /* NumberField.swift in Sources */,
+				8040C550CF7F7624813CC9C3 /* PermissionBanner.swift in Sources */,
+				2CD8AEDB587A1C4438C2DB3F /* PermissionService.swift in Sources */,
+				0DED0C440832DCCDC60E986C /* Persistence.swift in Sources */,
+				56CC224A12CE3211A360B2CC /* RecorderView.swift in Sources */,
+				D6C6AF02C1E490D534BD7BEA /* RecordingCleaner.swift in Sources */,
+				3E5373D1D50364A7FE184855 /* RunControls.swift in Sources */,
+				724B7D2E536E48613B21F1CA /* RunPhase.swift in Sources */,
+				7B366A508421D2732B823768 /* RunSession.swift in Sources */,
+				1EA36FB0CA10E57D81A8CB30 /* SettingsView.swift in Sources */,
+				4A7AF4196424CFB9BD1C77AA /* TickSchedule.swift in Sources */,
+				B4968B8C1A5A4F4C77FE169F /* WebClickScript.swift in Sources */,
+				2CB2B6CB3033E73FDE59722B /* WebClicker.swift in Sources */,
+				018F60F75F56A780BA43CD24 /* WebTargetView.swift in Sources */,
+				10A32C4A2270826879FF5595 /* WindowCoordinator.swift in Sources */,
+				63254E676DD3412D20F58877 /* WorkerThread.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FE5A0D2E7FA147A36FA03446 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F70AF0A08FF805D7AC01F779 /* KeyStrokeParserTests.swift in Sources */,
+				B0C27CCDF10B589D25C806B0 /* MacroFileTests.swift in Sources */,
+				D30F05A9AE6C7B4DA45AE4C8 /* RecordingCleanerTests.swift in Sources */,
+				34BC480AB84C9A8F5AE45183 /* TimingAndKeyCodeTests.swift in Sources */,
+				658C6486A0B7B4FA16B62750 /* WebClickScriptTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		C244D9A033AA83FD6E48140A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B7772639BFDB7F2B92EEB425 /* MacroMaker */;
+			targetProxy = C7FB1F27D5B9DB3A0ED275C6 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		115E16AB44C4FDE1666AA1E3 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = "$(ARCHS_STANDARD)";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Support/MacroMaker.entitlements;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Support/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				ONLY_ACTIVE_ARCH = NO;
+				PRODUCT_BUNDLE_IDENTIFIER = com.kheshav.MacroMaker;
+				PRODUCT_NAME = MacroMaker;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		574139BC376877DDC86837BC /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.kheshav.MacroMakerTests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MacroMaker.app/Contents/MacOS/MacroMaker";
+			};
+			name = Debug;
+		};
+		5B7AEB33D44F52879FEE482C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		BEF718512FD7341D62DF0C20 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = "$(ARCHS_STANDARD)";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Support/MacroMaker.entitlements;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Support/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.kheshav.MacroMaker;
+				PRODUCT_NAME = MacroMaker;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		C2EE62277AB3A011E280C606 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		C8E7E6D830655297D4F92E9E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.kheshav.MacroMakerTests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MacroMaker.app/Contents/MacOS/MacroMaker";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		012FCF248F198DA3C2BA2A84 /* Build configuration list for PBXProject "MacroMaker" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C2EE62277AB3A011E280C606 /* Debug */,
+				5B7AEB33D44F52879FEE482C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		599BEAE31A8CE47198755EEE /* Build configuration list for PBXNativeTarget "MacroMaker" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BEF718512FD7341D62DF0C20 /* Debug */,
+				115E16AB44C4FDE1666AA1E3 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		A8457ABE6CD43F8E74162FD8 /* Build configuration list for PBXNativeTarget "MacroMakerTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				574139BC376877DDC86837BC /* Debug */,
+				C8E7E6D830655297D4F92E9E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 8D5D45E3C3850A22F94B8A70 /* Project object */;
+}

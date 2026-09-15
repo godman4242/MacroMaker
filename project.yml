@@ -1,0 +1,61 @@
+# XcodeGen spec — the source of truth for MacroMaker.xcodeproj.
+# After adding or removing source files, regenerate with:  xcodegen generate
+name: MacroMaker
+options:
+  bundleIdPrefix: com.kheshav
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+targets:
+  MacroMaker:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/MacroMaker
+      - path: Support/AppIcon.icns
+        buildPhase: resources
+      - path: Support/Info.plist
+        buildPhase: none
+      - path: Support/MacroMaker.entitlements
+        buildPhase: none
+    settings:
+      base:
+        PRODUCT_NAME: MacroMaker
+        PRODUCT_BUNDLE_IDENTIFIER: com.kheshav.MacroMaker
+        INFOPLIST_FILE: Support/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_ENTITLEMENTS: Support/MacroMaker.entitlements
+        # Ad-hoc signing builds without an Apple Developer account. For distribution, set
+        # CODE_SIGN_IDENTITY to "Developer ID Application" and DEVELOPMENT_TEAM to your team ID.
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        ENABLE_HARDENED_RUNTIME: YES
+        ENABLE_APP_SANDBOX: NO
+        # Universal binary (Apple Silicon + Intel) for Release builds.
+        ARCHS: "$(ARCHS_STANDARD)"
+        COMBINE_HIDPI_IMAGES: YES
+      configs:
+        Debug:
+          ONLY_ACTIVE_ARCH: YES
+        Release:
+          ONLY_ACTIVE_ARCH: NO
+    scheme:
+      testTargets:
+        - MacroMakerTests
+  MacroMakerTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests/MacroMakerTests
+    dependencies:
+      - target: MacroMaker
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.kheshav.MacroMakerTests
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        GENERATE_INFOPLIST_FILE: YES
