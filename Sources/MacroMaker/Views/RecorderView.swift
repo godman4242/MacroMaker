@@ -106,6 +106,8 @@ struct RecorderView: View {
                 }
             }
             .fixedSize()
+            Toggle("Humanise", isOn: $player.settings.humanizer.enabled)
+                .help("Jitters the gap before each replayed event")
         }
         .disabled(player.session.phase.isActive)
     }

@@ -29,6 +29,7 @@ final class MacroPlayer {
         /// nil = loop until stopped.
         let repeats: Int?
         let speed: Double
+        let humanizer: HumanizerSettings
     }
 
     func toggle(_ macro: Macro?, trigger: StartTrigger) {
@@ -44,7 +45,8 @@ final class MacroPlayer {
 
         let plan = Plan(events: macro.events,
                         repeats: settings.loopForever ? nil : max(1, settings.repeatCount),
-                        speed: min(max(settings.speed, 0.1), 10))
+                        speed: min(max(settings.speed, 0.1), 10),
+                        humanizer: settings.humanizer)
         session.start(withCountdown: trigger == .button) { [weak self] token in
             guard let self else { return nil }
             runID += 1
@@ -67,6 +69,7 @@ final class MacroPlayer {
                                          report: @Sendable (Progress, Bool) -> Void) {
         var progress = Progress()
         var lastReport: UInt64 = 0
+        var humanizer = Humanizer(plan.humanizer)
 
         playback: while plan.repeats.map({ progress.iteration < $0 }) ?? true {
             var heldKeys = Set<CGKeyCode>()
@@ -75,8 +78,20 @@ final class MacroPlayer {
             defer { release(keys: heldKeys, buttons: heldButtons) }
 
             let start = DispatchTime.now().uptimeNanoseconds
+            // Humanised replay jitters each inter-event gap; precompute so the grid stays stable.
+            var jitteredTimes: [Double] = []
+            if plan.humanizer.enabled {
+                var jitteredStart = 0.0
+                var previous = plan.events.first?.time ?? 0
+                for event in plan.events {
+                    jitteredStart += humanizer.jittered(gap: event.time - previous)
+                    previous = event.time
+                    jitteredTimes.append(jitteredStart)
+                }
+            }
             for (index, event) in plan.events.enumerated() {
-                let due = start + UInt64(event.time / plan.speed * 1_000_000_000)
+                let eventTime = plan.humanizer.enabled ? jitteredTimes[index] : event.time
+                let due = start + UInt64(eventTime / plan.speed * 1_000_000_000)
                 guard worker.sleep(untilUptime: due) else { break playback }
                 post(event, heldKeys: &heldKeys, heldButtons: &heldButtons)
 

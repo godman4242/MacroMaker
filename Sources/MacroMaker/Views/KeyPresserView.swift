@@ -69,6 +69,10 @@ struct KeyPresserView: View {
                     }
                 }
 
+                if presser.settings.mode == .autoPress {
+                    HumanizeSection(settings: $presser.settings.humanizer)
+                }
+
                 Section("Shortcut") {
                     LabeledContent("Start / stop") {
                         HotkeyField(action: .toggleKeyPresser)

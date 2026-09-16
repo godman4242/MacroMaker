@@ -84,6 +84,8 @@ struct AutoClickerView: View {
                     }
                 }
 
+                HumanizeSection(settings: $clicker.settings.humanizer)
+
                 Section("Shortcut") {
                     LabeledContent("Start / stop clicking") {
                         HotkeyField(action: .toggleAutoClicker)

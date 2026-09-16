@@ -50,6 +50,7 @@ final class AutoClicker {
         let stopOnFrontmostChange: Bool
         let initialFrontmost: String?
         let restoreCursor: Bool
+        let humanizer: HumanizerSettings
 
         init(_ s: AutoClickerSettings, initialFrontmost: String?) {
             button = s.button
@@ -66,6 +67,7 @@ final class AutoClicker {
             stopOnFrontmostChange = s.stopOnFrontmostChange
             self.initialFrontmost = s.stopOnFrontmostChange ? initialFrontmost : nil
             restoreCursor = s.restoreCursor
+            humanizer = s.humanizer
         }
     }
 
@@ -107,6 +109,7 @@ final class AutoClicker {
         var deadline = start
         var count = 0
         var lastReport: UInt64 = 0
+        var humanizer = Humanizer(plan.humanizer)
 
         while !worker.isCancelled, DispatchTime.now().uptimeNanoseconds < end {
             for _ in 0..<plan.burstSize {
@@ -123,8 +126,9 @@ final class AutoClicker {
                 report(count, false)
                 lastReport = now
             }
-            let delay = TickSchedule.delay(interval: plan.interval, jitter: plan.jitterSeconds,
+            var delay = TickSchedule.delay(interval: plan.interval, jitter: plan.jitterSeconds,
                                            random: .random(in: -1...1))
+            delay = humanizer.nextDelay(interval: delay)
             deadline = TickSchedule.nextDeadline(previous: deadline,
                                                  delay: UInt64(delay * 1_000_000_000), now: now)
             guard worker.sleep(untilUptime: min(deadline, end)) else { break }

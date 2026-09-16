@@ -53,6 +53,7 @@ final class KeyPresser {
 
         let mode = settings.mode
         let interval = max(TickSchedule.minimumDelay, settings.intervalMs / 1000)
+        let humanizerSettings = settings.humanizer
         // Held keys repeat at the user's own System Settings ▸ Keyboard rates, like a real key.
         let repeatDelay = NSEvent.keyRepeatDelay
         let repeatInterval = NSEvent.keyRepeatInterval
@@ -72,7 +73,8 @@ final class KeyPresser {
             let worker = WorkerThread.start(name: "KeyPresser") { worker in
                 switch mode {
                 case .autoPress:
-                    Self.autoPressLoop(stroke, interval: interval, worker: worker, report: report)
+                    Self.autoPressLoop(stroke, interval: interval, humanizer: humanizerSettings,
+                                       worker: worker, report: report)
                 case .hold:
                     Self.holdLoop(stroke, repeatDelay: repeatDelay, repeatInterval: repeatInterval, worker: worker, report: report)
                 }
@@ -81,10 +83,12 @@ final class KeyPresser {
         }
     }
 
-    nonisolated private static func autoPressLoop(_ stroke: KeyStroke, interval: TimeInterval, worker: WorkerThread,
+    nonisolated private static func autoPressLoop(_ stroke: KeyStroke, interval: TimeInterval,
+                                                  humanizer humanizerSettings: HumanizerSettings,
+                                                  worker: WorkerThread,
                                                   report: @Sendable (Int, Bool) -> Void) {
         let hold = TickSchedule.pressDuration(interval: interval)
-        let step = UInt64(interval * 1_000_000_000)
+        var humanizer = Humanizer(humanizerSettings)
         var deadline = DispatchTime.now().uptimeNanoseconds
         var count = 0
         var lastReport: UInt64 = 0
@@ -100,6 +104,7 @@ final class KeyPresser {
                 report(count, false)
                 lastReport = now
             }
+            let step = UInt64(max(TickSchedule.minimumDelay, humanizer.nextDelay(interval: interval)) * 1_000_000_000)
             deadline = TickSchedule.nextDeadline(previous: deadline, delay: step, now: now)
             guard worker.sleep(untilUptime: deadline) else { break }
         }

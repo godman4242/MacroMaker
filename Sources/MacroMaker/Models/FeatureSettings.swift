@@ -35,6 +35,7 @@ struct AutoClickerSettings: Codable, Equatable, Sendable {
     var holdToClick = false
     var delayedStartSeconds: Double = 0
     var restoreCursor = false
+    var humanizer = HumanizerSettings()
 
     init() {}
 
@@ -62,6 +63,7 @@ struct AutoClickerSettings: Codable, Equatable, Sendable {
         holdToClick = try c.decodeIfPresent(Bool.self, forKey: .holdToClick) ?? false
         delayedStartSeconds = try c.decodeIfPresent(Double.self, forKey: .delayedStartSeconds) ?? 0
         restoreCursor = try c.decodeIfPresent(Bool.self, forKey: .restoreCursor) ?? false
+        humanizer = try c.decodeIfPresent(HumanizerSettings.self, forKey: .humanizer) ?? HumanizerSettings()
     }
 }
 
@@ -73,6 +75,17 @@ struct KeyPresserSettings: Codable, Equatable, Sendable {
     var keyText = "space"
     var mode: Mode = .autoPress
     var intervalMs: Double = 100
+    var humanizer = HumanizerSettings()
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        keyText = try c.decodeIfPresent(String.self, forKey: .keyText) ?? "space"
+        mode = try c.decodeIfPresent(Mode.self, forKey: .mode) ?? .autoPress
+        intervalMs = try c.decodeIfPresent(Double.self, forKey: .intervalMs) ?? 100
+        humanizer = try c.decodeIfPresent(HumanizerSettings.self, forKey: .humanizer) ?? HumanizerSettings()
+    }
 }
 
 enum Browser: String, Codable, CaseIterable, Identifiable, Sendable {
@@ -138,4 +151,15 @@ struct PlaybackSettings: Codable, Equatable, Sendable {
     var repeatCount = 1
     var loopForever = false
     var speed: Double = 1
+    var humanizer = HumanizerSettings()
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        repeatCount = try c.decodeIfPresent(Int.self, forKey: .repeatCount) ?? 1
+        loopForever = try c.decodeIfPresent(Bool.self, forKey: .loopForever) ?? false
+        speed = try c.decodeIfPresent(Double.self, forKey: .speed) ?? 1
+        humanizer = try c.decodeIfPresent(HumanizerSettings.self, forKey: .humanizer) ?? HumanizerSettings()
+    }
 }
