@@ -77,11 +77,11 @@ enum EventSynthesizer {
     }
 
     /// Types a character that isn't on the keyboard layout by attaching it as a Unicode string.
-    private static func postText(_ text: String, down: Bool) {
+    static func postText(_ text: String, down: Bool, flags: CGEventFlags = []) {
         guard let event = CGEvent(keyboardEventSource: makeSource(), virtualKey: 0, keyDown: down) else { return }
         let utf16 = Array(text.utf16)
         event.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
-        post(event, flags: [])
+        post(event, flags: flags)
     }
 
     // MARK: Posting

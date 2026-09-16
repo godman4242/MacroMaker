@@ -19,6 +19,48 @@ final class AppModel {
     let recorder = MacroRecorder()
     let player: MacroPlayer
     let profiles = ProfileService()
+    let library = MacroLibrary()
+
+    /// Plays a library macro by id (per-macro hotkeys). No-op when the id isn't in the library.
+    func playMacro(id: UUID) {
+        guard let record = library.records.first(where: { $0.id == id }),
+              let macro = library.load(record) else {
+            NSSound.beep()
+            return
+        }
+        guard !recorder.isRecording else {
+            NSSound.beep()
+            return
+        }
+        player.toggle(macro, trigger: .hotkey)
+    }
+
+    /// Loads a library record into the player (same as opening its file, without the panel dance).
+    func loadFromLibrary(_ record: MacroRecord) {
+        guard let loaded = library.load(record) else {
+            NSSound.beep()
+            return
+        }
+        load(loaded)
+    }
+
+    /// Whether a library record has its own hotkey; assigning one registers the dynamic action.
+    func macroHotkeyAction(for record: MacroRecord) -> HotkeyAction? {
+        let action = HotkeyAction.macro(record.id)
+        return hotkeys.dynamicActions.contains(action) ? action : nil
+    }
+
+    /// Assigns or removes a macro's hotkey. Returns false when the cap (10) is already reached —
+    /// the caller shows that as a status message.
+    @discardableResult
+    func setMacroHotkey(_ enabled: Bool, for record: MacroRecord) -> Bool {
+        let action = HotkeyAction.macro(record.id)
+        if enabled {
+            return hotkeys.addDynamicAction(action)
+        }
+        hotkeys.removeDynamicAction(action)
+        return true
+    }
 
     // MARK: Profiles
 
@@ -139,6 +181,12 @@ final class AppModel {
 
     func launch() {
         applyActivationPolicy()
+        // Dangling links only: the index is the source of truth, and a hotkey for a macro that
+        // was deleted from the library would find nothing at play time.
+        let liveIDs = Set(library.records.map(\.id))
+        for action in hotkeys.dynamicActions where !liveIDs.contains(action.macroID ?? UUID()) {
+            hotkeys.removeDynamicAction(action)
+        }
         if macro == nil { macro = MacroFiles.loadAutosave() }
         // A schedule armed when the app last quit has already missed its moment — disarm rather
         // than surprise-fire tomorrow.
@@ -162,8 +210,7 @@ final class AppModel {
         case let .builtin(builtin):
             perform(builtin, trigger: trigger)
         case let .macro(id):
-            // Wired up when the macro library section exists; unknown ids are inert.
-            _ = id
+            playMacro(id: id)
         }
     }
 
@@ -249,6 +296,12 @@ final class AppModel {
         player.session.stop()
         macro = nil
         MacroFiles.autosave(nil)
+    }
+
+    /// Writes the current macro to the "Last Recording" autosave (called after step edits too,
+    /// so quitting mid-edit doesn't lose them).
+    func autosaveMacro() {
+        MacroFiles.autosave(macro)
     }
 
     private func load(_ opened: Macro) {

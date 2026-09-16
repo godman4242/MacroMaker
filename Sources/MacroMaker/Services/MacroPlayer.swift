@@ -126,11 +126,19 @@ final class MacroPlayer {
             EventSynthesizer.postMouse(button.upEventType, button: button, at: point, clickCount: clickCount, flags: flags)
             heldButtons[button] = nil
         case let .keyDown(code, isRepeat):
-            EventSynthesizer.postKey(code, down: true, flags: flags, isRepeat: isRepeat)
-            heldKeys.insert(code)
+            if let text = event.textOverride {
+                EventSynthesizer.postText(text, down: true, flags: flags)
+            } else {
+                EventSynthesizer.postKey(code, down: true, flags: flags, isRepeat: isRepeat)
+                heldKeys.insert(code)
+            }
         case let .keyUp(code):
-            EventSynthesizer.postKey(code, down: false, flags: flags)
-            heldKeys.remove(code)
+            if let text = event.textOverride {
+                EventSynthesizer.postText(text, down: false, flags: flags)
+            } else {
+                EventSynthesizer.postKey(code, down: false, flags: flags)
+                heldKeys.remove(code)
+            }
         }
     }
 

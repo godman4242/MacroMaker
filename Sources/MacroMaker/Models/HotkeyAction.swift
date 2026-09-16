@@ -59,6 +59,12 @@ enum HotkeyAction: Hashable, Sendable {
         return nil
     }
 
+    /// The library macro this action plays, if any.
+    var macroID: UUID? {
+        if case let .macro(id) = self { return id }
+        return nil
+    }
+
     /// Stable string identity (`toggleAutoClicker` or `macro:<uuid>`) for capture keys.
     var storageName: String { rawValue }
 

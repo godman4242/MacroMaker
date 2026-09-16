@@ -50,6 +50,22 @@ struct MenuBarView: View {
                 model.togglePlayback(.button)
             }
 
+            let hotkeyedMacros = model.library.records
+                .filter { model.macroHotkeyAction(for: $0) != nil }
+                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            if !hotkeyedMacros.isEmpty {
+                Divider()
+                ForEach(hotkeyedMacros) { record in
+                    FeatureRow(title: record.name, icon: "text.badge.star",
+                               phase: .idle,
+                               shortcut: model.macroHotkeyAction(for: record).flatMap { model.hotkeys.label(for: $0) },
+                               startTitle: "Play",
+                               isDisabled: record.isOrphan) {
+                        model.playMacro(id: record.id)
+                    }
+                }
+            }
+
             Divider()
 
             Button {
@@ -109,6 +125,7 @@ private struct FeatureRow: View {
     let icon: String
     let phase: RunPhase
     let shortcut: String?
+    var startTitle: String = "Start"
     var isDisabled = false
     let toggle: () -> Void
 
@@ -125,7 +142,7 @@ private struct FeatureRow: View {
                     .monospacedDigit()
             }
             Spacer()
-            Button(phase.isActive ? "Stop" : "Start", action: toggle)
+            Button(phase.isActive ? "Stop" : startTitle, action: toggle)
                 .controlSize(.small)
                 .disabled(isDisabled && !phase.isActive)
         }

@@ -8,6 +8,23 @@ struct RecorderView: View {
         let event: MacroEvent
     }
 
+    /// The selected event in the table; nil while recording (live events aren't editable).
+    @State private var selectedEvent: Int?
+    /// The sheet currently editing one step (nil = closed).
+    @State private var editor: StepEditor?
+    @State private var editorDraft = ""
+
+    private enum StepEditor: Hashable {
+        case renameText(Int)
+        case editTime(Int)
+
+        var index: Int {
+            switch self {
+            case let .renameText(index), let .editTime(index): index
+            }
+        }
+    }
+
     var body: some View {
         @Bindable var player = model.player
         let recorder = model.recorder
@@ -74,6 +91,8 @@ struct RecorderView: View {
 
             eventTable
 
+            LibrarySection()
+
             HStack(spacing: 16) {
                 LabeledContent("Record") { HotkeyField(action: .toggleRecording) }
                 LabeledContent("Play") { HotkeyField(action: .togglePlayback) }
@@ -90,6 +109,7 @@ struct RecorderView: View {
                 model.togglePlayback(.button)
             }
         }
+        .sheet(isPresented: editorBinding) { editorSheet }
     }
 
     @ViewBuilder private func playbackOptions(player: MacroPlayer) -> some View {
@@ -122,7 +142,8 @@ struct RecorderView: View {
             }
             .frame(maxHeight: .infinity)
         } else {
-            Table(events.enumerated().map { Row(id: $0.offset, event: $0.element) }) {
+            Table(events.enumerated().map { Row(id: $0.offset, event: $0.element) },
+                  selection: $selectedEvent) {
                 TableColumn("#") { row in
                     Text("\(row.id + 1)").monospacedDigit().foregroundStyle(.secondary)
                 }
@@ -135,8 +156,150 @@ struct RecorderView: View {
                     Text(row.event.summary)
                 }
             }
+            .contextMenu(forSelectionType: Int.self) { ids in
+                if let index = ids.first {
+                    contextMenuItems(for: index)
+                }
+            } primaryAction: { ids in
+                if let index = ids.first {
+                    editor = .renameText(index)
+                    editorDraft = renameText(for: index)
+                }
+            }
             .frame(maxHeight: .infinity)
         }
+    }
+
+    @ViewBuilder private func contextMenuItems(for index: Int) -> some View {
+        Button("Rename Step…") {
+            editor = .renameText(index)
+            editorDraft = renameText(for: index)
+        }
+        Button("Edit Time…") {
+            editor = .editTime(index)
+            editorDraft = timeText(for: index)
+        }
+        Divider()
+        Button("Insert Wait 0.5 s After") {
+            insertWait(after: index, seconds: 0.5)
+        }
+        Button("Insert Wait 1 s After") {
+            insertWait(after: index, seconds: 1)
+        }
+        Button("Insert Typed Text…") {
+            insertText(after: index)
+        }
+        Divider()
+        Button("Delete Step", role: .destructive) {
+            deleteStep(at: index)
+        }
+    }
+
+    private var editorBinding: Binding<Bool> {
+        Binding(get: { editor != nil }, set: { if !$0 { editor = nil } })
+    }
+
+    private var editorTitle: String {
+        switch editor {
+        case .renameText: "Rename Step"
+        case .editTime: "Edit Start Time (seconds)"
+        case nil: ""
+        }
+    }
+
+    private var editorHint: String {
+        switch editor {
+        case .renameText: "The text typed for this key step. Leave empty to play the raw key code."
+        case .editTime: "Seconds since the start of the macro, e.g. 1.25"
+        case nil: ""
+        }
+    }
+
+    @ViewBuilder private var editorSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(editorTitle).font(.headline)
+            TextField("Value", text: $editorDraft)
+                .textFieldStyle(.roundedBorder)
+                .frame(minWidth: 260)
+            Text(editorHint).font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { editor = nil }
+                Button("Apply") { applyEditor() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!editorIsValid)
+            }
+        }
+        .padding(20)
+    }
+
+    private var editorIsValid: Bool {
+        guard let editor else { return false }
+        switch editor {
+        case .renameText: return true   // clearing the text is a valid "play raw key"
+        case .editTime: return Double(editorDraft.trimmingCharacters(in: .whitespaces)) != nil
+        }
+    }
+
+    private func applyEditor() {
+        guard let editor, let macro = model.macro else { self.editor = nil; return }
+        let index = editor.index
+        guard index < macro.events.count else { self.editor = nil; return }
+        var updated = macro
+        switch editor {
+        case .renameText:
+            let text = editorDraft.trimmingCharacters(in: .whitespaces)
+            updated.events[index].textOverride = text.isEmpty ? nil : text
+        case .editTime:
+            if let t = Double(editorDraft.trimmingCharacters(in: .whitespaces)), t >= 0 {
+                updated.events[index].time = t
+            }
+        }
+        model.macro = updated
+        model.autosaveMacro()
+        self.editor = nil
+    }
+
+    private func renameText(for index: Int) -> String {
+        guard let macro = model.macro, index < macro.events.count else { return "" }
+        return macro.events[index].textOverride ?? ""
+    }
+
+    private func timeText(for index: Int) -> String {
+        guard let macro = model.macro, index < macro.events.count else { return "" }
+        return macro.events[index].time.formatted(.number.precision(.fractionLength(3)))
+    }
+
+    private func insertWait(after index: Int, seconds: Double) {
+        guard let macro = model.macro, index >= 0, index < macro.events.count else { return }
+        let insertAt = index + 1
+        let shifted = MacroLibraryRules.shiftedForWait(events: macro.events, atIndex: insertAt, seconds: seconds)
+        var updated = macro
+        updated.events = shifted
+        model.macro = updated
+        model.autosaveMacro()
+    }
+
+    private func insertText(after index: Int) {
+        guard let macro = model.macro, index >= 0, index < macro.events.count else { return }
+        let start = macro.events[index].time + 0.02
+        let typed = MacroLibraryRules.typedTextEvents("abc", start: start)
+        var updated = macro
+        updated.events.insert(contentsOf: typed, at: index + 1)
+        model.macro = updated
+        model.autosaveMacro()
+        // Select the first inserted step so the user immediately sees what "abc" means and can edit it.
+        selectedEvent = index + 1
+        editor = .renameText(index + 1)
+        editorDraft = "abc"
+    }
+
+    private func deleteStep(at index: Int) {
+        guard let macro = model.macro, index >= 0, index < macro.events.count else { return }
+        var updated = macro
+        updated.events.remove(at: index)
+        model.macro = updated
+        model.autosaveMacro()
     }
 
     private var playbackDetail: String {

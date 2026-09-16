@@ -87,17 +87,30 @@ struct MacroEvent: Equatable, Sendable {
     var action: Action
     /// Raw `CGEventFlags` at the moment of the event (which modifiers were held).
     var flags: UInt64
+    /// Step-editor insertions can attach a Unicode character to a placeholder key transition;
+    /// playback posts it as a Unicode string (like `KeyStroke.text`) instead of key code 0.
+    /// Always nil on real recordings; part of the envelope but not of v1 `.macromaker` files.
+    var textOverride: String?
+
+    init(time: TimeInterval, action: Action, flags: UInt64, textOverride: String? = nil) {
+        self.time = time
+        self.action = action
+        self.flags = flags
+        self.textOverride = textOverride
+    }
 
     @MainActor var summary: String {
         switch action {
         case let .mouseDown(button, point, clickCount):
-            "\(button.title) mouse down at \(Int(point.x)), \(Int(point.y))" + (clickCount > 1 ? " (×\(clickCount))" : "")
+            return "\(button.title) mouse down at \(Int(point.x)), \(Int(point.y))" + (clickCount > 1 ? " (×\(clickCount))" : "")
         case let .mouseUp(button, point, _):
-            "\(button.title) mouse up at \(Int(point.x)), \(Int(point.y))"
+            return "\(button.title) mouse up at \(Int(point.x)), \(Int(point.y))"
         case let .keyDown(keyCode, isRepeat):
-            "Key down \(KeyboardLayout.displayName(for: keyCode))" + (isRepeat ? " (repeat)" : "")
+            if let textOverride { return "Type “\(textOverride)”" }
+            return "Key down \(KeyboardLayout.displayName(for: keyCode))" + (isRepeat ? " (repeat)" : "")
         case let .keyUp(keyCode):
-            "Key up \(KeyboardLayout.displayName(for: keyCode))"
+            if textOverride != nil { return "(end character)" }
+            return "Key up \(KeyboardLayout.displayName(for: keyCode))"
         }
     }
 }
@@ -105,6 +118,11 @@ struct MacroEvent: Equatable, Sendable {
 extension MacroEvent: Codable {
     private enum CodingKeys: String, CodingKey {
         case time = "t", type, button, x, y, clickCount, keyCode, isRepeat = "repeat", flags
+        /// Editor insertions attach their character to a placeholder key transition via the
+        /// optional "text" key. V1-era readers ignore unknown keys and load the file fine —
+        /// they'd just play those transitions as key-code-0 presses, so share edited macros
+        /// with Macro Maker 2.0 or newer.
+        case textOverride = "text"
     }
 
     private enum EventType: String, Codable {
@@ -115,6 +133,7 @@ extension MacroEvent: Codable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         time = try c.decode(TimeInterval.self, forKey: .time)
         flags = try c.decodeIfPresent(UInt64.self, forKey: .flags) ?? 0
+        textOverride = try c.decodeIfPresent(String.self, forKey: .textOverride)
         let type = try c.decode(EventType.self, forKey: .type)
         switch type {
         case .mouseDown, .mouseUp:
@@ -136,6 +155,7 @@ extension MacroEvent: Codable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(time, forKey: .time)
         try c.encode(flags, forKey: .flags)
+        if let textOverride { try c.encode(textOverride, forKey: .textOverride) }
         switch action {
         case let .mouseDown(button, point, clickCount), let .mouseUp(button, point, clickCount):
             try c.encode(action.isMouseDown ? EventType.mouseDown : .mouseUp, forKey: .type)
