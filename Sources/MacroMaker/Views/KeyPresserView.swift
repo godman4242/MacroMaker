@@ -73,6 +73,17 @@ struct KeyPresserView: View {
                     HumanizeSection(settings: $presser.settings.humanizer)
                 }
 
+                Section {
+                    TargetAppPicker(bundleID: $presser.settings.sendToBundleID)
+                    if !presser.settings.sendToBundleID.isEmpty {
+                        Text("Keystrokes go straight to that app’s focus. Leave it empty to type into whatever is frontmost.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("App")
+                }
+
                 Section("Shortcut") {
                     LabeledContent("Start / stop") {
                         HotkeyField(action: .toggleKeyPresser)

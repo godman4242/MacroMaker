@@ -18,9 +18,22 @@ final class AutoClicker {
     private(set) var clickCount = 0
 
     /// A cursor-capture countdown: pick one point (fixed mode) or two corners (region mode).
-    enum PickMode { case point, regionCorner1, regionCorner2 }
+    enum PickMode { case point, regionCorner1, regionCorner2, directAppPoint }
     private(set) var pickCountdown: Int?
     private(set) var activePick: PickMode?
+
+    /// Why direct-app targeting can't post reliably right now, if it can't.
+    var directAppProblem: String? {
+        guard settings.target == .directApp else { return nil }
+        guard BackgroundPoster.targetingSupported else {
+            return "This macOS build doesn't support background clicks: the CGEventSetWindowLocation call is missing."
+        }
+        guard !settings.directAppBundleID.isEmpty else { return "Pick an app to click in." }
+        guard BackgroundPoster.processID(forBundleID: settings.directAppBundleID) != nil else {
+            return "The target app isn't running. Open it, then start clicking."
+        }
+        return nil
+    }
 
     @ObservationIgnored private let permissions: PermissionService
     @ObservationIgnored private weak var hotkeys: HotkeyService?
@@ -51,6 +64,9 @@ final class AutoClicker {
         let initialFrontmost: String?
         let restoreCursor: Bool
         let humanizer: HumanizerSettings
+        /// Direct-app delivery: the target app's bundle id and a *screen-space* point on its window.
+        let directAppBundleID: String
+        let directScreenPoint: CGPoint
 
         init(_ s: AutoClickerSettings, initialFrontmost: String?) {
             button = s.button
@@ -68,12 +84,18 @@ final class AutoClicker {
             self.initialFrontmost = s.stopOnFrontmostChange ? initialFrontmost : nil
             restoreCursor = s.restoreCursor
             humanizer = s.humanizer
+            directAppBundleID = s.directAppBundleID
+            directScreenPoint = CGPoint(x: s.directAppX, y: s.directAppY)
         }
     }
 
     func toggle(_ trigger: StartTrigger) {
         if session.phase.isActive {
             session.stop()
+            return
+        }
+        guard directAppProblem == nil else {
+            NSSound.beep()
             return
         }
         guard permissions.ensureAccessibility() else { return }
@@ -138,11 +160,16 @@ final class AutoClicker {
 
     /// One click event: resolves the point for this event, then down/up.
     nonisolated private static func clickOnce(_ plan: Plan) {
+        if plan.target == .directApp {
+            directClickOnce(plan)
+            return
+        }
         let base: CGPoint? = switch plan.target {
         case .cursor: nil
         case .fixedPoint: plan.fixedPoint
         case .region: ClickGeometry.randomPoint(in: plan.region,
                                                 u1: .random(in: 0...1), u2: .random(in: 0...1))
+        case .directApp: nil  // never reached: early-returned to directClickOnce above
         }
         var point = base.map {
             ClickGeometry.jitter($0, amount: plan.positionJitterPx,
@@ -161,6 +188,57 @@ final class AutoClicker {
         if let before, EventSynthesizer.cursorLocation != before {
             EventSynthesizer.postMouse(.mouseMoved, button: .left, at: before)
         }
+    }
+
+    /// Direct-app click: no cursor movement, no app raising — posted into the process.
+    /// The window's on-screen rect is re-queried each click, so a moving window is followed.
+    nonisolated private static func directClickOnce(_ plan: Plan) {
+        let state = BackgroundPoster.targetState(forBundleID: plan.directAppBundleID)
+        guard let pid = state.pid,
+              let window = BackgroundPoster.primaryWindow(ofPID: pid)
+        else { return }  // App quit or hid its window mid-run: skip the click, keep the loop alive.
+        let screenPoint = ClickGeometry.jitter(plan.directScreenPoint, amount: plan.positionJitterPx,
+                                               u1: .random(in: 0...1), u2: .random(in: 0...1))
+        BackgroundPoster.click(plan.button, screenPoint: screenPoint,
+                               holdFor: TickSchedule.pressDuration(interval: plan.interval),
+                               clickCount: plan.clickCountPerEvent,
+                               window: window, pid: pid, appIsActive: state.isActive)
+    }
+
+    // MARK: Direct-app helpers (main-actor queries)
+
+    /// One line of truth about where direct-app clicks will land, or why they can't.
+    var directAppStatus: String {
+        let bundleID = settings.directAppBundleID
+        guard !bundleID.isEmpty else { return "No app chosen yet." }
+        guard let pid = BackgroundPoster.processID(forBundleID: bundleID) else {
+            return "The target app isn't running."
+        }
+        guard let window = BackgroundPoster.primaryWindow(ofPID: pid) else {
+            return "No usable window on screen — clicks can't land until one is visible."
+        }
+        let point = BackgroundPoster.windowPoint(
+            fromScreenPoint: CGPoint(x: settings.directAppX, y: settings.directAppY), window: window)
+        return "Window \(Int(window.bounds.width))×\(Int(window.bounds.height)) — clicks land at (\(Int(point.x)), \(Int(point.y))) inside it."
+    }
+
+    /// Posts one click at the chosen target without starting a run. Reports when it skips.
+    func testClick() -> String {
+        guard BackgroundPoster.targetingSupported else { return directAppProblem ?? "Background clicks aren't supported here." }
+        guard let pid = BackgroundPoster.processID(forBundleID: settings.directAppBundleID) else {
+            return "The target app isn't running."
+        }
+        guard let window = BackgroundPoster.primaryWindow(ofPID: pid) else {
+            return "Test click skipped — the app has no on-screen window."
+        }
+        let point = ClickGeometry.jitter(CGPoint(x: settings.directAppX, y: settings.directAppY),
+                                         amount: settings.jitterEnabled ? settings.jitterPx : 0,
+                                         u1: .random(in: 0...1), u2: .random(in: 0...1))
+        BackgroundPoster.click(settings.button, screenPoint: point, holdFor: 0.05,
+                               clickCount: max(1, settings.clickCountPerEvent.rawValue),
+                               window: window, pid: pid,
+                               appIsActive: BackgroundPoster.isActive(bundleID: settings.directAppBundleID))
+        return "Test click sent."
     }
 
     /// Sampled at tick boundaries so the app-switch check costs one call per tick.
@@ -199,6 +277,12 @@ final class AutoClicker {
         beginPick(second ? .regionCorner2 : .regionCorner1)
     }
 
+    /// Hover over the spot inside the target window; captured in screen coordinates and
+    /// re-anchored to the window's live bounds on every click.
+    func pickDirectAppPoint() {
+        beginPick(.directAppPoint)
+    }
+
     private func beginPick(_ mode: PickMode) {
         cancelPick()
         activePick = mode
@@ -227,6 +311,10 @@ final class AutoClicker {
         case .regionCorner2:
             let corner1 = CGPoint(x: updated.region.x, y: updated.region.y)
             updated.region = ClickRegion(corner1: corner1, corner2: location)
+        case .directAppPoint:
+            updated.directAppX = location.x.rounded()
+            updated.directAppY = location.y.rounded()
+            updated.target = .directApp
         }
         settings = updated
         pickCountdown = nil

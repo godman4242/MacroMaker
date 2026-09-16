@@ -2,6 +2,7 @@ import SwiftUI
 
 struct AutoClickerView: View {
     @Environment(AppModel.self) private var model
+    @State private var directAppTestResult: String?
 
     var body: some View {
         @Bindable var clicker = model.autoClicker
@@ -37,8 +38,12 @@ struct AutoClickerView: View {
                         Text("Wherever the cursor is").tag(AutoClickerSettings.Target.cursor)
                         Text("A fixed point on screen").tag(AutoClickerSettings.Target.fixedPoint)
                         Text("A random point inside a rectangle").tag(AutoClickerSettings.Target.region)
+                        Text("Inside a specific app (background)").tag(AutoClickerSettings.Target.directApp)
                     }
                     .pickerStyle(.radioGroup)
+                    if clicker.settings.target == .directApp {
+                        StatusMessage(kind: .info, text: "The point is remembered as a spot inside the app’s window — if the window moves, clicks move with it.")
+                    }
                     switch clicker.settings.target {
                     case .cursor:
                         EmptyView()
@@ -46,6 +51,8 @@ struct AutoClickerView: View {
                         fixedPointRows(clicker: clicker)
                     case .region:
                         regionRows(clicker: clicker)
+                    case .directApp:
+                        directAppRows(clicker: clicker)
                     }
                     Toggle("Vary the point by up to ±", isOn: $clicker.settings.jitterEnabled)
                     if clicker.settings.jitterEnabled {
@@ -139,6 +146,36 @@ struct AutoClickerView: View {
                 isCapturing: clicker.activePick == .regionCorner2) {
             clicker.pickRegionCorner(true)
         }
+    }
+
+    @ViewBuilder private func directAppRows(clicker: AutoClicker) -> some View {
+        @Bindable var clicker = clicker
+        TargetAppPicker(bundleID: $clicker.settings.directAppBundleID)
+        if let problem = clicker.directAppProblem {
+            StatusMessage(kind: .error, text: problem)
+        } else {
+            StatusMessage(kind: .info, text: clicker.directAppStatus)
+        }
+        NumberField("Point X", value: $clicker.settings.directAppX, unit: "pt", range: -20_000...20_000)
+        NumberField("Point Y", value: $clicker.settings.directAppY, unit: "pt", range: -20_000...20_000)
+        pickRow(instruction: "Hover over the spot inside the target app’s window.",
+                button: "Pick with Cursor…", capturing: "Hover over the target window…",
+                isCapturing: clicker.activePick == .directAppPoint) {
+            clicker.pickDirectAppPoint()
+        }
+        HStack {
+            Button("Test Click") { directAppTestResult = clicker.testClick() }
+                .help("Posts one click at the chosen point")
+            if let result = directAppTestResult {
+                Text(result)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        Text("The app can be behind other windows and your cursor never moves — clicks are delivered straight to the app’s process, aimed at whichever of its windows is on top, re-aimed if the window moves. The catch: apps that read the raw input device instead of the event queue (many games, e.g. Roblox) ignore these clicks entirely.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
     }
 
     @ViewBuilder private func pickRow(instruction: String, button: String, capturing: String,

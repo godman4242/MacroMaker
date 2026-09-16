@@ -3,6 +3,8 @@ import Foundation
 struct AutoClickerSettings: Codable, Equatable, Sendable {
     enum Target: String, Codable, CaseIterable, Sendable {
         case cursor, fixedPoint, region
+        /// Clicks posted straight to an app's process — the app can be behind other windows.
+        case directApp
     }
 
     enum ClickCount: Int, Codable, CaseIterable, Identifiable, Sendable {
@@ -36,6 +38,11 @@ struct AutoClickerSettings: Codable, Equatable, Sendable {
     var delayedStartSeconds: Double = 0
     var restoreCursor = false
     var humanizer = HumanizerSettings()
+    /// Direct-app mode: the target app's bundle id and the captured *screen* point
+    /// (converted to window-local coordinates against the window's live bounds each click).
+    var directAppBundleID = ""
+    var directAppX: Double = 400
+    var directAppY: Double = 300
 
     init() {}
 
@@ -64,6 +71,9 @@ struct AutoClickerSettings: Codable, Equatable, Sendable {
         delayedStartSeconds = try c.decodeIfPresent(Double.self, forKey: .delayedStartSeconds) ?? 0
         restoreCursor = try c.decodeIfPresent(Bool.self, forKey: .restoreCursor) ?? false
         humanizer = try c.decodeIfPresent(HumanizerSettings.self, forKey: .humanizer) ?? HumanizerSettings()
+        directAppBundleID = try c.decodeIfPresent(String.self, forKey: .directAppBundleID) ?? ""
+        directAppX = try c.decodeIfPresent(Double.self, forKey: .directAppX) ?? 400
+        directAppY = try c.decodeIfPresent(Double.self, forKey: .directAppY) ?? 300
     }
 }
 
@@ -76,6 +86,8 @@ struct KeyPresserSettings: Codable, Equatable, Sendable {
     var mode: Mode = .autoPress
     var intervalMs: Double = 100
     var humanizer = HumanizerSettings()
+    /// Optional direct-app delivery for the Key Presser (empty = synthesize to whatever is frontmost).
+    var sendToBundleID = ""
 
     init() {}
 
@@ -85,6 +97,7 @@ struct KeyPresserSettings: Codable, Equatable, Sendable {
         mode = try c.decodeIfPresent(Mode.self, forKey: .mode) ?? .autoPress
         intervalMs = try c.decodeIfPresent(Double.self, forKey: .intervalMs) ?? 100
         humanizer = try c.decodeIfPresent(HumanizerSettings.self, forKey: .humanizer) ?? HumanizerSettings()
+        sendToBundleID = try c.decodeIfPresent(String.self, forKey: .sendToBundleID) ?? ""
     }
 }
 

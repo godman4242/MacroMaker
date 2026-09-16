@@ -54,6 +54,9 @@ final class KeyPresser {
         let mode = settings.mode
         let interval = max(TickSchedule.minimumDelay, settings.intervalMs / 1000)
         let humanizerSettings = settings.humanizer
+        // Direct-app delivery resolves the process once; if the app quits mid-run the posts
+        // are just dropped and the loop keeps its timing.
+        let directPID = settings.sendToBundleID.isEmpty ? nil : BackgroundPoster.processID(forBundleID: settings.sendToBundleID)
         // Held keys repeat at the user's own System Settings ▸ Keyboard rates, like a real key.
         let repeatDelay = NSEvent.keyRepeatDelay
         let repeatInterval = NSEvent.keyRepeatInterval
@@ -74,9 +77,10 @@ final class KeyPresser {
                 switch mode {
                 case .autoPress:
                     Self.autoPressLoop(stroke, interval: interval, humanizer: humanizerSettings,
-                                       worker: worker, report: report)
+                                       directPID: directPID, worker: worker, report: report)
                 case .hold:
-                    Self.holdLoop(stroke, repeatDelay: repeatDelay, repeatInterval: repeatInterval, worker: worker, report: report)
+                    Self.holdLoop(stroke, repeatDelay: repeatDelay, repeatInterval: repeatInterval,
+                                  directPID: directPID, worker: worker, report: report)
                 }
             }
             return { worker.cancelAndWait() }
@@ -85,6 +89,7 @@ final class KeyPresser {
 
     nonisolated private static func autoPressLoop(_ stroke: KeyStroke, interval: TimeInterval,
                                                   humanizer humanizerSettings: HumanizerSettings,
+                                                  directPID: pid_t?,
                                                   worker: WorkerThread,
                                                   report: @Sendable (Int, Bool) -> Void) {
         let hold = TickSchedule.pressDuration(interval: interval)
@@ -92,11 +97,19 @@ final class KeyPresser {
         var deadline = DispatchTime.now().uptimeNanoseconds
         var count = 0
         var lastReport: UInt64 = 0
+        var heldModifiers: [CGKeyCode] = []
+        defer { releaseModifiers(heldModifiers, directPID: directPID) }
 
         while !worker.isCancelled {
-            EventSynthesizer.keyDown(stroke)
-            Thread.sleep(forTimeInterval: hold)
-            EventSynthesizer.keyUp(stroke)
+            if let directPID {
+                directKeyDown(stroke, isRepeat: false, heldModifiers: &heldModifiers, pid: directPID)
+                Thread.sleep(forTimeInterval: hold)
+                directKeyUp(stroke, heldModifiers: &heldModifiers, pid: directPID)
+            } else {
+                EventSynthesizer.keyDown(stroke)
+                Thread.sleep(forTimeInterval: hold)
+                EventSynthesizer.keyUp(stroke)
+            }
             count += 1
 
             let now = DispatchTime.now().uptimeNanoseconds
@@ -114,11 +127,20 @@ final class KeyPresser {
     /// Presses the key and keeps it down — with auto-repeat, exactly like a finger on the key —
     /// until stopped. The key is always released, whatever stops it.
     nonisolated private static func holdLoop(_ stroke: KeyStroke, repeatDelay: TimeInterval, repeatInterval: TimeInterval,
-                                             worker: WorkerThread, report: @Sendable (Int, Bool) -> Void) {
-        EventSynthesizer.keyDown(stroke)
+                                             directPID: pid_t?, worker: WorkerThread, report: @Sendable (Int, Bool) -> Void) {
+        var heldModifiers: [CGKeyCode] = []
+        if let directPID {
+            directKeyDown(stroke, isRepeat: false, heldModifiers: &heldModifiers, pid: directPID)
+        } else {
+            EventSynthesizer.keyDown(stroke)
+        }
         report(1, false)
         defer {
-            EventSynthesizer.keyUp(stroke)
+            if let directPID {
+                directKeyUp(stroke, heldModifiers: &heldModifiers, pid: directPID)
+            } else {
+                EventSynthesizer.keyUp(stroke)
+            }
             report(1, true)
         }
         // Modifier keys (Shift, ⌘…) don't auto-repeat on real keyboards either.
@@ -130,8 +152,54 @@ final class KeyPresser {
         let step = UInt64(max(repeatInterval, 0.015) * 1_000_000_000)
         var deadline = DispatchTime.now().uptimeNanoseconds
         repeat {
-            EventSynthesizer.keyDown(stroke, isRepeat: true)
+            if let directPID {
+                directKeyDown(stroke, isRepeat: true, heldModifiers: &heldModifiers, pid: directPID)
+            } else {
+                EventSynthesizer.keyDown(stroke, isRepeat: true)
+            }
             deadline = TickSchedule.nextDeadline(previous: deadline, delay: step, now: DispatchTime.now().uptimeNanoseconds)
         } while worker.sleep(untilUptime: deadline)
+    }
+
+    // MARK: Direct-app posting (modifiers as flag bits, not flagsChanged events —
+    // a per-app tap can't recreate real modifier state, and it isn't needed).
+
+    nonisolated private static func directKeyDown(_ stroke: KeyStroke, isRepeat: Bool,
+                                                  heldModifiers: inout [CGKeyCode], pid: pid_t) {
+        switch stroke.key {
+        case let .code(code):
+            var held = heldModifiers
+            if KeyCodes.modifierKey(for: code) != nil, !held.contains(code) {
+                held.append(code)
+                heldModifiers = held
+            }
+            BackgroundPoster.keyEvent(code, down: true,
+                                      flags: flags(held: held).union(stroke.modifiers.cgFlags),
+                                      isRepeat: isRepeat, pid: pid)
+        case let .text(text):
+            BackgroundPoster.textEvent(text, down: true, pid: pid)
+        }
+    }
+
+    nonisolated private static func directKeyUp(_ stroke: KeyStroke, heldModifiers: inout [CGKeyCode], pid: pid_t) {
+        switch stroke.key {
+        case let .code(code):
+            BackgroundPoster.keyEvent(code, down: false,
+                                      flags: flags(held: heldModifiers).union(stroke.modifiers.cgFlags), pid: pid)
+            if KeyCodes.modifierKey(for: code) != nil { heldModifiers.removeAll { $0 == code } }
+        case let .text(text):
+            BackgroundPoster.textEvent(text, down: false, pid: pid)
+        }
+    }
+
+    nonisolated private static func flags(held: [CGKeyCode]) -> CGEventFlags {
+        held.reduce([]) { $0.union(KeyCodes.modifierKey(for: $1)?.flag ?? []) }
+    }
+
+    nonisolated private static func releaseModifiers(_ held: [CGKeyCode], directPID: pid_t?) {
+        guard let directPID else { return }
+        for code in held.reversed() {
+            BackgroundPoster.keyEvent(code, down: false, flags: [], pid: directPID)
+        }
     }
 }
