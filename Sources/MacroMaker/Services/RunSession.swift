@@ -17,8 +17,8 @@ final class RunSession {
     ///
     /// `begin` receives a token for `finish(_:)` and returns a closure that stops the work (or nil
     /// if the work couldn't start). The work must report finishing asynchronously, never from
-    /// inside `begin`.
-    func start(withCountdown: Bool, begin: @escaping @MainActor (_ token: Int) -> (() -> Void)?) {
+    /// inside `begin`. `countdownExtra` adds seconds to the standard countdown (delayed start).
+    func start(withCountdown: Bool, countdownExtra: Int = 0, begin: @escaping @MainActor (_ token: Int) -> (() -> Void)?) {
         guard phase == .idle else { return }
         generation += 1
         let token = generation
@@ -26,8 +26,9 @@ final class RunSession {
             run(token, begin)
             return
         }
+        let total = DelayedStart.total(base: Self.countdownSeconds, extra: Double(countdownExtra))
         countdownTask = Task { [weak self] in
-            for remaining in stride(from: Self.countdownSeconds, to: 0, by: -1) {
+            for remaining in stride(from: total, to: 0, by: -1) {
                 guard let self, self.generation == token else { return }
                 self.phase = .countdown(secondsLeft: remaining)
                 try? await Task.sleep(for: .seconds(1))

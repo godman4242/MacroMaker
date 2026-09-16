@@ -6,7 +6,7 @@ struct HotkeyField: View {
     let action: HotkeyAction
     @Environment(AppModel.self) private var model
 
-    private var captureID: String { "hotkey.\(action.rawValue)" }
+    private var captureID: String { "hotkey.\(action.storageName)" }
     private var isCapturing: Bool { model.keyCapture.owner == captureID }
 
     var body: some View {

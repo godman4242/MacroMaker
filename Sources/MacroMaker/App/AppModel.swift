@@ -40,7 +40,7 @@ final class AppModel {
     }
 
     private init() {
-        autoClicker = AutoClicker(permissions: permissions)
+        autoClicker = AutoClicker(permissions: permissions, hotkeys: hotkeys)
         keyPresser = KeyPresser(permissions: permissions)
         player = MacroPlayer(permissions: permissions)
     }
@@ -59,6 +59,16 @@ final class AppModel {
     }
 
     func perform(_ action: HotkeyAction, trigger: StartTrigger) {
+        switch action {
+        case let .builtin(builtin):
+            perform(builtin, trigger: trigger)
+        case let .macro(id):
+            // Wired up when the macro library section exists; unknown ids are inert.
+            _ = id
+        }
+    }
+
+    func perform(_ action: BuiltinHotkeyAction, trigger: StartTrigger) {
         switch action {
         case .toggleAutoClicker: autoClicker.toggle(trigger)
         case .toggleKeyPresser: keyPresser.toggle(trigger)

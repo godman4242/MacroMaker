@@ -117,6 +117,7 @@ private struct FeatureRow: View {
         case .idle: shortcut.map { "Shortcut \($0)" } ?? "No shortcut"
         case let .countdown(secondsLeft): "Starting in \(secondsLeft)…"
         case .running: "Running"
+        case .paused: "Paused"
         }
     }
 }

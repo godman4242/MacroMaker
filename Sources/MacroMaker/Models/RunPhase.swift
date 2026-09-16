@@ -4,6 +4,8 @@ enum RunPhase: Equatable, Sendable {
     /// Waiting before starting, so the user can move away from Macro Maker's window.
     case countdown(secondsLeft: Int)
     case running
+    /// Stopped mid-run because the user took over; the feature holds no worker but can resume.
+    case paused
 
     var isActive: Bool { self != .idle }
 }

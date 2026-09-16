@@ -47,6 +47,7 @@ struct RunControls: View {
         case .idle: startTitle
         case let .countdown(secondsLeft): "Starting in \(secondsLeft)… (click to cancel)"
         case .running: "Stop"
+        case .paused: "Stop"
         }
     }
 
@@ -68,6 +69,14 @@ struct RunControls: View {
                 if let startedAt = session.startedAt {
                     Text(startedAt, style: .timer).monospacedDigit()
                 }
+                if let detail {
+                    Text("· \(detail)").monospacedDigit()
+                }
+            }
+        case .paused:
+            HStack(spacing: 4) {
+                Circle().fill(.indigo).frame(width: 7, height: 7)
+                Text("Paused — you took over")
                 if let detail {
                     Text("· \(detail)").monospacedDigit()
                 }

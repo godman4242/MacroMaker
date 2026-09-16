@@ -2,7 +2,14 @@ import Foundation
 
 struct AutoClickerSettings: Codable, Equatable, Sendable {
     enum Target: String, Codable, CaseIterable, Sendable {
-        case cursor, fixedPoint
+        case cursor, fixedPoint, region
+    }
+
+    enum ClickCount: Int, Codable, CaseIterable, Identifiable, Sendable {
+        case single = 1, double = 2, triple = 3
+
+        var id: Self { self }
+        var title: String { rawValue == 1 ? "Single" : rawValue == 2 ? "Double" : "Triple" }
     }
 
     var button: MouseButton = .left
@@ -16,6 +23,46 @@ struct AutoClickerSettings: Codable, Equatable, Sendable {
     var maxClicks = 100
     var stopAfterDuration = false
     var maxDurationSeconds: Double = 60
+
+    // MARK: v2
+    var intervalUnit: IntervalUnit = .milliseconds
+    var burstSize = 1
+    var clickCountPerEvent: ClickCount = .single
+    var region = ClickRegion()
+    var jitterEnabled = false
+    var jitterPx: Double = 5
+    var stopOnFrontmostChange = false
+    var holdToClick = false
+    var delayedStartSeconds: Double = 0
+    var restoreCursor = false
+
+    init() {}
+
+    /// Tolerant decoding: v2 fields default when missing, so a v1 settings blob still loads.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        button = try c.decodeIfPresent(MouseButton.self, forKey: .button) ?? .left
+        intervalMs = try c.decodeIfPresent(Double.self, forKey: .intervalMs) ?? 100
+        randomizeInterval = try c.decodeIfPresent(Bool.self, forKey: .randomizeInterval) ?? false
+        randomOffsetMs = try c.decodeIfPresent(Double.self, forKey: .randomOffsetMs) ?? 20
+        target = try c.decodeIfPresent(Target.self, forKey: .target) ?? .cursor
+        x = try c.decodeIfPresent(Double.self, forKey: .x) ?? 500
+        y = try c.decodeIfPresent(Double.self, forKey: .y) ?? 500
+        stopAfterClicks = try c.decodeIfPresent(Bool.self, forKey: .stopAfterClicks) ?? false
+        maxClicks = try c.decodeIfPresent(Int.self, forKey: .maxClicks) ?? 100
+        stopAfterDuration = try c.decodeIfPresent(Bool.self, forKey: .stopAfterDuration) ?? false
+        maxDurationSeconds = try c.decodeIfPresent(Double.self, forKey: .maxDurationSeconds) ?? 60
+        intervalUnit = try c.decodeIfPresent(IntervalUnit.self, forKey: .intervalUnit) ?? .milliseconds
+        burstSize = try c.decodeIfPresent(Int.self, forKey: .burstSize) ?? 1
+        clickCountPerEvent = try c.decodeIfPresent(ClickCount.self, forKey: .clickCountPerEvent) ?? .single
+        region = try c.decodeIfPresent(ClickRegion.self, forKey: .region) ?? ClickRegion()
+        jitterEnabled = try c.decodeIfPresent(Bool.self, forKey: .jitterEnabled) ?? false
+        jitterPx = try c.decodeIfPresent(Double.self, forKey: .jitterPx) ?? 5
+        stopOnFrontmostChange = try c.decodeIfPresent(Bool.self, forKey: .stopOnFrontmostChange) ?? false
+        holdToClick = try c.decodeIfPresent(Bool.self, forKey: .holdToClick) ?? false
+        delayedStartSeconds = try c.decodeIfPresent(Double.self, forKey: .delayedStartSeconds) ?? 0
+        restoreCursor = try c.decodeIfPresent(Bool.self, forKey: .restoreCursor) ?? false
+    }
 }
 
 struct KeyPresserSettings: Codable, Equatable, Sendable {

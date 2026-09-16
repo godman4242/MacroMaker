@@ -23,10 +23,15 @@ enum EventSynthesizer {
 
     /// A complete click. `point == nil` clicks wherever the cursor currently is.
     static func click(_ button: MouseButton, at point: CGPoint?, holdFor duration: TimeInterval) {
+        click(button, at: point, holdFor: duration, clickCount: 1)
+    }
+
+    /// A complete click with a click state (2 = double-click, 3 = triple) like `NSEvent.clickCount`.
+    static func click(_ button: MouseButton, at point: CGPoint?, holdFor duration: TimeInterval, clickCount: Int) {
         let location = point ?? cursorLocation
-        postMouse(button.downEventType, button: button, at: location)
+        postMouse(button.downEventType, button: button, at: location, clickCount: clickCount)
         if duration > 0 { Thread.sleep(forTimeInterval: duration) }
-        postMouse(button.upEventType, button: button, at: location)
+        postMouse(button.upEventType, button: button, at: location, clickCount: clickCount)
     }
 
     // MARK: Keyboard

@@ -15,9 +15,9 @@ struct SettingsView: View {
             }
 
             Section {
-                ForEach(HotkeyAction.allCases) { action in
+                ForEach(BuiltinHotkeyAction.allCases, id: \.self) { action in
                     LabeledContent(action.title) {
-                        HotkeyField(action: action)
+                        HotkeyField(action: .builtin(action))
                     }
                 }
                 HStack {
