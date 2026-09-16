@@ -12,8 +12,14 @@ Per event: `t: Double` (seconds, required), `type: "mouseDown"|"mouseUp"|"keyDow
 `clickCount: Int` (optional, default 1). keyDown adds `keyCode: UInt16` (**macOS virtual
 key code** — see below), `repeat: Bool` (optional, default false); keyUp adds `keyCode`.
 
+Since app 2.0, key events may also carry `text: String` (optional): the step editor's
+typed-text input attaches the character to a placeholder key transition (`keyCode: 0`)
+and playback types it as a Unicode string instead of pressing key 0. Older readers
+ignore the field entirely (unknown-field rule below), so files stay openable in v1.
+
 Decoder accepts v1 files with missing optional fields (defaults above); rejects
-`version` outside `1...current`; unknown fields dropped on round-trip.
+`version` outside `1...current`; unknown fields dropped on round-trip except `text`
+which round-trips losslessly.
 Writes are atomic; files capped at 16 MB on read.
 
 ## v2 (cross-platform, planned — shared by the Swift app and the Tauri sibling)

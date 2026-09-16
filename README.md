@@ -5,12 +5,22 @@ Written in Swift and SwiftUI. Needs macOS 14 (Sonoma) or later, and runs nativel
 
 ![Macro Maker main window](docs/screenshot-main.png)
 
+## What's new in 2.0
+
+- **Direct-app targeting:** clicks and keystrokes can go to one chosen app in the background — your cursor never moves and the app can be behind other windows.
+- **Humanize timing:** jitter the interval, speed, drifts and surprise pauses make automation look like a person.
+- **Scheduled starts:** set a clock time and Macro Maker starts the feature then; it disarms itself after firing once.
+- **Pause on real input:** your own clicks and keys pause the run ("Paused — you took over"), with optional auto-resume after N idle seconds.
+- **Profiles:** save every feature's settings as a named profile and share them as `.macromakerprofile` files.
+- **Macro Library:** keep recordings forever, star favorites, assign each its own hotkey, and edit steps (delete, insert waits, insert typed text) right in the table.
+- **Polish:** a sidebar layout, an always-on status line that says what's running, and a first-run onboarding sheet.
+
 | Tab | What it does |
 |---|---|
-| **Auto Clicker** | Left, right or middle clicks every N ms, with an optional random offset. Clicks at the cursor or at a fixed screen point. Can stop by itself after N clicks or a time limit. |
-| **Key Presser** | Presses any key: letters, digits, `!@#$`, space, enter, tab, arrows, F1–F20, or combos like `cmd+shift+z`. **Auto press** repeats it on an interval. **Hold down** keeps it pressed, with key repeat, like a finger on the key. |
+| **Auto Clicker** | Left, right or middle clicks every N ms, with optional jitter. Clicks at the cursor, a fixed point, inside a rectangle, or inside a chosen app in the background. Can burst clicks, hold a button down, and stop after N clicks or a time limit. |
+| **Key Presser** | Presses any key: letters, digits, `!@#$`, space, enter, tab, arrows, F1–F20, or combos like `cmd+shift+z`. **Auto press** repeats it on an interval; **hold down** keeps it pressed with key repeat. Can type into a chosen app in the background. |
 | **Web Target** | Clicks an element in a Safari or Chrome tab, found by CSS selector, XPath or page coordinates. It works by running JavaScript inside the tab, so the tab can be in the background while you use other apps. |
-| **Macro Recorder** | Records mouse clicks (with positions) and key presses (with timing), then replays them with the original timing. Replays can repeat, loop, or run at 0.25×–4× speed. Save and open macros as `.macromaker` files. |
+| **Macro Recorder** | Records mouse clicks and key presses, replays them with the original timing (repeatable, looped, 0.25×–4× speed, humanized). The built-in step editor deletes steps, inserts waits, and inserts typed text. Save/open as `.macromaker`, and keep them in the **Library** with a per-macro hotkey. |
 
 Intended for UI automation and accessibility use. Use of autoclickers may violate the terms of some games and services.
 
@@ -117,6 +127,9 @@ The fields:
 - `x`, `y`: screen points from the top-left of the main display
 - `keyCode`: macOS virtual key code (the number macOS assigns to each physical key)
 - `flags`: which modifier keys were held (raw `CGEventFlags` value)
+- `text` *(since 2.0)*: optional — when the step editor inserts typed text, the key events carry the character here and are played as Unicode input. v1-era readers ignore this field and load the file fine.
+
+Profiles are separate `.macromakerprofile` files (plain JSON of every feature's settings); the library keeps its files in `~/Library/Application Support/Macro Maker/Macros/` with an index in the app's preferences.
 
 ---
 
