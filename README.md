@@ -3,6 +3,8 @@
 A native macOS menu bar app that clicks, presses keys, clicks inside web pages, and records and replays macros.
 Written in Swift and SwiftUI. Needs macOS 14 (Sonoma) or later, and runs natively on Apple Silicon and Intel.
 
+![Macro Maker main window](docs/screenshot-main.png)
+
 | Tab | What it does |
 |---|---|
 | **Auto Clicker** | Left, right or middle clicks every N ms, with an optional random offset. Clicks at the cursor or at a fixed screen point. Can stop by itself after N clicks or a time limit. |
