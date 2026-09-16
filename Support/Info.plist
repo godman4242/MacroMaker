@@ -50,6 +50,18 @@
 				<string>com.kheshav.macromaker</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Macro Maker Profile</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.kheshav.macromakerprofile</string>
+			</array>
+		</dict>
 	</array>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
@@ -67,6 +79,23 @@
 				<key>public.filename-extension</key>
 				<array>
 					<string>macromaker</string>
+				</array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.kheshav.macromakerprofile</string>
+			<key>UTTypeDescription</key>
+			<string>Macro Maker Profile</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.json</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>macromakerprofile</string>
 				</array>
 			</dict>
 		</dict>

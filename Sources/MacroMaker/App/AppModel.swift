@@ -18,6 +18,33 @@ final class AppModel {
     let webClicker = WebClicker()
     let recorder = MacroRecorder()
     let player: MacroPlayer
+    let profiles = ProfileService()
+
+    // MARK: Profiles
+
+    /// A profile of the app's current state, ready to save or export.
+    func currentProfile(named name: String) -> Profile {
+        var profile = Profile(name: ProfileRules.cleanedName(name))
+        profile.autoClicker = autoClicker.settings
+        profile.keyPresser = keyPresser.settings
+        profile.webTarget = webClicker.settings
+        profile.playback = player.settings
+        profile.macro = macro
+        return profile
+    }
+
+    /// Replaces every feature's settings with the profile's, stopping anything running first so
+    /// half-applied settings never hit a live worker. Returns the profile applied.
+    @discardableResult
+    func applyProfile(_ entry: ProfileEntry) -> ProfileEntry {
+        stopAll()
+        autoClicker.settings = entry.autoClicker
+        keyPresser.settings = entry.keyPresser
+        webClicker.settings = entry.webTarget
+        player.settings = entry.playback
+        if let profileMacro = entry.macro { load(profileMacro) }
+        return entry
+    }
 
     /// The macro shown in the recorder tab (last recording or opened file).
     var macro: Macro?

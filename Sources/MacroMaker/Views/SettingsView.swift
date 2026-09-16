@@ -15,6 +15,14 @@ struct SettingsView: View {
             }
 
             Section {
+                ProfilesSection(model: model)
+            } header: {
+                Text("Profiles")
+            } footer: {
+                Text("A profile is every feature's settings plus the current macro. Export shares it as a file; applying one stops anything running first.")
+            }
+
+            Section {
                 ScheduleRow(model: model)
             } header: {
                 Text("Scheduled start")
