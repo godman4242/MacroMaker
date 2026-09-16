@@ -15,6 +15,14 @@ struct SettingsView: View {
             }
 
             Section {
+                ScheduleRow(model: model)
+            } header: {
+                Text("Scheduled start")
+            } footer: {
+                Text("Starts the chosen feature at a clock time on the next day that time is still ahead. Disarms itself after firing once — re-enable it for the next day.")
+            }
+
+            Section {
                 ForEach(BuiltinHotkeyAction.allCases, id: \.self) { action in
                     LabeledContent(action.title) {
                         HotkeyField(action: .builtin(action))
@@ -52,6 +60,69 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+private struct ScheduleRow: View {
+    let model: AppModel
+    @State private var clockText = ScheduleRules.clockString(seconds: 18 * 3600)
+
+    var body: some View {
+        @Bindable var model = model
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Toggle("Start at a time", isOn: Binding(
+                    get: { model.schedule.enabled },
+                    set: { enabled in
+                        var updated = model.schedule
+                        updated.enabled = enabled
+                        model.setSchedule(updated)
+                    }
+                ))
+                Spacer()
+                if let deadline = model.scheduleDeadline {
+                    TimelineView(.periodic(from: .now, by: 30)) { context in
+                        Text(ScheduleRules.describe(deadline: deadline, from: context.date))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            if model.schedule.enabled {
+                HStack(spacing: 12) {
+                    TextField("Time", text: $clockText, prompt: Text("7:30"))
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 70)
+                        .multilineTextAlignment(.trailing)
+                        .onSubmit(commitTime)
+                        .onAppear { clockText = ScheduleRules.clockString(seconds: model.schedule.seconds) }
+                        .onChange(of: clockText) { _, text in
+                            if text.hasSuffix("\n") { commitTime() }
+                        }
+                    Picker("Starts", selection: Binding(
+                        get: { model.schedule.feature },
+                        set: { feature in
+                            var updated = model.schedule
+                            updated.feature = feature
+                            model.setSchedule(updated)
+                        }
+                    )) {
+                        ForEach(AppModel.Schedule.Feature.allCases, id: \.self) { feature in
+                            Text(feature.title).tag(feature)
+                        }
+                    }
+                    .fixedSize()
+                }
+            }
+        }
+    }
+
+    private func commitTime() {
+        guard let seconds = ScheduleRules.parseClock(clockText) else { return }
+        var updated = model.schedule
+        updated.seconds = seconds
+        model.setSchedule(updated)
+        clockText = ScheduleRules.clockString(seconds: seconds)
     }
 }
 

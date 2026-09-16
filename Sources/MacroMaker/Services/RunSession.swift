@@ -19,7 +19,7 @@ final class RunSession {
     /// if the work couldn't start). The work must report finishing asynchronously, never from
     /// inside `begin`. `countdownExtra` adds seconds to the standard countdown (delayed start).
     func start(withCountdown: Bool, countdownExtra: Int = 0, begin: @escaping @MainActor (_ token: Int) -> (() -> Void)?) {
-        guard phase == .idle else { return }
+        guard phase == .idle || phase == .paused else { return }
         generation += 1
         let token = generation
         guard withCountdown else {
@@ -56,6 +56,21 @@ final class RunSession {
         startedAt = nil
         phase = .idle
     }
+
+    /// Marks the run paused (pause-on-real-input): the work is cancelled but `finish(_:)`
+    /// is not sent, so the feature can resume — with the same plan — via
+    /// `start(withCountdown: false, ...)`. Ignored unless actually running.
+    func pause() {
+        guard phase == .running else { return }
+        let cancel = cancelWork
+        cancelWork = nil
+        cancel?()
+        startedAt = nil
+        phase = .paused
+    }
+
+    /// Returns true when the run is paused and can resume.
+    var isPaused: Bool { phase == .paused }
 
     private func run(_ token: Int, _ begin: @MainActor (Int) -> (() -> Void)?) {
         countdownTask = nil

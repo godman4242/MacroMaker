@@ -22,6 +22,14 @@ final class AutoClicker {
     private(set) var pickCountdown: Int?
     private(set) var activePick: PickMode?
 
+    /// The live plan of the current run, re-created on resume after a pause.
+    @ObservationIgnored private var currentPlan: Plan?
+    /// Clicks already done across pause/resume of the current run.
+    @ObservationIgnored private var clicksDone = 0
+    /// Last time the user's own input was seen, for auto-resume.
+    @ObservationIgnored private var lastRealInputAt = Date.distantPast
+    @ObservationIgnored private var resumeTimer: Timer?
+
     /// Why direct-app targeting can't post reliably right now, if it can't.
     var directAppProblem: String? {
         guard settings.target == .directApp else { return nil }
@@ -89,9 +97,13 @@ final class AutoClicker {
         }
     }
 
+    /// The clock-time start feature is a menu-level concept, not a per-feature one (see AppModel.schedule).
+
     func toggle(_ trigger: StartTrigger) {
         if session.phase.isActive {
+            tearDownPauseWatching()
             session.stop()
+            clicksDone = 0
             return
         }
         guard directAppProblem == nil else {
@@ -100,36 +112,89 @@ final class AutoClicker {
         }
         guard permissions.ensureAccessibility() else { return }
         cancelPick()
+        clicksDone = 0
         let initialFrontmost = settings.stopOnFrontmostChange ? Self.frontmostBundleID() : nil
         let plan = Plan(settings, initialFrontmost: initialFrontmost)
+        currentPlan = plan
         session.start(withCountdown: trigger == .button,
                       countdownExtra: Int(max(0, settings.delayedStartSeconds).rounded())) { [weak self] token in
-            self?.begin(plan, token: token)
+            guard let begin = self?.begin(plan, token: token) else { return nil }
+            self?.startPauseWatching()
+            return begin
         }
     }
 
     private func begin(_ plan: Plan, token: Int) -> (() -> Void)? {
         runID += 1
         let run = runID
-        clickCount = 0
+        let skip = clicksDone
         let worker = WorkerThread.start(name: "AutoClicker") { worker in
-            Self.clickLoop(plan, worker: worker) { count, finished in
+            Self.clickLoop(plan, skipping: skip, worker: worker) { count, finished in
                 performOnMain { [weak self] in
                     guard let self, self.runID == run else { return }
+                    self.clicksDone = count
                     self.clickCount = count
-                    if finished { self.session.finish(token) }
+                    if finished {
+                        self.tearDownPauseWatching()
+                        self.session.finish(token)
+                    }
                 }
             }
         }
         return { worker.cancelAndWait() }
     }
 
-    nonisolated private static func clickLoop(_ plan: Plan, worker: WorkerThread,
+    // MARK: Pause on real input
+
+    /// Pausing a run cancels the worker (via RunSession.pause) but keeps the count; resuming
+    /// restarts the worker without a countdown, skipping the clicks already done.
+    private func pauseIfNeeded() {
+        guard settings.pauseOnRealInput, session.phase == .running else { return }
+        lastRealInputAt = Date()
+        session.pause()
+    }
+
+    /// Called when the user chooses Resume now, or by the idle timer.
+    func resume() {
+        guard session.isPaused, let plan = currentPlan else { return }
+        clickCount = clicksDone
+        session.start(withCountdown: false) { [weak self] token in
+            guard let begin = self?.begin(plan, token: token) else { return nil }
+            self?.startPauseWatching()
+            return begin
+        }
+    }
+
+    private func resumeIfIdle() {
+        guard RealInputRules.idleEnough(lastInputAt: lastRealInputAt, afterSeconds: settings.autoResumeSeconds, now: Date()) else { return }
+        resume()
+    }
+
+    private func startPauseWatching() {
+        guard settings.pauseOnRealInput else { return }
+        RealInputMonitor.shared.start { [weak self] in self?.pauseIfNeeded() }
+        // Idle check: once per second asks whether auto-resume's deadline passed.
+        resumeTimer?.invalidate()
+        resumeTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.settings.autoResumeSeconds > 0 else { return }
+                self.resumeIfIdle()
+            }
+        }
+    }
+
+    private func tearDownPauseWatching() {
+        resumeTimer?.invalidate()
+        resumeTimer = nil
+        RealInputMonitor.shared.stop()
+    }
+
+    nonisolated private static func clickLoop(_ plan: Plan, skipping skip: Int, worker: WorkerThread,
                                               report: @Sendable (_ count: Int, _ finished: Bool) -> Void) {
         let start = DispatchTime.now().uptimeNanoseconds
         let end = plan.maxDuration.map { start + UInt64($0 * 1_000_000_000) } ?? .max
         var deadline = start
-        var count = 0
+        var count = skip
         var lastReport: UInt64 = 0
         var humanizer = Humanizer(plan.humanizer)
 

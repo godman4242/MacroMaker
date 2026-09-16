@@ -39,6 +39,71 @@ final class AppModel {
             || webClicker.session.phase.isActive || player.session.phase.isActive || recorder.isRecording
     }
 
+    // MARK: Scheduled start
+
+    struct Schedule: Codable, Equatable, Sendable {
+        var enabled = false
+        /// Seconds since the start of today (per ScheduleRules.parseClock).
+        var seconds = 18 * 3600.0
+        /// Which feature starts when the time arrives.
+        var feature = Feature.autoClicker
+        enum Feature: String, Codable, CaseIterable, Sendable {
+            case autoClicker, keyPresser, webTarget, playback
+            var title: String {
+                switch self {
+                case .autoClicker: "Auto Clicker"
+                case .keyPresser: "Key Presser"
+                case .webTarget: "Web Target"
+                case .playback: "Play Macro"
+                }
+            }
+        }
+    }
+
+    private(set) var schedule = Persistence.load(Schedule.self, key: "schedule") ?? Schedule() {
+        didSet { Persistence.save(schedule, key: "schedule") }
+    }
+    /// The wall-clock deadline the armed schedule is waiting for; nil when unarmed.
+    private(set) var scheduleDeadline: Date?
+    @ObservationIgnored private var scheduleTimer: Timer?
+
+    /// Arms or disarms the scheduled start. Arms at the NEXT occurrence of the clock time
+    /// (today if still ahead, otherwise tomorrow).
+    func setSchedule(_ updated: Schedule) {
+        schedule = updated
+        scheduleTimer?.invalidate()
+        scheduleTimer = nil
+        guard let deadline = ScheduleRules.nextOccurrence(of: updated, from: Date()) else {
+            scheduleDeadline = nil
+            return
+        }
+        scheduleDeadline = deadline
+        // A repeating timer beats Task.sleep for a deadline that survives menu-bar sleeps well.
+        let timer = Timer(timeInterval: max(1, deadline.timeIntervalSinceNow), repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.fireSchedule() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        scheduleTimer = timer
+    }
+
+    private func fireSchedule() {
+        scheduleTimer?.invalidate()
+        scheduleTimer = nil
+        scheduleDeadline = nil
+        guard schedule.enabled else { return }
+        // Auto-disarm after one firing, and re-arm at the same time tomorrow if the user re-enables.
+        var disarmed = schedule
+        disarmed.enabled = false
+        schedule = disarmed
+        switch schedule.feature {
+        case .autoClicker: autoClicker.toggle(.hotkey)   // scheduled == deliberately triggered elsewhere: no countdown
+        case .keyPresser: keyPresser.toggle(.hotkey)
+        case .webTarget: webClicker.toggle(.hotkey)
+        case .playback:
+            if macro != nil { togglePlayback(.hotkey) }
+        }
+    }
+
     private init() {
         autoClicker = AutoClicker(permissions: permissions, hotkeys: hotkeys)
         keyPresser = KeyPresser(permissions: permissions)
@@ -48,6 +113,13 @@ final class AppModel {
     func launch() {
         applyActivationPolicy()
         if macro == nil { macro = MacroFiles.loadAutosave() }
+        // A schedule armed when the app last quit has already missed its moment — disarm rather
+        // than surprise-fire tomorrow.
+        if schedule.enabled {
+            var disarmed = schedule
+            disarmed.enabled = false
+            setSchedule(disarmed)
+        }
         permissions.onPermissionMissing = { WindowCoordinator.shared.show(.main) }
         hotkeys.onTrigger = { [weak self] action in self?.perform(action, trigger: .hotkey) }
         hotkeys.activate()

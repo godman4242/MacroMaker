@@ -43,6 +43,10 @@ struct AutoClickerSettings: Codable, Equatable, Sendable {
     var directAppBundleID = ""
     var directAppX: Double = 400
     var directAppY: Double = 300
+    /// Pause when the user's own keyboard/mouse input is seen (pause-on-real-input).
+    var pauseOnRealInput = false
+    /// Seconds of user idle before a paused run starts itself again.
+    var autoResumeSeconds: Double = 5
 
     init() {}
 
@@ -74,6 +78,8 @@ struct AutoClickerSettings: Codable, Equatable, Sendable {
         directAppBundleID = try c.decodeIfPresent(String.self, forKey: .directAppBundleID) ?? ""
         directAppX = try c.decodeIfPresent(Double.self, forKey: .directAppX) ?? 400
         directAppY = try c.decodeIfPresent(Double.self, forKey: .directAppY) ?? 300
+        pauseOnRealInput = try c.decodeIfPresent(Bool.self, forKey: .pauseOnRealInput) ?? false
+        autoResumeSeconds = try c.decodeIfPresent(Double.self, forKey: .autoResumeSeconds) ?? 5
     }
 }
 

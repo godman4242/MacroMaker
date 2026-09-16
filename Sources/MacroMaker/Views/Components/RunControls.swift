@@ -10,12 +10,26 @@ struct RunControls: View {
     /// Whether the Start button counts down first (see `StartTrigger`).
     var usesCountdown = true
     var isStartDisabled = false
+    /// Offered while paused (pause-on-real-input); nil hides the Resume button.
+    var resume: (() -> Void)?
     let toggle: () -> Void
 
     @Environment(AppModel.self) private var model
 
     var body: some View {
         VStack(spacing: 8) {
+            if session.phase == .paused {
+                Button {
+                    resume?()
+                } label: {
+                    Label("Resume", systemImage: "play.circle.fill")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .tint(.indigo)
+            }
             Button(action: toggle) {
                 Label(buttonTitle, systemImage: session.phase == .idle ? "play.fill" : "stop.fill")
                     .font(.headline)

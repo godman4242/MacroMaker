@@ -66,6 +66,25 @@ struct MenuBarView: View {
             }
             .disabled(!model.isAnythingActive)
 
+            if let deadline = model.scheduleDeadline {
+                Divider()
+                HStack(spacing: 6) {
+                    Image(systemName: "clock")
+                        .foregroundStyle(.orange)
+                    TimelineView(.periodic(from: .now, by: 15)) { context in
+                        Text("\(model.schedule.feature.title) starts at \(ScheduleRules.clockString(seconds: model.schedule.seconds)) — \(ScheduleRules.describe(deadline: deadline, from: context.date))")
+                            .font(.caption)
+                    }
+                    Spacer()
+                    Button("Cancel") {
+                        var updated = model.schedule
+                        updated.enabled = false
+                        model.setSchedule(updated)
+                    }
+                    .controlSize(.small)
+                }
+            }
+
             Divider()
 
             HStack {

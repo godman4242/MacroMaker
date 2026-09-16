@@ -78,6 +78,14 @@ struct AutoClickerView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    Toggle("Pause when I use the mouse or keyboard", isOn: $clicker.settings.pauseOnRealInput)
+                    if clicker.settings.pauseOnRealInput {
+                        NumberField("Resume after idle", value: $clicker.settings.autoResumeSeconds,
+                                    unit: "sec", range: 1...600, step: 1)
+                        Text("Your own key presses and clicks pause the run; after this many quiet seconds it starts again. Macro Maker's own clicks don't count.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Section("Starting") {
@@ -105,7 +113,8 @@ struct AutoClickerView: View {
             RunControls(session: clicker.session,
                         startTitle: "Start Clicking",
                         hotkey: .toggleAutoClicker,
-                        detail: "\(clicker.clickCount.formatted()) clicks") {
+                        detail: "\(clicker.clickCount.formatted()) clicks",
+                        resume: clicker.settings.pauseOnRealInput ? { clicker.resume() } : nil) {
                 clicker.toggle(.button)
             }
         }
