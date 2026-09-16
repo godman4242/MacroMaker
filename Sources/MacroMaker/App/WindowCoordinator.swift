@@ -9,6 +9,12 @@ final class WindowCoordinator {
         case main, settings
     }
 
+    /// A window showing the given tab (main) or just the settings pane.
+    func show(_ kind: Kind, tab: AppTab? = nil) {
+        if let tab { AppModel.shared.selectedTab = tab }
+        show(kind)
+    }
+
     static let shared = WindowCoordinator()
     private var windows: [Kind: NSWindow] = [:]
 

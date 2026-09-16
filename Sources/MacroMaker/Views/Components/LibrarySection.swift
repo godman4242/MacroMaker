@@ -60,10 +60,12 @@ struct LibrarySection: View {
             }
 
             if library.records.isEmpty {
-                Text("Nothing saved yet. Record or open a macro, then “Add Current” keeps it here — with its own hotkey if you like.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 16)
+                ContentUnavailableView {
+                    Label("Library is empty", systemImage: "square.stack.3d.up")
+                } description: {
+                    Text("Record a macro above (or open a .macromaker file), then “Add Current” keeps it here with its own hotkey.")
+                }
+                .frame(minHeight: 110)
             } else {
                 TextField("Search library", text: $search)
                     .textFieldStyle(.roundedBorder)

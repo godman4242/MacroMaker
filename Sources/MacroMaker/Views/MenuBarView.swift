@@ -133,7 +133,7 @@ private struct FeatureRow: View {
         HStack(spacing: 10) {
             Image(systemName: icon)
                 .frame(width: 20)
-                .foregroundStyle(phase.isActive ? .green : .secondary)
+                .foregroundStyle(phase.isActive ? phase.tint : .secondary)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
                 Text(status)

@@ -9,6 +9,7 @@ enum AppTab: Hashable {
 final class AppModel {
     static let shared = AppModel()
     private static let dockIconKey = "showDockIcon"
+    private static let onboardingKey = "hasSeenOnboarding"
 
     let permissions = PermissionService()
     let hotkeys = HotkeyService()
@@ -101,6 +102,14 @@ final class AppModel {
             // Changing policy deactivates the app; keep the Settings window in front.
             WindowCoordinator.shared.show(.settings)
         }
+    }
+
+    /// First-run sheet, shown until dismissed once.
+    var showOnboarding = !UserDefaults.standard.bool(forKey: AppModel.onboardingKey)
+
+    func dismissOnboarding() {
+        showOnboarding = false
+        UserDefaults.standard.set(true, forKey: Self.onboardingKey)
     }
 
     var isAnythingActive: Bool {
