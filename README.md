@@ -12,6 +12,8 @@ Written in Swift and SwiftUI. Needs macOS 14 (Sonoma) or later, and runs nativel
 | **Web Target** | Clicks an element in a Safari or Chrome tab, found by CSS selector, XPath or page coordinates. It works by running JavaScript inside the tab, so the tab can be in the background while you use other apps. |
 | **Macro Recorder** | Records mouse clicks (with positions) and key presses (with timing), then replays them with the original timing. Replays can repeat, loop, or run at 0.25×–4× speed. Save and open macros as `.macromaker` files. |
 
+Intended for UI automation and accessibility use. Use of autoclickers may violate the terms of some games and services.
+
 Every feature has a **global keyboard shortcut**: a key combo that works while any app is in front. Everything can also be started from the **menu bar icon**.
 
 ---
