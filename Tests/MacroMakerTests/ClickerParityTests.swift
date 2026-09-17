@@ -210,3 +210,41 @@ import Testing
         #expect(try JSONDecoder().decode([HotkeyAction: KeyCombo?].self, from: data) == blob)
     }
 }
+
+/// A time-limited run that is paused and resumed. Clicks already done survive a pause (`begin`
+/// passes `skipping:` from `clicksDone`) but elapsed time did not: each resume built a fresh
+/// worker whose deadline was `now + maxDuration`, so "stop after 60 s" could run for 60 s *per
+/// resume*, without bound.
+@Suite("Run time budget")
+struct RunTimeBudgetTests {
+    private static let start: UInt64 = 1_000_000_000
+
+    @Test func aResumeKeepsSpendingTheSameBudgetRatherThanAFreshOne() {
+        // 60s limit with 50s already spent: only 10s left, not another 60.
+        #expect(AutoClicker.runDeadlineNanos(start: Self.start, maxDuration: 60, alreadyElapsed: 50)
+                == Self.start + 10_000_000_000)
+    }
+
+    @Test func anExhaustedBudgetStopsImmediatelyInsteadOfGoingNegative() {
+        #expect(AutoClicker.runDeadlineNanos(start: Self.start, maxDuration: 60, alreadyElapsed: 60) == Self.start)
+        #expect(AutoClicker.runDeadlineNanos(start: Self.start, maxDuration: 60, alreadyElapsed: 90) == Self.start,
+                "over budget must not wrap around UInt64")
+    }
+
+    @Test func aFreshRunIsUnchanged() {
+        #expect(AutoClicker.runDeadlineNanos(start: Self.start, maxDuration: 60, alreadyElapsed: 0)
+                == Self.start + 60_000_000_000)
+    }
+
+    @Test func noLimitMeansNoDeadline() {
+        #expect(AutoClicker.runDeadlineNanos(start: Self.start, maxDuration: nil, alreadyElapsed: 0) == .max)
+    }
+
+    /// The same `UInt64(Double)` trap guarded elsewhere this session: it must not be reachable
+    /// from a settings value either.
+    @Test func aNonFiniteOrAbsurdLimitCannotTrap() {
+        #expect(AutoClicker.runDeadlineNanos(start: Self.start, maxDuration: .infinity, alreadyElapsed: 0) > Self.start)
+        #expect(AutoClicker.runDeadlineNanos(start: Self.start, maxDuration: .nan, alreadyElapsed: 0) == Self.start)
+        #expect(AutoClicker.runDeadlineNanos(start: Self.start, maxDuration: 1e30, alreadyElapsed: 0) > Self.start)
+    }
+}

@@ -59,6 +59,20 @@ enum ScheduleRules {
         return calendar.isDate(next, inSameDayAs: now)
     }
 
+    /// How late a scheduled fire may be and still count as on time.
+    static let fireTolerance: TimeInterval = 120
+
+    /// Whether a scheduled fire arrived close enough to its deadline to honour.
+    ///
+    /// A non-repeating `Timer` does not fire while the machine is asleep, and the run loop
+    /// delivers the overdue timer the instant the Mac wakes — so without this the feature started
+    /// at whatever moment the user opened the lid instead of at the clock time they chose. A nil
+    /// deadline means there is nothing to judge against, and a fire a hair early is normal.
+    static func isOnTime(deadline: Date?, now: Date) -> Bool {
+        guard let deadline else { return true }
+        return now.timeIntervalSince(deadline) <= fireTolerance
+    }
+
     /// Human countdown for the menu-bar label.
     static func describe(deadline: Date, from now: Date) -> String {
         let interval = deadline.timeIntervalSince(now)

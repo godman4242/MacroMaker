@@ -74,6 +74,7 @@ struct SettingsView: View {
 private struct ScheduleRow: View {
     let model: AppModel
     @State private var clockText = ScheduleRules.clockString(seconds: 18 * 3600)
+    @FocusState private var timeFocused: Bool
 
     var body: some View {
         @Bindable var model = model
@@ -104,8 +105,14 @@ private struct ScheduleRow: View {
                         .multilineTextAlignment(.trailing)
                         .onSubmit(commitTime)
                         .onAppear { clockText = ScheduleRules.clockString(seconds: model.schedule.seconds) }
-                        .onChange(of: clockText) { _, text in
-                            if text.hasSuffix("\n") { commitTime() }
+                        // Commit on focus loss as well as Return. The only other path used to be
+                        // an `.onChange` looking for a trailing newline — dead code, because a
+                        // SwiftUI TextField never puts one in its bound string. So clicking the
+                        // Picker, or just closing the window, discarded the typed time, and
+                        // `.onAppear` quietly restored the old value the next time it was shown.
+                        .focused($timeFocused)
+                        .onChange(of: timeFocused) { _, focused in
+                            if !focused { commitTime() }
                         }
                     Picker("Starts", selection: Binding(
                         get: { model.schedule.feature },

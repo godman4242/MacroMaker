@@ -110,8 +110,12 @@ struct AutoClickerView: View {
             .formStyle(.grouped)
             .disabled(clicker.session.phase.isActive)
 
-            if let warning = clicker.runWarning, clicker.session.phase != .idle {
-                // Surface a lost target window (or a failed pause monitor) while the run is on.
+            if let warning = clicker.runWarning {
+                // No phase condition. The "target app quit" message is reported with
+                // finished: true, and the same main-actor hop then sets the phase to .idle — so
+                // requiring a non-idle phase meant SwiftUI never observed a state where it was
+                // visible, and background clicking stopped with no explanation at all. Both
+                // toggle() and endRun() clear runWarning when a run starts, so nothing goes stale.
                 StatusMessage(kind: .warning, text: warning)
                     .padding(.horizontal, 16)
                     .padding(.top, 8)

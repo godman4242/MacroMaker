@@ -167,18 +167,30 @@ final class AppModel {
     private func fireSchedule() {
         scheduleTimer?.invalidate()
         scheduleTimer = nil
+        let deadline = scheduleDeadline
         scheduleDeadline = nil
         guard schedule.enabled else { return }
         // Auto-disarm after one firing, and re-arm at the same time tomorrow if the user re-enables.
         var disarmed = schedule
         disarmed.enabled = false
         schedule = disarmed
+        // A non-repeating Timer does not fire while the machine is asleep; the run loop delivers
+        // it the moment the Mac wakes. Starting then is a surprise, not a schedule — it is exactly
+        // the surprise-fire the launch-time disarm exists to prevent, and worse, because the user
+        // is sitting at the keyboard. Disarm and do nothing.
+        guard ScheduleRules.isOnTime(deadline: deadline, now: Date()) else { return }
+        // Start-only. Every toggle(_:) STOPS a session that is already active — and `isActive` is
+        // true for countdown and paused too — so a "scheduled start" that arrived while the
+        // feature was already running used to stop it, then disarm itself and never start it.
         switch schedule.feature {
-        case .autoClicker: autoClicker.toggle(.hotkey)   // scheduled == deliberately triggered elsewhere: no countdown
-        case .keyPresser: keyPresser.toggle(.hotkey)
-        case .webTarget: webClicker.toggle(.hotkey)
+        case .autoClicker:
+            if !autoClicker.session.phase.isActive { autoClicker.toggle(.hotkey) }   // no countdown: deliberately triggered
+        case .keyPresser:
+            if !keyPresser.session.phase.isActive { keyPresser.toggle(.hotkey) }
+        case .webTarget:
+            if !webClicker.session.phase.isActive { webClicker.toggle(.hotkey) }
         case .playback:
-            if macro != nil { togglePlayback(.hotkey) }
+            if macro != nil, !player.session.phase.isActive { togglePlayback(.hotkey) }
         }
     }
 

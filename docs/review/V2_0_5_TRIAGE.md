@@ -1,6 +1,6 @@
 # The v2.0.5 adversarial subsystem sweep: what was fixed, what is still open
 
-> **21 of 34 fixed** — 8 in v2.0.5, 13 in v2.0.6. 13 remain open, all medium or low.
+> **All 34 fixed** — 8 in v2.0.5, 13 in v2.0.6, 13 in v2.0.7. Nothing left open.
 
 Ten read-only reviewers, one per subsystem with an explicit file list, then every finding
 refuted by three independent lenses (does it reproduce · is it already handled · is the platform
@@ -45,31 +45,32 @@ NaN`), not as a compile error — a compile error proves nothing.
 | U11 | low | `nextOccurrence` added raw seconds to midnight. A day is 23 or 25 hours across a daylight-saving transition, so a **07:00 start fired at 08:00** (measured, 2026-03-29 Europe/London). | Set the wall-clock time on the day. +1 test. |
 | C13 | low | Both `TISCopy…` calls return a +1 reference, but the balancing `takeRetainedValue()` sat inside a **lazy** chain that short-circuits — so the second source leaked on every layout rebuild. | Consume both retains up front. |
 
-## Still open — 13 findings, all medium or low
+## Fixed in v2.0.7 — the remaining 13
 
-Not attempted. Each row in the JSON carries a concrete failure scenario, quoted evidence and a
-proposed change. **UNJUDGED means unverified, not unreal** — treat the claim as a lead and
-re-check it before acting, exactly as every fixed one was re-checked by hand.
-
-| ID | Sev | Status | Where | What |
-|---|---|---|---|---|
-| C10 | medium | CONFIRMED | `Models/HotkeyAction.swift:107` | Macro hotkey dispatch recomputes the raw slot, ignoring the collision-avoided slot used to register |
-| C11 | medium | CONFIRMED | `Services/HotkeyService.swift:95` | setCombo clobbers the Auto Clicker's combo without firing the hold-run hook |
-| C7 | medium | CONFIRMED | `Services/AutoClicker.swift:335` | Position jitter is computed then discarded for the default cursor target |
-| C8 | medium | CONFIRMED | `Services/AutoClicker.swift:227` | Stop-after-duration restarts its whole time budget on every resume |
-| U16 | medium | UNJUDGED | `Views/SettingsView.swift:105` | Scheduled-start time is discarded unless the user presses Return in the field |
-| U5 | medium | UNJUDGED | `App/AppModel.swift:176` | fireSchedule uses toggle(), so a scheduled start STOPS an already-running feature |
-| U6 | medium | UNJUDGED | `App/AppModel.swift:167` | fireSchedule never checks the deadline, so a sleep-delayed timer starts hours late |
-| U8 | medium | UNJUDGED | `App/AppDelegate.swift:24` | Double-clicking a .macromakerprofile file opens it as a macro and fails |
-| U9 | medium | UNJUDGED | `Services/ProfileService.swift:23` | Save never overwrites: re-saving a profile name silently appends a twin |
-| C12 | low | CONFIRMED | `Services/AutoClicker.swift:247` | The direct-app "target app quit" stop reason can never be displayed |
-| U17 | low | UNJUDGED | `Views/MenuBarView.swift:60` | Menu-bar rows for hotkeyed macros hardcode phase .idle, so "Play" actually stops |
-| U21 | low | UNJUDGED | `Views/Components/ProfilesSection.swift:13` | Return in an empty profile Name field saves a junk profile named "Profile" |
-| U7 | low | UNJUDGED | `App/AppModel.swift:282` | saveMacro writes the file before renaming, so the saved file keeps the old name |
+| ID | Sev | What was wrong | Fix |
+|---|---|---|---|
+| C7 | medium | "Vary the point by up to ± N px" did nothing on the **default** target: the jittered point was computed for cursor targeting and then thrown away by passing `nil`, which re-reads the raw cursor position. | Pass the jittered point through; keep the `nil` fast path only when no jitter is configured. |
+| C8 | medium | Clicks already done survive a pause, but elapsed time did not — each resume built a worker with a brand-new deadline, so "stop after 60 s" could run 60 s **per resume**, unbounded. | Carry elapsed time across pauses exactly as `clicksDone` already is. Extracted as `AutoClicker.runDeadlineNanos`, +5 tests; the clamp also closes another `UInt64` trap. |
+| C10 | medium | Registration bumps a macro past a colliding hotkey slot, but dispatch recomputed the *un-bumped* hash — so the displaced macro's shortcut resolved to nothing, and the other resolved through a Dictionary scan with undefined order. | Record the slot actually registered and dispatch through it. |
+| C11 | medium | `onToggleReassignedWhileHolding` fired only when the Auto Clicker toggle was the action addressed — but the clobber loop can strip that combo as a side effect of giving it to a *different* action, leaving a hold-run that `handleRelease` can never end. | Fire when the toggle's combo changes, whatever caused it. |
+| C12 | low | The direct-app "target app quit" message was unreachable UI: it is reported with `finished: true`, and the same main-actor hop sets the phase to `.idle`, while the banner required a non-idle phase. Background clicking stopped with **no explanation at all**. | Drop the phase condition; both start paths already clear the warning. |
+| U5 | medium | Every `toggle(_:)` stops a session that is already active — and `isActive` covers countdown and paused — so a "scheduled start" arriving while the feature was running performed a **stop**, then disarmed itself and never started it. | Start-only. |
+| U6 | medium | A non-repeating `Timer` does not fire while the Mac sleeps; the run loop delivers it on wake, so the feature started whenever the lid opened rather than at the chosen time. | Refuse a fire more than the tolerance late. Extracted as `ScheduleRules.isOnTime`, +3 tests. |
+| U7 | low | `saveWithPanel` wrote the bytes and only *then* did the caller rename the in-memory copy, so the `.macromaker` file on disk kept the old name — the rename made in the Save panel was lost on reopen. | Name it from the chosen URL before writing. |
+| U8 | medium | Info.plist claims both document types, but every opened URL was decoded as a `Macro` — which requires a format key no profile carries — so double-clicking a `.macromakerprofile` always failed. | Branch on the extension; also handle every selected URL rather than just the first. |
+| U9 | medium | `save()` matched on id, but the only caller mints a fresh UUID each time — so the update branch was unreachable and re-saving a name just accumulated duplicates. | Match on name as well, carrying the favourite flag and id across. |
+| U16 | medium | The scheduled time only committed on Return. Its other path was an `.onChange` looking for a trailing newline — dead code, since a SwiftUI `TextField` never puts one in its string — so clicking away discarded the typed time and `.onAppear` quietly restored the old value. | Commit on focus loss too. |
+| U17 | low | Menu-bar rows for hotkeyed macros hardcoded `phase: .idle` while routing into the shared player, whose toggle stops an active run — so while anything played, a button labelled "Play" did the opposite. | Disable them while the player is busy; the dedicated Play Macro row still stops it. |
+| U21 | low | The Save button guards an empty profile name; `.onSubmit` did not, and `cleanedName("")` returns "Profile" — so Return in an empty field saved a junk profile. | Guard inside `saveCurrent()`, shared by both entry points. |
 
 ## Verification of this pass
 
-- `./scripts/test.sh` — **165 tests in 31 suites, green** (131 before this session).
+- `./scripts/test.sh` — **173 tests in 33 suites, green** (131 before this session).
 - Clean build from a fresh scratch path — **0 warnings, 0 errors** under Swift 6 strict concurrency.
 - The layout gate re-run on each fix-pass binary — `TALLY FINAL: GOOD=10 BAD=0 OTHER=0
   IDENT-MISMATCH=0`, all four tabs bounded. Views changed, so the gate ran again each time.
+  ⚠️ **The v2.0.7 binary's run is outstanding.** The screen locked part way through it
+  (`GOOD=1 BAD=0 OTHER=9` — AX window trees read empty while locked, so those nine runs are
+  unmeasured, not failed; `BAD=0` throughout). `matrix3.sh` now re-checks the lock on every run
+  and aborts loudly instead of returning ambiguous OTHERs. Re-run on an unlocked screen:
+  `zsh /tmp/mm-fix/final-verify.sh`.

@@ -1,5 +1,5 @@
 {
- "integrity": "13 of 34 findings were adversarially refuted by 3 independent lenses (reproduce / already-handled / platform-truth) and survived. 21 lost their verifiers when the run hit the session limit and are recorded UNJUDGED \u2014 fail-closed: a dead verifier is never counted as a vote in favour. 1 was refuted. 8 findings were fixed in v2.0.5, each red-proofed (the test was watched failing against the unfixed code first); the remaining 26 are recorded here OPEN with their repro and proposed change.",
+ "integrity": "13 of 34 findings were adversarially refuted by 3 independent lenses (reproduce / already-handled / platform-truth) and survived. 21 lost their verifiers when the run hit the session limit and are recorded UNJUDGED \u2014 fail-closed: a dead verifier is never counted as a vote in favour. 1 was refuted. All 34 findings were subsequently addressed across v2.0.5, v2.0.6 and v2.0.7, each re-verified by hand against the real APIs first and each fix red-proofed where a test could express it.",
  "wrote_to": "docs/review/v2.0.5-subsystem-sweep.json",
  "summary": "Adversarial subsystem sweep of Macro Maker at v2.0.4 (ada3c70). 10 read-only reviewers, one per subsystem with an explicit file list; every finding then refuted by 3 independent lenses. Totals: {\"raised\": 35, \"confirmed\": 13, \"refuted\": 1, \"unjudged\": 21}",
  "findings": [
@@ -112,7 +112,8 @@
    "proposed_change": "One-line change at the call site: `at: plan.target == .cursor && plan.positionJitterPx == 0 ? nil : jiggled`. That keeps the existing nil fast path (click exactly where the cursor is) when no jitter is configured, and feeds the jittered point through when it is. No layout impact.",
    "live_votes": 3,
    "refutes": 0,
-   "fix_status": "OPEN"
+   "fix_status": "FIXED in v2.0.7",
+   "fix_note": "the jittered point is passed through for cursor targeting instead of being discarded; the nil fast path is kept only when no jitter is configured."
   },
   {
    "id": "C8",
@@ -127,7 +128,8 @@
    "proposed_change": "Mirror what `clicksDone`/`skipping:` already does for the click counter: keep a `@ObservationIgnored private var elapsedBefore: TimeInterval = 0` on AutoClicker, accumulate each worker's run time into it when the worker stops (reset it to 0 in `toggle`/`endRun` alongside `clicksDone = 0`), pass it into `clickLoop` as a second skip argument, and compute `end` from `max(0, maxDuration - elapsedBefore)`. Engine-only change; no UI or layout impact.",
    "live_votes": 3,
    "refutes": 0,
-   "fix_status": "OPEN"
+   "fix_status": "FIXED in v2.0.7",
+   "fix_note": "elapsed time is carried across a pause like clicksDone already was, so a time limit is one budget rather than one per resume. Extracted as AutoClicker.runDeadlineNanos, +5 tests, and the clamp also closes another UInt64 trap."
   },
   {
    "id": "C9",
@@ -158,7 +160,8 @@
    "proposed_change": "Stop recomputing the slot at dispatch time. In `registerAll()`, record the slot actually registered (`assigned[slot] = action`) in a service-owned `[UInt32: HotkeyAction]`, and have the Carbon handler look up `service.assigned[hotKeyID.id]` instead of calling `HotkeyAction.action(forSlotID:macros:)`. Registration already computes the authoritative slot; the map just keeps it. No layout or storage-format change.",
    "live_votes": 3,
    "refutes": 0,
-   "fix_status": "OPEN"
+   "fix_status": "FIXED in v2.0.7",
+   "fix_note": "the slot each action was actually registered at is recorded and used for dispatch, instead of recomputing the un-bumped hash."
   },
   {
    "id": "C11",
@@ -173,7 +176,8 @@
    "proposed_change": "Base the notification on whether the toggle's combo actually changed, not on which action was addressed: capture `let before = combos[.toggleAutoClicker]` at the top, run the existing clobber loop and assignment unchanged, then `if combos[.toggleAutoClicker] != before { onToggleReassignedWhileHolding?() }`. Same fix covers `restoreDefaults()`, which replaces `combos` wholesale on the same blind spot. No signature or shape change.",
    "live_votes": 3,
    "refutes": 0,
-   "fix_status": "OPEN"
+   "fix_status": "FIXED in v2.0.7",
+   "fix_note": "the hold-run hook fires when the toggle combo CHANGES, not only when that action was the one addressed \u2014 so a clobber via another action notifies too."
   },
   {
    "id": "C12",
@@ -188,7 +192,8 @@
    "proposed_change": "Drop the phase condition from the banner guard in AutoClickerView so the last run's stop reason stays up until the next run clears it: `if let warning = clicker.runWarning {` \u2014 `toggle()` and `endRun()` already set `runWarning = nil` at the start of each run, so nothing goes stale. This is a one-condition edit inside the existing Section/VStack content; it adds no wrapper and does not touch the settled detail-column ScrollView shape.",
    "live_votes": 3,
    "refutes": 1,
-   "fix_status": "OPEN"
+   "fix_status": "FIXED in v2.0.7",
+   "fix_note": "the stop reason no longer requires a non-idle phase, so \"the target app quit\" is actually visible; both start paths already clear it."
   },
   {
    "id": "C13",
@@ -283,7 +288,8 @@
    "proposed_change": "Make the scheduled fire start-only by skipping a session that is already non-idle:\n```swift\nswitch schedule.feature {\ncase .autoClicker:\n    if !autoClicker.session.phase.isActive { autoClicker.toggle(.hotkey) }\ncase .keyPresser:\n    if !keyPresser.session.phase.isActive { keyPresser.toggle(.hotkey) }\ncase .webTarget:\n    if !webClicker.session.phase.isActive { webClicker.toggle(.hotkey) }\ncase .playback:\n    if macro != nil, !player.session.phase.isActive { togglePlayback(.hotkey) }\n}\n```\nFive lines inside `fireSchedule`; no signature or layout change.",
    "live_votes": 0,
    "refutes": null,
-   "fix_status": "OPEN"
+   "fix_status": "FIXED in v2.0.7",
+   "fix_note": "the scheduled fire is start-only \u2014 it no longer stops a feature that is already running, counting down or paused."
   },
   {
    "id": "U6",
@@ -298,7 +304,8 @@
    "proposed_change": "Capture the deadline before clearing it and refuse a stale fire \u2014 disarm instead of starting:\n```swift\nprivate func fireSchedule() {\n    scheduleTimer?.invalidate()\n    scheduleTimer = nil\n    let deadline = scheduleDeadline\n    scheduleDeadline = nil\n    guard schedule.enabled else { return }\n    var disarmed = schedule\n    disarmed.enabled = false\n    schedule = disarmed\n    // A timer suspended across system sleep arrives overdue; a start hours late is a surprise, not a schedule.\n    if let deadline, Date().timeIntervalSince(deadline) > 120 { return }\n    switch schedule.feature { ... }\n}\n```\nPure logic inside one private method; no layout or API change.",
    "live_votes": 0,
    "refutes": null,
-   "fix_status": "OPEN"
+   "fix_status": "FIXED in v2.0.7",
+   "fix_note": "a fire that arrives more than the tolerance late (a timer delivered on wake after sleep) disarms instead of starting. Extracted as ScheduleRules.isOnTime, +3 tests."
   },
   {
    "id": "U7",
@@ -313,7 +320,8 @@
    "proposed_change": "Name the macro from the chosen URL before the bytes are written, in `MacroFiles.saveWithPanel`:\n```swift\nguard panel.runModal() == .OK, let url = panel.url else { return nil }\nvar stored = macro\nstored.name = url.deletingPathExtension().lastPathComponent\ntry stored.jsonData().write(to: url, options: .atomic)\nreturn url\n```\nIf the fix must stay inside AppModel, add `autosaveMacro()` after the rename and re-write the file \u2014 but that is two writes for the same save, so the MacroFiles change is the smaller one. No layout change either way.",
    "live_votes": 0,
    "refutes": null,
-   "fix_status": "OPEN"
+   "fix_status": "FIXED in v2.0.7",
+   "fix_note": "MacroFiles.saveWithPanel names the macro from the chosen URL BEFORE writing the bytes, so the saved file carries the name the user chose."
   },
   {
    "id": "U8",
@@ -328,7 +336,8 @@
    "proposed_change": "In `application(_:open:)`, branch on the path extension before dispatching: `if url.pathExtension == Profile.fileExtension { AppModel.shared.profiles.importFile(at: url) } else { AppModel.shared.openMacro(at: url) }`. No layout or API shape changes. (Also consider iterating `urls` rather than `urls.first` \u2014 selecting several files in Finder silently drops all but the first.)",
    "live_votes": 0,
    "refutes": null,
-   "fix_status": "OPEN"
+   "fix_status": "FIXED in v2.0.7",
+   "fix_note": "a .macromakerprofile opened from Finder goes to the profile importer; all selected URLs are handled, not just the first."
   },
   {
    "id": "U9",
@@ -343,7 +352,8 @@
    "proposed_change": "Add a name fallback to the lookup in `save(_:)`: `let existing = entries.firstIndex { $0.id == entry.id } ?? entries.firstIndex { $0.name.localizedCaseInsensitiveCompare(entry.name) == .orderedSame }`. Note that the replace branch must then preserve the row's flag \u2014 `ProfileEntry.init(profile:)` leaves `isFavorite = false` (there is no `isFavorite` on `Profile`), so a plain `entries[existing] = entry` would un-favourite a starred profile on every re-save. Carry it over with `entry.isFavorite = entries[existing].isFavorite` before assigning. No layout change.",
    "live_votes": 0,
    "refutes": null,
-   "fix_status": "OPEN"
+   "fix_status": "FIXED in v2.0.7",
+   "fix_note": "save() matches on name as well as id, so re-saving updates in place instead of appending a twin \u2014 carrying the favourite flag and id across."
   },
   {
    "id": "U10",
@@ -454,7 +464,8 @@
    "proposed_change": "Replace the dead newline check with a focus-loss commit: add `@FocusState private var timeFocused: Bool`, `.focused($timeFocused)` on the field, and `.onChange(of: timeFocused) { _, focused in if !focused { commitTime() } }`. Keeps `.onSubmit` as-is; no layout change.",
    "live_votes": 0,
    "refutes": null,
-   "fix_status": "OPEN"
+   "fix_status": "FIXED in v2.0.7",
+   "fix_note": "the scheduled time commits on focus loss as well as Return, replacing an .onChange newline check that could never fire."
   },
   {
    "id": "U17",
@@ -469,7 +480,8 @@
    "proposed_change": "Track which macro the player is running (e.g. a `playingMacroID` on `MacroPlayer`) and pass `phase: model.player.playingMacroID == record.id ? model.player.session.phase : .idle`. If that state is not wanted, the minimal alternative is `isDisabled: record.isOrphan || model.player.session.phase.isActive`, so a busy player greys the rows instead of silently stopping the current run.",
    "live_votes": 0,
    "refutes": null,
-   "fix_status": "OPEN"
+   "fix_status": "FIXED in v2.0.7",
+   "fix_note": "hotkeyed-macro rows are disabled while the shared player is active, so \"Play\" can no longer mean \"stop\"; the dedicated Play Macro row still stops it."
   },
   {
    "id": "U18",
@@ -532,7 +544,8 @@
    "proposed_change": "Move the guard into saveCurrent() so both entry points share it: `guard !newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }` as its first line. No layout change.",
    "live_votes": 0,
    "refutes": null,
-   "fix_status": "OPEN"
+   "fix_status": "FIXED in v2.0.7",
+   "fix_note": "the empty-name guard moved into saveCurrent(), so Return and the Save button share it."
   }
  ]
 }

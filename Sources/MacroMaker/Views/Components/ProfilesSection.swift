@@ -42,6 +42,10 @@ struct ProfilesSection: View {
     }
 
     private func saveCurrent() {
+        // The Save button is disabled for an empty name, but `.onSubmit` had no such guard, and
+        // ProfileRules.cleanedName("") returns "Profile" — so Return in an empty field saved a
+        // junk profile. Guard here so both entry points share it.
+        guard !newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         model.profiles.save(model.currentProfile(named: newName))
         newName = ""
     }

@@ -223,3 +223,28 @@ struct HoldAndScheduleRuleTests {
         #expect(london.component(.minute, from: deadline) == 0)
     }
 }
+
+/// U6 — a scheduled start that arrives late. A non-repeating `Timer` does not fire while the
+/// machine is asleep; the run loop delivers the overdue timer the instant the Mac wakes, so the
+/// feature started at whatever moment the user opened the lid rather than at the chosen time.
+@Suite("Late schedule fire")
+struct LateScheduleFireTests {
+    private static let noon = Date(timeIntervalSince1970: 1_789_560_000)
+
+    @Test func afireAtItsDeadlineIsOnTime() {
+        #expect(ScheduleRules.isOnTime(deadline: Self.noon, now: Self.noon))
+        #expect(ScheduleRules.isOnTime(deadline: Self.noon, now: Self.noon.addingTimeInterval(20)))
+    }
+
+    @Test func aFireHoursLateIsRefused() {
+        #expect(!ScheduleRules.isOnTime(deadline: Self.noon, now: Self.noon.addingTimeInterval(4 * 3600)),
+                "four hours asleep then a start the moment the lid opens is a surprise, not a schedule")
+        #expect(!ScheduleRules.isOnTime(deadline: Self.noon, now: Self.noon.addingTimeInterval(600)))
+    }
+
+    @Test func anEarlyOrUnknownDeadlineIsAllowed() {
+        // Timers can fire a hair early, and a nil deadline means we have nothing to judge against.
+        #expect(ScheduleRules.isOnTime(deadline: Self.noon, now: Self.noon.addingTimeInterval(-1)))
+        #expect(ScheduleRules.isOnTime(deadline: nil, now: Self.noon))
+    }
+}

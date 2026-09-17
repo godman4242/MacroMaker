@@ -19,8 +19,18 @@ final class ProfileService {
     // MARK: CRUD
 
     func save(_ profile: Profile) {
-        let entry = ProfileEntry(profile: profile)
-        if let existing = entries.firstIndex(where: { $0.id == entry.id }) {
+        var entry = ProfileEntry(profile: profile)
+        // Match on name as well as id. The only caller builds its argument through
+        // `Profile.init(name:)`, which mints a FRESH UUID every time — so the id never matched,
+        // the update branch was unreachable from the UI, and re-saving a name just accumulated
+        // duplicates.
+        let existing = entries.firstIndex { $0.id == entry.id }
+            ?? entries.firstIndex { $0.name.localizedCaseInsensitiveCompare(entry.name) == .orderedSame }
+        if let existing {
+            // `ProfileEntry.init(profile:)` defaults isFavorite to false (Profile has no such
+            // field), so replacing wholesale would un-star a favourite on every re-save.
+            entry.isFavorite = entries[existing].isFavorite
+            entry.id = entries[existing].id
             entries[existing] = entry
         } else {
             entries.insert(entry, at: 0)

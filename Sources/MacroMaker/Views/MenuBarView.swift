@@ -60,7 +60,11 @@ struct MenuBarView: View {
                                phase: .idle,
                                shortcut: model.macroHotkeyAction(for: record).flatMap { model.hotkeys.label(for: $0) },
                                startTitle: "Play",
-                               isDisabled: record.isOrphan) {
+                               // These rows route into the SHARED player, whose toggle stops an
+                               // active run — so while anything is playing this button said
+                               // "Play" and did the opposite. The dedicated "Play Macro" row
+                               // above carries the real phase and is how a run is stopped.
+                               isDisabled: record.isOrphan || model.player.session.phase.isActive) {
                         model.playMacro(id: record.id)
                     }
                 }

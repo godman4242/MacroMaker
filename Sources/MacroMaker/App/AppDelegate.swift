@@ -20,7 +20,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Double-clicking a .macromaker file in Finder.
     func application(_ application: NSApplication, open urls: [URL]) {
-        guard let url = urls.first else { return }
-        AppModel.shared.openMacro(at: url)
+        // Info.plist claims BOTH document types, but every URL used to be decoded as a Macro —
+        // and Macro.init(from:) requires a format key no profile file carries, so double-clicking
+        // a .macromakerprofile always failed. Iterating rather than taking `.first` also stops
+        // a multi-file selection in Finder silently dropping all but one.
+        for url in urls {
+            if url.pathExtension == Profile.fileExtension {
+                AppModel.shared.profiles.importFile(at: url)
+            } else {
+                AppModel.shared.openMacro(at: url)
+            }
+        }
     }
 }

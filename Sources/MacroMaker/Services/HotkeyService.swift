@@ -32,6 +32,12 @@ final class HotkeyService {
         didSet { updateReleaseMonitor() }
     }
     @ObservationIgnored private var registered: [HotkeyAction: EventHotKeyRef] = [:]
+    /// The slot each action was ACTUALLY registered at. Registration may bump a macro past a
+    /// colliding slot, so recomputing the raw hash at dispatch time disagreed with it: the
+    /// displaced macro's shortcut resolved to nothing, and the one that kept the slot resolved
+    /// through a Dictionary scan whose order is not defined. Registration already computes the
+    /// authoritative slot — this just keeps it.
+    @ObservationIgnored private var assignedSlots: [UInt32: HotkeyAction] = [:]
     @ObservationIgnored private var handler: EventHandlerRef?
     @ObservationIgnored private var releaseMonitor: Any?
     @ObservationIgnored private var suspendCount = 0
@@ -88,15 +94,18 @@ final class HotkeyService {
     var onToggleReassignedWhileHolding: (() -> Void)?
 
     func setCombo(_ combo: KeyCombo?, for action: HotkeyAction) {
-        if action == .toggleAutoClicker, combos[action] != combo {
-            onToggleReassignedWhileHolding?()
-        }
+        // Watch the toggle's combo itself, not which action was addressed: the clobber loop below
+        // can strip .toggleAutoClicker as a side effect of giving ITS combo to another action, and
+        // on that path the hook never fired — leaving a hold-mode run that handleRelease can no
+        // longer end, because it iterates `combos` and there is no .toggleAutoClicker entry left.
+        let toggleComboBefore = combos[.toggleAutoClicker]
         if let combo {
             for (other, existing) in combos where other != action && existing == combo {
                 combos[other] = nil
             }
         }
         combos[action] = combo
+        if combos[.toggleAutoClicker] != toggleComboBefore { onToggleReassignedWhileHolding?() }
         save()
         registerAll()
     }
@@ -159,6 +168,7 @@ final class HotkeyService {
             }
             takenSlots.insert(slot)
             var ref: EventHotKeyRef?
+            assignedSlots[slot] = action
             let id = EventHotKeyID(signature: HotkeyAction.signature, id: slot)
             let status = RegisterEventHotKey(combo.keyCode, combo.modifiers.carbonFlags, id,
                                              GetApplicationEventTarget(), 0, &ref)
@@ -175,6 +185,7 @@ final class HotkeyService {
     private func unregisterAll() {
         for ref in registered.values { UnregisterEventHotKey(ref) }
         registered.removeAll()
+        assignedSlots.removeAll()
     }
 
     /// Debug hook for tests: what does the persisted "hotkeys" blob actually decode to?
@@ -189,12 +200,8 @@ final class HotkeyService {
             guard status == noErr, hotKeyID.signature == HotkeyAction.signature else { return OSStatus(eventNotHandledErr) }
             // Carbon delivers application events on the main thread.
             MainActor.assumeIsolated {
-                guard let service = HotkeyService.active else { return }
-                var lookup: [UUID: HotkeyAction] = [:]
-                for action in service.dynamicActions {
-                    if case let .macro(id) = action { lookup[id] = action }
-                }
-                guard let action = HotkeyAction.action(forSlotID: hotKeyID.id, macros: &lookup) else { return }
+                guard let service = HotkeyService.active,
+                      let action = service.assignedSlots[hotKeyID.id] else { return }
                 service.onTrigger?(action)
             }
             return noErr

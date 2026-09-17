@@ -46,7 +46,12 @@ enum MacroFiles {
         panel.canCreateDirectories = true
         NSApp.activate()
         guard panel.runModal() == .OK, let url = panel.url else { return nil }
-        try macro.jsonData().write(to: url, options: .atomic)
+        // Rename BEFORE writing. The caller renames its in-memory copy from this URL, but the
+        // bytes had already been written — so the file on disk kept the old name and the rename
+        // the user just performed in the Save panel was lost the moment the file was reopened.
+        var stored = macro
+        stored.name = url.deletingPathExtension().lastPathComponent
+        try stored.jsonData().write(to: url, options: .atomic)
         return url
     }
 

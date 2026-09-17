@@ -115,6 +115,8 @@ final class AutoClicker {
         guard permissions.ensureAccessibility() else { return }
         cancelPick()
         clicksDone = 0
+        elapsedBefore = 0
+        workerStartedAt = nil
         runWarning = nil
         // The frontmost-app baseline is sampled in begin(), after the countdown — at toggle()
         // time the user's shortcut hand is still on the keyboard, which can leave Macro Maker
@@ -133,6 +135,8 @@ final class AutoClicker {
         tearDownPauseWatching()
         session.stop()
         clicksDone = 0
+        elapsedBefore = 0
+        workerStartedAt = nil
         runWarning = nil
     }
 
@@ -147,12 +151,16 @@ final class AutoClicker {
         runID += 1
         let run = runID
         let skip = clicksDone
+        // Time already spent before a pause, so a time-limited run cannot restart its budget on
+        // every resume. This mirrors what `skip`/`clicksDone` already does for the click count.
+        let elapsed = elapsedBefore
+        workerStartedAt = Date()
         // Window/app lookups that would otherwise cost a worker→main sync per click.
         let snapshot = TargetSnapshot.shared
         if plan.target == .directApp { snapshot.prewarm(bundleID: plan.directAppBundleID) }
         let runPlan = plan  // immutable copy for the @Sendable worker closure
         let worker = WorkerThread.start(name: "AutoClicker") { worker in
-            Self.clickLoop(runPlan, skipping: skip, worker: worker, snapshot: snapshot) { count, finished, warning in
+            Self.clickLoop(runPlan, skipping: skip, elapsed: elapsed, worker: worker, snapshot: snapshot) { count, finished, warning in
                 performOnMain { [weak self] in
                     guard let self, self.runID == run else { return }
                     self.clicksDone = count
@@ -176,6 +184,10 @@ final class AutoClicker {
         return { worker.cancelAndWait() }
     }
 
+    /// Seconds a time-limited run has already spent across earlier (paused) workers.
+    @ObservationIgnored private var elapsedBefore: TimeInterval = 0
+    @ObservationIgnored private var workerStartedAt: Date?
+
     // MARK: Pause on real input
 
     /// Pausing a run cancels the worker (via RunSession.pause) but keeps the count; resuming
@@ -187,6 +199,9 @@ final class AutoClicker {
         // moment the user STARTED typing and restart the run mid-sentence.
         lastRealInputAt = Date()
         guard session.phase == .running else { return }
+        // Bank the time this worker ran for; `begin` subtracts it from the limit on resume.
+        if let workerStartedAt { elapsedBefore += Date().timeIntervalSince(workerStartedAt) }
+        workerStartedAt = nil
         session.pause()
     }
 
@@ -230,11 +245,29 @@ final class AutoClicker {
         RealInputMonitor.shared.stop()
     }
 
-    nonisolated private static func clickLoop(_ plan: Plan, skipping skip: Int, worker: WorkerThread,
+    /// Longest a single run may be scheduled for — a ceiling that keeps the conversion in range.
+    nonisolated static let maximumRunSeconds: TimeInterval = 86_400
+
+    /// When a time-limited run must stop, counted in the worker's uptime clock.
+    ///
+    /// `alreadyElapsed` is the time spent by earlier workers of the same run. Without it, each
+    /// resume started a brand-new budget — "stop after 60 s" ran 60 s *per resume*, unbounded.
+    /// The clamp also keeps `UInt64(_:)` out of its trapping range (measured: exit 133 on a
+    /// non-finite or negative value).
+    nonisolated static func runDeadlineNanos(start: UInt64, maxDuration: TimeInterval?,
+                                             alreadyElapsed: TimeInterval) -> UInt64 {
+        guard let maxDuration else { return .max }
+        let remaining = maxDuration - alreadyElapsed
+        guard !remaining.isNaN else { return start }
+        return start + UInt64(min(max(remaining, 0), maximumRunSeconds) * 1_000_000_000)
+    }
+
+    nonisolated private static func clickLoop(_ plan: Plan, skipping skip: Int,
+                                              elapsed alreadyElapsed: TimeInterval, worker: WorkerThread,
                                               snapshot: TargetSnapshot,
                                               report: @Sendable (_ count: Int, _ finished: Bool, _ warning: String?) -> Void) {
         let start = DispatchTime.now().uptimeNanoseconds
-        let end = plan.maxDuration.map { start + UInt64($0 * 1_000_000_000) } ?? .max
+        let end = runDeadlineNanos(start: start, maxDuration: plan.maxDuration, alreadyElapsed: alreadyElapsed)
         var deadline = start
         var count = skip
         var lastReport: UInt64 = 0
@@ -342,7 +375,10 @@ final class AutoClicker {
                                    u1: .random(in: 0...1), u2: .random(in: 0...1))
 
         let before = plan.restoreCursor ? EventSynthesizer.cursorLocation : nil
-        EventSynthesizer.click(plan.button, at: plan.target == .cursor ? nil : jiggled,
+        // `at: nil` re-reads the raw cursor position, which threw the jitter away for the
+        // DEFAULT target — "Vary the point by up to ± N px" silently did nothing on it. Keep the
+        // nil fast path only when there is no jitter to apply.
+        EventSynthesizer.click(plan.button, at: plan.target == .cursor && plan.positionJitterPx == 0 ? nil : jiggled,
                                holdFor: TickSchedule.pressDuration(interval: plan.interval),
                                clickCount: plan.clickCountPerEvent, source: source)
         // The real cursor follows HID clicks; optionally put it back where it was.
