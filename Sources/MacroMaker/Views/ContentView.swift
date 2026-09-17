@@ -44,10 +44,13 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var detailView: some View {
+        // The form-based tabs are taller than any sane window; the ScrollView bounds the
+        // layout to the window and keeps every section reachable. RecorderView manages its
+        // own height internally and must NOT sit in a ScrollView.
         switch model.selectedTab {
-        case .autoClicker: AutoClickerView()
-        case .keyPresser: KeyPresserView()
-        case .webTarget: WebTargetView()
+        case .autoClicker: ScrollView { AutoClickerView() }
+        case .keyPresser: ScrollView { KeyPresserView() }
+        case .webTarget: ScrollView { WebTargetView() }
         case .recorder: RecorderView()
         }
     }

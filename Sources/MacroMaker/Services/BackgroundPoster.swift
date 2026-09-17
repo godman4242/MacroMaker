@@ -64,9 +64,11 @@ enum BackgroundPoster {
         return nil
     }
 
-    /// One run's reuse of window-server queries: the listing is cached for 300 ms and the
-    /// resolved window until the cache expires *or* a previous resolution failed, so a moving
-    /// window is followed without paying `CGWindowListCopyWindowInfo` per click.
+    /// One run's reuse of window-server queries: both listings are cached for 300 ms — misses
+    /// included, so a hidden-window run can't re-query the window server once per click (a 1 ms
+    /// interval would otherwise mean ~300 listings/second for however long the window stays
+    /// hidden). A resolution failure re-pulls on the next tick past the TTL; a success is reused
+    /// without paying `CGWindowListCopyWindowInfo` per click.
     final class WindowResolver: @unchecked Sendable {
         private static let ttl: TimeInterval = 0.3
 
@@ -246,13 +248,25 @@ enum BackgroundPoster {
              appIsActive: appIsActive, pid: pid)
     }
 
+    /// Delivery seam: swapped in tests so `click` can be asserted without hitting real processes.
+    nonisolated(unsafe) static var eventPoster: (CGEvent, pid_t) -> Void = { $0.postToPid($1) }
+
     private static func post(_ event: CGEvent?, appIsActive: Bool, pid: pid_t) {
         guard let event else { return }
         // Same contract as the HID path: explicit flags (never the user's held keys) and the
         // self-tag so the recorder ignores Macro Maker's own output.
         event.flags = clickFlags(appIsActive: appIsActive).union(.maskNonCoalesced)
         event.setIntegerValueField(.eventSourceUserData, value: EventSynthesizer.eventTag)
-        event.postToPid(pid)
+        // Re-home the event onto a fresh private source before posting. NSEvent's .cgEvent is
+        // shared-sourced (stateID 0), and posting through that source at click rates wedges its
+        // cumulative modifier/button state — ⌘ then reads as physically held to the window
+        // server (fake-⌘-clicking every window you touch, defeating ⌘Tab's app switch) and no
+        // key-up ever clears it; only quitting the poster does. A fresh source has no history,
+        // so nothing outlives a run.
+        let fresh = CGEventSource(stateID: .hidSystemState)
+        fresh?.localEventsSuppressionInterval = 0
+        event.setSource(fresh)
+        eventPoster(event, pid)
     }
 
     // MARK: Keyboard
@@ -277,6 +291,10 @@ enum BackgroundPoster {
     private static func postKey(_ event: CGEvent, flags: CGEventFlags, pid: pid_t) {
         event.flags = flags.union(.maskNonCoalesced)
         event.setIntegerValueField(.eventSourceUserData, value: EventSynthesizer.eventTag)
+        // Same fresh-source rule as the mouse path: these events are built with a nil source.
+        let fresh = CGEventSource(stateID: .hidSystemState)
+        fresh?.localEventsSuppressionInterval = 0
+        event.setSource(fresh)
         event.postToPid(pid)
     }
 }

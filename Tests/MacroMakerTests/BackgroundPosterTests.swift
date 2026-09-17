@@ -105,6 +105,30 @@ struct BackgroundPosterTests {
         #expect(event != nil)
         #expect(box.recorded == [CGPoint(x: 100, y: 100)]) // window-local point passed through
     }
+
+    @Test func postedClicksCarryNoSharedSourceState() {
+        // Regression (can't-switch-apps-after-a-run): a recipe event built via NSEvent.cgEvent
+        // rides the shared default event source, whose cumulative modifier/button state travels
+        // to the window server on every post and can wedge (⌘ reads as held until the app
+        // quits). postToPid must fire the event off a fresh private source instead.
+        let window = BackgroundPoster.Window(id: 7, bounds: CGRect(x: 0, y: 0, width: 100, height: 100))
+        let box = PostedEventBox()
+        let prior = BackgroundPoster.eventPoster
+        defer { BackgroundPoster.eventPoster = prior }
+        BackgroundPoster.eventPoster = { event, _ in box.events.append(event) }
+
+        BackgroundPoster.click(.left, screenPoint: CGPoint(x: 50, y: 50), holdFor: 0,
+                               clickCount: 1, window: window, pid: 1, appIsActive: false)
+
+        #expect(box.events.count == 2)  // down + up
+        for event in box.events {
+            #expect(event.getIntegerValueField(.eventSourceStateID) != 0,
+                    "background clicks must post from a private event source, not the shared HID state")
+        }
+    }
+
+    /// Captures events instead of delivering them (see BackgroundPoster.eventPoster).
+    private final class PostedEventBox: @unchecked Sendable { var events: [CGEvent] = [] }
 }
 
 @Suite("Direct-app settings")
