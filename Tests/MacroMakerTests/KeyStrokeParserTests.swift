@@ -108,3 +108,47 @@ private struct FakeLayout: CharacterKeyMap {
         #expect(KeyStrokeParser.token(keyCode: CGKeyCode(kVK_F5), modifiers: [], layout: FakeLayout()) == "f5")
     }
 }
+
+/// The layout scan's ordering rule. `KeyStrokeParserTests` has always asserted that "+" is
+/// ⇧= (key 24) — but its fake layout has no numeric keypad, so it could not see that the real
+/// scan handed "+" to the keypad. Measured over the live ABC layout before the fix: '+' -> key
+/// 69 (kVK_ANSI_KeypadPlus) and '*' -> key 67 (kVK_ANSI_KeypadMultiply), 2 of 200 characters.
+@Suite("Keyboard layout scan")
+struct KeyboardLayoutScanTests {
+    /// plain, then ⇧ — the real order of preference, with fake state bits.
+    private static let states: [(KeyModifiers, UInt32)] = [([], 0), (.shift, 2)]
+
+    /// A layout that HAS keypad keys: "+" and "*" are unmodified there and shifted on the main
+    /// row. That combination is the entire defect, and no keypad-free fake can express it.
+    private static func translate(_ code: CGKeyCode, _ state: UInt32) -> String? {
+        switch (code, state) {
+        case (24, 0): "="
+        case (24, 2): "+"          // main row: ⇧=
+        case (28, 0): "8"
+        case (28, 2): "*"          // main row: ⇧8
+        case (67, _): "*"          // keypad multiply, no modifier needed
+        case (69, _): "+"          // keypad plus, no modifier needed
+        default: nil
+        }
+    }
+
+    @Test func theKeypadNeverStealsACharacterFromAMainRowKey() {
+        let table = KeyboardLayout.scan(codes: CGKeyCode(0)..<128, states: Self.states, translate: Self.translate)
+        #expect(table.presses["+"] == KeyPress(keyCode: 24, modifiers: .shift),
+                "'+' must be ⇧= on the main row, not the keypad's plus")
+        #expect(table.presses["*"] == KeyPress(keyCode: 28, modifiers: .shift),
+                "'*' must be ⇧8 on the main row, not the keypad's multiply")
+    }
+
+    @Test func plainStillBeatsShiftOnTheSameKey() {
+        let table = KeyboardLayout.scan(codes: CGKeyCode(0)..<128, states: Self.states, translate: Self.translate)
+        #expect(table.presses["="] == KeyPress(keyCode: 24, modifiers: []))
+        #expect(table.presses["8"] == KeyPress(keyCode: 28, modifiers: []))
+    }
+
+    @Test func theUnmodifiedCharacterIsWhatAKeyCodeDisplaysAs() {
+        let table = KeyboardLayout.scan(codes: CGKeyCode(0)..<128, states: Self.states, translate: Self.translate)
+        #expect(table.characters[24] == "=")
+        #expect(table.characters[69] == "+", "the keypad key still reports what it types")
+    }
+}

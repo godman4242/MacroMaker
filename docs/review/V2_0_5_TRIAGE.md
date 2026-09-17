@@ -1,4 +1,6 @@
-# v2.0.5 — adversarial subsystem sweep: what was fixed, what is still open
+# The v2.0.5 adversarial subsystem sweep: what was fixed, what is still open
+
+> **21 of 34 fixed** — 8 in v2.0.5, 13 in v2.0.6. 13 remain open, all medium or low.
 
 Ten read-only reviewers, one per subsystem with an explicit file list, then every finding
 refuted by three independent lenses (does it reproduce · is it already handled · is the platform
@@ -27,43 +29,47 @@ NaN`), not as a compile error — a compile error proves nothing.
 | U3 | low | An interval from an imported profile or a corrupted defaults blob reached `Duration.milliseconds(_:)` unbounded; above ~1.7e23 that call **traps**. Only the UI enforced the limit. | Hoisted the bound the view already used and applied it on the run path. |
 | U10 | medium | The profile importer accepted **any** JSON object — `{"name":"Quarterly Report"}` imported as a complete, all-defaults profile wearing that title, and applying it reset every feature. `Macro` has guarded on its format key since v2.0; profiles never did. | Profiles now declare their format, and a payload with no identifying key is rejected. Files written before v2.0.5 still load. |
 
-## Still open — 26 findings
+## Fixed in v2.0.6 — 13 more findings
 
-Not attempted in this pass. Each row in the JSON carries a concrete failure scenario, quoted
-evidence and a proposed change. **UNJUDGED means unverified, not unreal** — treat the claim as a
-lead and re-check it before acting on it, exactly as the fixed ones were re-checked by hand.
+| ID | Sev | What was wrong | Fix |
+|---|---|---|---|
+| C2 | critical | `.flagsChanged` fires on both the press and the release of a modifier, and the code only asked "is this modifier part of the combo". **Pressing ⌃ during a ⌃⌥C hold-run stopped the run.** | Require the flag to be ABSENT after the change. Extracted as `KeyCombo.isEndedByFlagsChange`, +3 tests. |
+| U12 | critical | While recording, the step table shows `recorder.liveEvents` — but every editing action it offered indexed and rewrote `model.macro`, a **different array**, then autosaved it. Deleting "step 3" of a live recording deleted step 3 of the *previous* macro. | The context menu and double-click are gated on `!isRecording`, matching the data source. |
+| C3 | high | Auto-resume was **structurally unreachable**. A pause cancels the worker, and a cancelled worker reports exactly like a finished one — so every pause ran `tearDownPauseWatching()`, killing the 1-second timer that is the only thing driving `resumeIfIdle`. | Skip the teardown while paused. Also stamp `lastRealInputAt` before the phase check, so idle is counted from the user's LAST keystroke, not their first. |
+| C4 | high | The layout scan looped modifier state on the *outside*, so the whole plain pass finished first and the numeric keypad claimed any character that is unmodified there. Measured on the live layout: **`+` resolved to key 69 (KeypadPlus) and `*` to key 67 (KeypadMultiply)** instead of ⇧= and ⇧8. `KeyStrokeParserTests` always asserted the right answer — it passed only because its fake layout has no keypad to lose to. | Key code outer, state inner. Exactly 2 of 200 characters change, character set unchanged. Extracted as `KeyboardLayout.scan`, +3 tests, red-proofed by planting the old loop order. |
+| C5 / U15 | high | `KeyPresserView` started an app-wide key capture with no `.onDisappear` to end it. Leaving the tab destroyed the view while the monitor stayed installed — and it returns `nil` for every keyDown, i.e. **swallowing every keystroke in every window**, writing the first one into the key field. | The same `.onDisappear` guard `HotkeyField` already carried. |
+| U4 | high | `launch()` disarmed any armed schedule unconditionally, so scheduled start only ever worked inside the one session it was switched on in — and quit/relaunch is the normal path for a menu-bar login-item app. | Re-arm when the time is still ahead today; disarm only a missed one. Extracted as `ScheduleRules.staysArmedOnLaunch`, +3 tests. |
+| C9 / U13 | high | "Insert Typed Text…" inserted a hard-coded `"abc"` as three keyDown/keyUp pairs, then opened the single-step *rename* editor on the first one, pre-filled with the whole word. Whatever the user typed replaced only the "a" — the "b" and "c" stayed in the macro silently. | Ask for the text first, via a new `.insertText` editor case. |
+| U14 | high | Onboarding's "Test Click" posted a real click at the cursor — and the only way to press it is to click it, so the click landed back on the button and ran the action again, each pass posting another. It also proved nothing: that section only renders once macOS has *already* granted access. | Removed; replaced with the confirmation it was standing in for. |
+| U18 | high | The "Hotkey" checkbox is the only control that can remove a macro hotkey, and it is replaced by the hotkey field the instant one is assigned — so a hotkey **could never be switched off** and its slot was consumed for good. With all 10 taken, every other row disabled itself while the banner said to "remove one". | A remove button on the field. |
+| U11 | low | `nextOccurrence` added raw seconds to midnight. A day is 23 or 25 hours across a daylight-saving transition, so a **07:00 start fired at 08:00** (measured, 2026-03-29 Europe/London). | Set the wall-clock time on the day. +1 test. |
+| C13 | low | Both `TISCopy…` calls return a +1 reference, but the balancing `takeRetainedValue()` sat inside a **lazy** chain that short-circuits — so the second source leaked on every layout rebuild. | Consume both retains up front. |
+
+## Still open — 13 findings, all medium or low
+
+Not attempted. Each row in the JSON carries a concrete failure scenario, quoted evidence and a
+proposed change. **UNJUDGED means unverified, not unreal** — treat the claim as a lead and
+re-check it before acting, exactly as every fixed one was re-checked by hand.
 
 | ID | Sev | Status | Where | What |
 |---|---|---|---|---|
-| C2 | critical | CONFIRMED | `Services/HotkeyService.swift:239` | flagsChanged: a modifier key-DOWN is treated as a release, killing the run |
-| U12 | critical | UNJUDGED | `Views/RecorderView.swift:136` | Step-editor actions on LIVE recording rows mutate and autosave the OTHER macro |
-| C3 | high | CONFIRMED | `Services/AutoClicker.swift:162` | Auto-resume can never fire: a pause tears down its own resume timer |
-| C4 | high | CONFIRMED | `Utilities/KeyboardLayout.swift:71` | Layout build maps "+" and "*" to numeric-keypad key codes, not the main row |
-| C5 | high | CONFIRMED | `Views/KeyPresserView.swift:106` | Key-field capture is never ended when the Key Presser tab goes away |
-| U13 | high | UNJUDGED | `Views/RecorderView.swift:298` | Insert Typed Text pre-fills the rename editor with the whole word, not the one step |
-| U14 | high | UNJUDGED | `Views/OnboardingView.swift:50` | Onboarding "Test Click" clicks itself — a self-retriggering click loop |
-| U18 | high | UNJUDGED | `Views/Components/LibrarySection.swift:136` | A macro hotkey can never be switched off once enabled |
-| U4 | high | UNJUDGED | `App/AppModel.swift:203` | Scheduled start disarms itself on every launch, even when still ahead |
 | C10 | medium | CONFIRMED | `Models/HotkeyAction.swift:107` | Macro hotkey dispatch recomputes the raw slot, ignoring the collision-avoided slot used to register |
 | C11 | medium | CONFIRMED | `Services/HotkeyService.swift:95` | setCombo clobbers the Auto Clicker's combo without firing the hold-run hook |
 | C7 | medium | CONFIRMED | `Services/AutoClicker.swift:335` | Position jitter is computed then discarded for the default cursor target |
 | C8 | medium | CONFIRMED | `Services/AutoClicker.swift:227` | Stop-after-duration restarts its whole time budget on every resume |
-| C9 | medium | CONFIRMED | `Views/RecorderView.swift:298` | "Insert Typed Text…" edits only the first character, so the macro types the wrong text |
-| U15 | medium | UNJUDGED | `Views/KeyPresserView.swift:106` | Key Presser key capture is never ended when the view goes away |
 | U16 | medium | UNJUDGED | `Views/SettingsView.swift:105` | Scheduled-start time is discarded unless the user presses Return in the field |
 | U5 | medium | UNJUDGED | `App/AppModel.swift:176` | fireSchedule uses toggle(), so a scheduled start STOPS an already-running feature |
 | U6 | medium | UNJUDGED | `App/AppModel.swift:167` | fireSchedule never checks the deadline, so a sleep-delayed timer starts hours late |
 | U8 | medium | UNJUDGED | `App/AppDelegate.swift:24` | Double-clicking a .macromakerprofile file opens it as a macro and fails |
 | U9 | medium | UNJUDGED | `Services/ProfileService.swift:23` | Save never overwrites: re-saving a profile name silently appends a twin |
 | C12 | low | CONFIRMED | `Services/AutoClicker.swift:247` | The direct-app "target app quit" stop reason can never be displayed |
-| C13 | low | CONFIRMED | `Utilities/KeyboardLayout.swift:48` | One TISInputSource leaked on every keyboard-layout rebuild |
-| U11 | low | UNJUDGED | `Utilities/ScheduleRules.swift:30` | nextOccurrence adds raw seconds to midnight — off by an hour on DST days |
 | U17 | low | UNJUDGED | `Views/MenuBarView.swift:60` | Menu-bar rows for hotkeyed macros hardcode phase .idle, so "Play" actually stops |
 | U21 | low | UNJUDGED | `Views/Components/ProfilesSection.swift:13` | Return in an empty profile Name field saves a junk profile named "Profile" |
 | U7 | low | UNJUDGED | `App/AppModel.swift:282` | saveMacro writes the file before renaming, so the saved file keeps the old name |
+
 ## Verification of this pass
 
-- `./scripts/test.sh` — **155 tests in 29 suites, green** (131 before this session).
+- `./scripts/test.sh` — **165 tests in 31 suites, green** (131 before this session).
 - Clean build from a fresh scratch path — **0 warnings, 0 errors** under Swift 6 strict concurrency.
-- The layout gate re-run on the fix-pass binary — `TALLY FINAL: GOOD=10 BAD=0 OTHER=0
-  IDENT-MISMATCH=0`, all four tabs bounded. Views changed, so the gate had to run again.
+- The layout gate re-run on each fix-pass binary — `TALLY FINAL: GOOD=10 BAD=0 OTHER=0
+  IDENT-MISMATCH=0`, all four tabs bounded. Views changed, so the gate ran again each time.

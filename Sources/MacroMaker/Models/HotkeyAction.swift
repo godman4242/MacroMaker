@@ -4,6 +4,22 @@ import Carbon.HIToolbox
 struct KeyCombo: Codable, Hashable, Sendable {
     var keyCode: UInt32
     var modifiers: KeyModifiers
+
+    /// Whether a `.flagsChanged` event ENDS a hold of this combo.
+    ///
+    /// `.flagsChanged` fires on both the press and the release of a modifier, and the event
+    /// itself does not say which. The answer is in the post-change flags: a modifier that is
+    /// still present was just pressed. Asking only "is this modifier part of the combo" made
+    /// pressing ⌃ during a ⌃⌥C hold-run read as a release and stop the run.
+    ///
+    /// Matching on the flag rather than the key code is deliberate: releasing EITHER part of a
+    /// ⌃⌥C-style combo ends the hold, because the combo's main key rarely goes up too.
+    func isEndedByFlagsChange(keyCode changed: CGKeyCode, modifiersAfter: KeyModifiers) -> Bool {
+        guard let modifierKey = KeyCodes.modifierKey(for: changed),
+              let flag = KeyModifiers(cgFlag: modifierKey.flag)
+        else { return false }
+        return modifiers.contains(flag) && !modifiersAfter.contains(flag)
+    }
 }
 
 /// The built-in hotkey actions. `slotID` (`Self.allCases.firstIndex`) is each action's Carbon

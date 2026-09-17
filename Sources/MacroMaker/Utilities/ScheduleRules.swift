@@ -27,8 +27,36 @@ enum ScheduleRules {
         guard schedule.enabled else { return nil }
         let clamped = min(max(0, schedule.seconds), 24 * 3600 - 1)
         let day = calendar.startOfDay(for: now)
-        let todayAt = day.addingTimeInterval(clamped)
-        return todayAt > now ? todayAt : calendar.date(byAdding: .day, value: 1, to: todayAt)
+        // Set the wall-clock time on the day rather than adding raw seconds to midnight. A day
+        // is 23 or 25 hours long across a daylight-saving transition, so midnight + 7h is 06:00
+        // or 08:00 — a 07:00 start fired an hour out twice a year (measured: hour 8 on
+        // 2026-03-29 in Europe/London). The `> now` comparison is kept strict so "exactly the
+        // configured second" still counts as passed.
+        let todayAt = at(clamped, on: day, calendar: calendar)
+        if todayAt > now { return todayAt }
+        guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: day) else { return nil }
+        return at(clamped, on: tomorrow, calendar: calendar)
+    }
+
+    private static func at(_ secondsIntoDay: Double, on day: Date, calendar: Calendar) -> Date {
+        let whole = Int(secondsIntoDay)
+        return calendar.date(bySettingHour: whole / 3600, minute: whole / 60 % 60, second: whole % 60,
+                             of: day, matchingPolicy: .nextTime, direction: .forward)
+            ?? day.addingTimeInterval(secondsIntoDay)
+    }
+
+    /// Whether a schedule that was armed when the app last quit should stay armed on this launch.
+    ///
+    /// True while its time is still ahead TODAY: the user set 19:00, the app was relaunched at
+    /// 18:00, and the run should still happen. False once today's time has gone, where re-arming
+    /// would surprise-fire tomorrow. Launch used to disarm unconditionally, which meant the
+    /// feature only ever worked inside the single session it was switched on in — and for a
+    /// menu-bar login-item app, quit/relaunch is the normal path.
+    static func staysArmedOnLaunch(_ schedule: AppModel.Schedule, now: Date,
+                                   calendar: Calendar = .current) -> Bool {
+        guard schedule.enabled, let next = nextOccurrence(of: schedule, from: now, calendar: calendar)
+        else { return false }
+        return calendar.isDate(next, inSameDayAs: now)
     }
 
     /// Human countdown for the menu-bar label.

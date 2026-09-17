@@ -36,19 +36,22 @@ struct OnboardingView: View {
 
             if model.permissions.isAccessibilityTrusted {
                 HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: "cursorarrow.click.2")
+                    Image(systemName: "checkmark.circle.fill")
                         .font(.title2)
-                        .foregroundStyle(.blue)
+                        .foregroundStyle(.green)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("2. Try it")
+                        Text("2. You're ready")
                             .font(.headline)
-                        Text("Click once right where the cursor is — nothing moves, nothing types.")
+                        // There used to be a "Test Click" button here that posted a real click at
+                        // the cursor. The only way to press it is to click it, so the cursor was
+                        // necessarily over the button: the synthetic click landed back on the
+                        // button and ran the action again, each pass posting another click.
+                        // It also proved nothing — this whole section only renders once macOS has
+                        // already granted access. Each feature has its own aimed Test button.
+                        Text("macOS has granted access, so Macro Maker can click and type for you. Each tab has its own Test button that clicks where you aim it.")
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .wrapsText()
-                        Button("Test Click") {
-                            EventSynthesizer.click(.left, at: nil, holdFor: 0)
-                        }
                     }
                 }
             }

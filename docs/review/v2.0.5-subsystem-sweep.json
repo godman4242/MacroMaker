@@ -32,7 +32,8 @@
    "proposed_change": "One line, no shape change: require the flag to be ABSENT after the change \u2014 `released = combo.modifiers.contains(releasedFlag) && !modifiers.contains(releasedFlag)` (`modifiers` on line 227 is already the post-change state). Equivalently, mirror MacroRecorder and use `!KeyCodes.isModifierDown(code: CGKeyCode(event.keyCode), flags: event.cgEvent?.flags.rawValue ?? 0)`.",
    "live_votes": 3,
    "refutes": 0,
-   "fix_status": "OPEN"
+   "fix_status": "FIXED in v2.0.6",
+   "fix_note": "the .flagsChanged rule now requires the flag to be ABSENT after the change, so pressing a modifier is no longer read as releasing it. Extracted as KeyCombo.isEndedByFlagsChange. +3 tests."
   },
   {
    "id": "C3",
@@ -47,7 +48,8 @@
    "proposed_change": "Make the finished-report handler distinguish \"the worker was cancelled because we paused\" from \"the run ended\": change `if finished {` to `if finished, !self.session.isPaused {` (equivalently, bump `runID` inside `pauseIfNeeded()` so the existing `runID == run` guard drops the cancelled worker's report). Secondly, for the feature to behave as its UI copy describes, `lastRealInputAt = Date()` must keep updating while paused \u2014 today the `session.phase == .running` guard freezes it at the FIRST keystroke, so once auto-resume works it would restart while the user is still typing; record the timestamp before the phase check. No layout shape is affected.",
    "live_votes": 3,
    "refutes": 0,
-   "fix_status": "OPEN"
+   "fix_status": "FIXED in v2.0.6",
+   "fix_note": "the finished-report handler skips teardown while paused, so the resume timer survives a pause; lastRealInputAt is stamped before the phase check so idle is counted from the LAST keystroke."
   },
   {
    "id": "C4",
@@ -62,7 +64,8 @@
    "proposed_change": "Swap the two loops so key code is the outer loop and modifier state the inner one \u2014 i.e. `for code in CGKeyCode(0)..<127 { for (modifiers, state) in states { ... } }` \u2014 which makes \"lowest key code wins\" the primary rule exactly as the existing comment claims, with plain/shift/option preference as the tiebreak within one key. No layout shape or API change. MEASURED: over the live ABC layout this changes exactly two entries ('*': 67 -> 28+shift, '+': 69 -> 24+shift), leaves all other 181 characters identical, and adds/removes no characters \u2014 and it makes the shipped behaviour match KeyStrokeParserTests.plusKeyAloneAndInCombo. (The test's FakeLayout should also gain a keypad entry, e.g. \"+\" at keyCode 69 plain, so the gate can actually go red on this.)",
    "live_votes": 3,
    "refutes": 0,
-   "fix_status": "OPEN"
+   "fix_status": "FIXED in v2.0.6",
+   "fix_note": "the layout scan loops key code OUTER and modifier state inner, so the keypad can no longer claim a main-row character. Extracted as KeyboardLayout.scan. +3 tests, red-proofed by planting the old loop order."
   },
   {
    "id": "C5",
@@ -77,7 +80,8 @@
    "proposed_change": "Add the same guard HotkeyField already uses to KeyPresserView's body: `.onDisappear { if model.keyCapture.owner == Self.captureID { model.keyCapture.end() } }` on the outer VStack. One modifier, no layout-shape change. (A belt-and-braces alternative is to have KeyCapture pass through events its onKey rejected instead of always returning nil, but that changes hotkey-capture semantics; the onDisappear is the smaller fix.)",
    "live_votes": 3,
    "refutes": 0,
-   "fix_status": "OPEN"
+   "fix_status": "FIXED in v2.0.6",
+   "fix_note": "KeyPresserView ends its key capture in .onDisappear, the same guard HotkeyField already carried. Also closes U15."
   },
   {
    "id": "C6",
@@ -138,7 +142,8 @@
    "proposed_change": "Ask for the text BEFORE inserting anything: add an `.insertText(Int)` case to the StepEditor enum whose Apply branch calls `MacroLibraryRules.insertTypedText(events:atIndex:text: editorDraft)` with the user's string, and make \"Insert Typed Text\u2026\" open that editor with an empty draft instead of inserting \"abc\" and re-opening the per-step rename editor. insertTypedText already handles the multi-character case correctly (MacroLibraryTests.insertTypedTextShiftsLaterEventsByTypedDuration pins it), so only the caller changes. No layout-shape change.",
    "live_votes": 3,
    "refutes": 0,
-   "fix_status": "OPEN"
+   "fix_status": "FIXED in v2.0.6",
+   "fix_note": "\"Insert Typed Text\u2026\" asks for the text first via a new .insertText editor case, instead of inserting \"abc\" and opening a single-step rename on it. Also closes U13."
   },
   {
    "id": "C10",
@@ -198,7 +203,8 @@
    "proposed_change": "Consume both retains up front rather than inside the lazy chain: build the array as the already-managed values, e.g. `let sources = [TISCopyCurrentKeyboardLayoutInputSource(), TISCopyCurrentASCIICapableKeyboardLayoutInputSource()].compactMap { $0?.takeRetainedValue() }`, then `.lazy.compactMap { source in ... }.first` over those. Same behaviour, no layout-shape change.",
    "live_votes": 3,
    "refutes": 1,
-   "fix_status": "OPEN"
+   "fix_status": "FIXED in v2.0.6",
+   "fix_note": "both TISCopy\u2026 retains are consumed up front instead of inside a short-circuiting lazy chain."
   },
   {
    "id": "U1",
@@ -261,7 +267,8 @@
    "proposed_change": "Disarm only when today's occurrence has already passed; otherwise re-arm. Replace the block with:\n```swift\nif schedule.enabled {\n    if let deadline = ScheduleRules.nextOccurrence(of: schedule, from: Date()),\n       Calendar.current.isDateInToday(deadline) {\n        setSchedule(schedule)          // still ahead today: re-arm the timer\n    } else {\n        var disarmed = schedule\n        disarmed.enabled = false\n        setSchedule(disarmed)          // missed it: disarm rather than surprise-fire tomorrow\n    }\n}\n```\nNo layout or UI shape change; `ScheduleRules` is already pure and tested.",
    "live_votes": 0,
    "refutes": null,
-   "fix_status": "OPEN"
+   "fix_status": "FIXED in v2.0.6",
+   "fix_note": "launch re-arms a schedule whose time is still ahead today and disarms only a missed one. Extracted as ScheduleRules.staysArmedOnLaunch. +3 tests."
   },
   {
    "id": "U5",
@@ -367,7 +374,8 @@
    "proposed_change": "Build `todayAt` from components instead of seconds: `let todayAt = calendar.date(bySettingHour: Int(clamped) / 3600, minute: Int(clamped) / 60 % 60, second: 0, of: now) ?? day.addingTimeInterval(clamped)`. Signature and return type unchanged; the existing UTC tests stay green because UTC has no DST.",
    "live_votes": 0,
    "refutes": null,
-   "fix_status": "OPEN"
+   "fix_status": "FIXED in v2.0.6",
+   "fix_note": "nextOccurrence sets the wall-clock time on the day instead of adding raw seconds to midnight, so a 07:00 start stays 07:00 across a DST transition. +1 test (measured: hour 8 before)."
   },
   {
    "id": "U12",
@@ -382,7 +390,8 @@
    "proposed_change": "Gate the editing affordances on the same flag the data source uses: attach `.disabled(model.recorder.isRecording)` to the `Table` in `eventTable` (or wrap the `.contextMenu(forSelectionType:)`/`primaryAction` block so it is only installed when `!model.recorder.isRecording`). One line, no layout-shape change.",
    "live_votes": 0,
    "refutes": null,
-   "fix_status": "OPEN"
+   "fix_status": "FIXED in v2.0.6",
+   "fix_note": "the step editor's context menu and double-click are gated on !isRecording, so they can no longer rewrite the OTHER macro while a recording is live."
   },
   {
    "id": "U13",
@@ -397,7 +406,8 @@
    "proposed_change": "Replace `editorDraft = \"abc\"` with `editorDraft = renameText(for: index + 1)` so the sheet shows the step's actual single character, matching every other editor entry point. One-line change, no layout impact.",
    "live_votes": 0,
    "refutes": null,
-   "fix_status": "OPEN"
+   "fix_status": "FIXED in v2.0.6",
+   "fix_note": "closed by C9 \u2014 the flow no longer pre-fills a whole word into a single-character step."
   },
   {
    "id": "U14",
@@ -412,7 +422,8 @@
    "proposed_change": "Do not post the test click at the live cursor position from inside the button's own action. Smallest fix: capture the point and defer the click off the button, e.g. use the same countdown-then-capture pattern `AutoClicker.beginPick` already uses, or post at an explicit point known to be outside the app's windows. Either keeps the button a one-shot demo. No layout change.",
    "live_votes": 0,
    "refutes": null,
-   "fix_status": "OPEN"
+   "fix_status": "FIXED in v2.0.6",
+   "fix_note": "the self-clicking \"Test Click\" button is gone; the section already only renders once macOS has granted access, so it proved nothing it could not prove without clicking itself."
   },
   {
    "id": "U15",
@@ -427,7 +438,8 @@
    "proposed_change": "Mirror HotkeyField: add `.onDisappear { if model.keyCapture.owner == Self.captureID { model.keyCapture.end() } }` to the `VStack` in `KeyPresserView.body`. Three lines, no layout change.",
    "live_votes": 0,
    "refutes": null,
-   "fix_status": "OPEN"
+   "fix_status": "FIXED in v2.0.6",
+   "fix_note": "closed by C5."
   },
   {
    "id": "U16",
@@ -472,7 +484,8 @@
    "proposed_change": "Keep the Toggle in BOTH branches so it can be switched back off \u2014 delete the `else` and render `Toggle(\"Hotkey\", isOn: hotkeyBinding(for: record))` after the `if let action { HotkeyField(...) }` block. This changes the row's layout shape slightly (a checkbox sits next to the 120pt hotkey field on rows that have a hotkey). The non-layout alternative is to give the HotkeyField branch a trailing \u2715 button that calls `model.setMacroHotkey(false, for: record)` instead of widening the row.",
    "live_votes": 0,
    "refutes": null,
-   "fix_status": "OPEN"
+   "fix_status": "FIXED in v2.0.6",
+   "fix_note": "the hotkey field now carries a remove button, so a macro hotkey can be switched off and its slot freed."
   },
   {
    "id": "U19",

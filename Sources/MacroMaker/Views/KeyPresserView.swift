@@ -101,6 +101,13 @@ struct KeyPresserView: View {
                 presser.toggle(.button)
             }
         }
+        // Same guard HotkeyField already carries. ContentView's detail is a switch on the
+        // selected tab, so leaving this tab destroys the view — while KeyCapture's local
+        // keyDown monitor stays installed, swallowing EVERY keystroke in every window and
+        // writing the first one into the key field.
+        .onDisappear {
+            if model.keyCapture.owner == Self.captureID { model.keyCapture.end() }
+        }
     }
 
     private func captureKey() {

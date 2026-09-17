@@ -137,6 +137,18 @@ struct LibrarySection: View {
                 HotkeyField(action: action)
                     .scaleEffect(0.85, anchor: .trailing)
                     .frame(width: 120)
+                // The checkbox below is the ONLY control that can remove a macro's hotkey, and it
+                // is replaced by the field above the instant one is assigned — so a hotkey could
+                // never be switched off, and its slot was consumed for good. With all 10 slots
+                // taken, every other row's checkbox disabled itself while the banner said to
+                // "remove one". This gives the field back its off switch without widening the row.
+                Button {
+                    model.setMacroHotkey(false, for: record)
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.borderless)
+                .help("Remove this macro's shortcut and free its slot")
             } else {
                 Toggle("Hotkey", isOn: hotkeyBinding(for: record))
                     .toggleStyle(.checkbox)

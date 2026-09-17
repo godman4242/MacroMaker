@@ -157,7 +157,13 @@ final class AutoClicker {
                     guard let self, self.runID == run else { return }
                     self.clicksDone = count
                     self.clickCount = count
-                    if finished {
+                    // A pause cancels the worker, and a cancelled worker reports exactly like a
+                    // finished one. `session.finish` already ignores it (it requires .running),
+                    // but the teardown did not — so every pause invalidated the 1s resume timer
+                    // and stopped the input monitor, and `resumeIfIdle` is driven ONLY by that
+                    // timer, which is only re-armed from inside a start. Auto-resume was
+                    // therefore structurally unreachable, not merely racy.
+                    if finished, !self.session.isPaused {
                         self.runWarning = warning
                         self.tearDownPauseWatching()
                         self.session.finish(token)
@@ -175,8 +181,12 @@ final class AutoClicker {
     /// Pausing a run cancels the worker (via RunSession.pause) but keeps the count; resuming
     /// restarts the worker without a countdown, skipping the clicks already done.
     private func pauseIfNeeded() {
-        guard settings.pauseOnRealInput, session.phase == .running else { return }
+        guard settings.pauseOnRealInput else { return }
+        // Stamp the input BEFORE the phase check. Behind the `.running` guard the timestamp
+        // froze at the first keystroke, so auto-resume would count its idle seconds from the
+        // moment the user STARTED typing and restart the run mid-sentence.
         lastRealInputAt = Date()
+        guard session.phase == .running else { return }
         session.pause()
     }
 

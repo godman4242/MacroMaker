@@ -198,12 +198,18 @@ final class AppModel {
             hotkeys.removeDynamicAction(action)
         }
         if macro == nil { macro = MacroFiles.loadAutosave() }
-        // A schedule armed when the app last quit has already missed its moment — disarm rather
-        // than surprise-fire tomorrow.
+        // A schedule armed when the app last quit keeps its arming if its time is still ahead
+        // today; only a missed one is disarmed, so it can't surprise-fire tomorrow. Disarming
+        // unconditionally meant the feature never survived a quit — the normal path for a
+        // menu-bar login-item app.
         if schedule.enabled {
-            var disarmed = schedule
-            disarmed.enabled = false
-            setSchedule(disarmed)
+            if ScheduleRules.staysArmedOnLaunch(schedule, now: Date()) {
+                setSchedule(schedule)
+            } else {
+                var disarmed = schedule
+                disarmed.enabled = false
+                setSchedule(disarmed)
+            }
         }
         permissions.onPermissionMissing = { WindowCoordinator.shared.show(.main) }
         hotkeys.onTrigger = { [weak self] action in self?.perform(action, trigger: .hotkey) }

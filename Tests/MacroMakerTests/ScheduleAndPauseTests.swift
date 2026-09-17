@@ -149,3 +149,77 @@ struct RealInputRulesTests {
         #expect(RealInputRules.idleEnough(lastInputAt: .distantPast, afterSeconds: 5, now: Date()))
     }
 }
+
+/// Three rules the v2.0.5 sweep found broken. Key codes are the raw virtual codes:
+/// 59 = left Control, 58 = left Option, 56 = left Shift.
+@Suite("Hold and schedule rules")
+struct HoldAndScheduleRuleTests {
+    private static func utc() -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        return calendar
+    }
+    private static let combo = KeyCombo(keyCode: 8, modifiers: [.control, .option])   // ⌃⌥C
+
+    // MARK: C2 — a modifier PRESS was reported as a release
+
+    /// `.flagsChanged` fires on both the press and the release of a modifier. Reading only
+    /// "is this modifier part of the combo" meant pressing ⌃ during a ⌃⌥C hold-run stopped it.
+    @Test func pressingAModifierDoesNotEndAHold() {
+        #expect(!Self.combo.isEndedByFlagsChange(keyCode: 59, modifiersAfter: [.control]),
+                "⌃ is still held after the change — that is a press, not a release")
+        #expect(!Self.combo.isEndedByFlagsChange(keyCode: 58, modifiersAfter: [.control, .option]))
+    }
+
+    @Test func releasingAModifierStillEndsAHold() {
+        // ⌃ let go while ⌥ stays down: the control flag is absent afterwards.
+        #expect(Self.combo.isEndedByFlagsChange(keyCode: 59, modifiersAfter: [.option]))
+        #expect(Self.combo.isEndedByFlagsChange(keyCode: 58, modifiersAfter: [.control]))
+        #expect(Self.combo.isEndedByFlagsChange(keyCode: 59, modifiersAfter: []))
+    }
+
+    @Test func aModifierOutsideTheComboIsIgnoredEitherWay() {
+        #expect(!Self.combo.isEndedByFlagsChange(keyCode: 56, modifiersAfter: []))
+        #expect(!Self.combo.isEndedByFlagsChange(keyCode: 56, modifiersAfter: [.shift]))
+    }
+
+    // MARK: U4 — an armed schedule disarmed itself on every relaunch
+
+    @Test func aScheduleStillAheadTodaySurvivesARelaunch() {
+        let schedule = AppModel.Schedule(enabled: true, seconds: 19 * 3600, feature: .autoClicker)
+        let sixPM = Date(timeIntervalSince1970: 1_789_581_600)   // 2026-09-16 18:00 UTC
+        #expect(ScheduleRules.staysArmedOnLaunch(schedule, now: sixPM, calendar: Self.utc()),
+                "19:00 is still ahead at 18:00 — a relaunch must not silently switch it off")
+    }
+
+    @Test func aScheduleWhoseTimeHasPassedIsDisarmed() {
+        let schedule = AppModel.Schedule(enabled: true, seconds: 8 * 3600, feature: .autoClicker)
+        let tenAM = Date(timeIntervalSince1970: 1_789_552_800)   // 2026-09-16 10:00 UTC
+        #expect(!ScheduleRules.staysArmedOnLaunch(schedule, now: tenAM, calendar: Self.utc()),
+                "08:00 has gone — re-arming would surprise-fire tomorrow")
+    }
+
+    @Test func aDisabledScheduleNeverArms() {
+        let schedule = AppModel.Schedule(enabled: false, seconds: 19 * 3600, feature: .autoClicker)
+        let sixPM = Date(timeIntervalSince1970: 1_789_581_600)
+        #expect(!ScheduleRules.staysArmedOnLaunch(schedule, now: sixPM, calendar: Self.utc()))
+    }
+
+    // MARK: U11 — a clock time drifted an hour on DST days
+
+    /// Adding raw seconds to midnight assumes every day is 24 hours. On a spring-forward day it
+    /// is 23, so a 07:00 alarm fired at 08:00. 2026-03-29 is the European transition.
+    @Test func aClockTimeKeepsItsWallClockHourAcrossDST() {
+        var london = Calendar(identifier: .gregorian)
+        london.timeZone = TimeZone(identifier: "Europe/London")!
+        let schedule = AppModel.Schedule(enabled: true, seconds: 7 * 3600, feature: .autoClicker)
+        var components = DateComponents()
+        components.year = 2026; components.month = 3; components.day = 29
+        components.hour = 0; components.minute = 30
+        let justAfterMidnight = london.date(from: components)!
+        let deadline = ScheduleRules.nextOccurrence(of: schedule, from: justAfterMidnight, calendar: london)!
+        #expect(london.component(.hour, from: deadline) == 7,
+                "07:00 must stay 07:00 across the transition, got \(london.component(.hour, from: deadline))")
+        #expect(london.component(.minute, from: deadline) == 0)
+    }
+}

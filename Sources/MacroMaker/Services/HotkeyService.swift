@@ -231,12 +231,8 @@ final class HotkeyService {
             case .keyUp:
                 released = combo.matches(keyCode: CGKeyCode(event.keyCode), modifiers: modifiers)
             case .flagsChanged:
-                // Match on the modifier-flags subset, not the key code: releasing EITHER part of
-                // a ⌃⌥C-style combo ends the hold (the combo's main key rarely goes up too).
-                guard let releasedModifier = KeyCodes.modifierKey(for: CGKeyCode(event.keyCode)),
-                      let releasedFlag = KeyModifiers(cgFlag: releasedModifier.flag)
-                else { continue }
-                released = combo.modifiers.contains(releasedFlag)
+                released = combo.isEndedByFlagsChange(keyCode: CGKeyCode(event.keyCode),
+                                                      modifiersAfter: modifiers)
             default:
                 continue
             }

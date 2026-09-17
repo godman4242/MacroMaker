@@ -17,10 +17,12 @@ struct RecorderView: View {
     private enum StepEditor: Hashable {
         case renameText(Int)
         case editTime(Int)
+        /// Ask for the text FIRST, then insert it after this step.
+        case insertText(after: Int)
 
         var index: Int {
             switch self {
-            case let .renameText(index), let .editTime(index): index
+            case let .renameText(index), let .editTime(index), let .insertText(index): index
             }
         }
     }
@@ -156,12 +158,18 @@ struct RecorderView: View {
                     Text(row.event.summary)
                 }
             }
+            // While recording, this table shows `recorder.liveEvents` — but every editing action
+            // it offers indexes and rewrites `model.macro`, a DIFFERENT array, and then autosaves
+            // it. Deleting "step 3" of a live recording silently deleted step 3 of the PREVIOUS
+            // macro and overwrote the autosave. The editing affordances are therefore gated on
+            // the same flag the data source uses. (`selectedEvent`'s comment always claimed live
+            // events aren't editable; nothing enforced it.)
             .contextMenu(forSelectionType: Int.self) { ids in
-                if let index = ids.first {
+                if let index = ids.first, !model.recorder.isRecording {
                     contextMenuItems(for: index)
                 }
             } primaryAction: { ids in
-                if let index = ids.first {
+                if let index = ids.first, !model.recorder.isRecording {
                     editor = .renameText(index)
                     editorDraft = renameText(for: index)
                 }
@@ -210,6 +218,7 @@ struct RecorderView: View {
         switch editor {
         case .renameText: "Rename Step"
         case .editTime: "Edit Start Time (seconds)"
+        case .insertText: "Insert Typed Text"
         case nil: ""
         }
     }
@@ -218,6 +227,7 @@ struct RecorderView: View {
         switch editor {
         case .renameText: "The text typed for this key step. Leave empty to play the raw key code."
         case .editTime: "Seconds since the start of the macro, e.g. 1.25"
+        case .insertText: "Typed one character at a time after the selected step, at typing speed."
         case nil: ""
         }
     }
@@ -245,6 +255,7 @@ struct RecorderView: View {
         switch editor {
         case .renameText: return true   // clearing the text is a valid "play raw key"
         case .editTime: return (Double(editorDraft.trimmingCharacters(in: .whitespaces))?.isFinite ?? false)
+        case .insertText: return !editorDraft.isEmpty   // inserting nothing is not an edit
         }
     }
 
@@ -266,6 +277,9 @@ struct RecorderView: View {
                 // table agree (stable: same-time pairs keep their recorded order).
                 updated.events = MacroLibraryRules.sortedByTime(events: updated.events)
             }
+        case .insertText:
+            updated.events = MacroLibraryRules.insertTypedText(events: macro.events, atIndex: index,
+                                                               text: editorDraft)
         }
         model.macro = updated
         model.autosaveMacro()
@@ -292,18 +306,20 @@ struct RecorderView: View {
         model.autosaveMacro()
     }
 
+    /// Ask for the text, then insert it — `applyEditor` does the work, shifting later events by
+    /// the typed duration exactly as "Insert Wait" does.
+    ///
+    /// This used to insert a hard-coded "abc" immediately and then open the single-step RENAME
+    /// editor on the first inserted keyDown, pre-filled with "abc". `insertTypedText` expands a
+    /// word into one keyDown/keyUp pair per character, and the rename editor writes ONE step's
+    /// `textOverride` — so whatever the user typed replaced only the "a", and the "b" and "c"
+    /// pairs stayed in the macro silently. The control the flow pointed at could not do what the
+    /// flow promised. (The draft was also pre-filled with the whole word while the step it
+    /// edited held just "a".)
     private func insertText(after index: Int) {
         guard let macro = model.macro, index >= 0, index < macro.events.count else { return }
-        var updated = macro
-        // Shift later events by the typed step's duration, so the new steps overlap nothing —
-        // the same room "Insert Wait" makes, sized to what will be typed.
-        updated.events = MacroLibraryRules.insertTypedText(events: macro.events, atIndex: index, text: "abc")
-        model.macro = updated
-        model.autosaveMacro()
-        // Select the first inserted step so the user immediately sees what "abc" means and can edit it.
-        selectedEvent = index + 1
-        editor = .renameText(index + 1)
-        editorDraft = "abc"
+        editor = .insertText(after: index)
+        editorDraft = ""
     }
 
     private func deleteStep(at index: Int) {
