@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Builds a universal (Apple Silicon + Intel) "Macro Maker.app" with SwiftPM — no Xcode needed.
 #
-#   ./scripts/build-app.sh                      # ad-hoc signed, for this Mac
+#   ./scripts/build-app.sh                      # signed with the "Kheshav Dev" self-signed identity
+#                                               # if present (stable DR → TCC grants survive rebuilds),
+#                                               # else ad-hoc signed, for this Mac
 #   SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./scripts/build-app.sh
 #                                               # signed for distribution (then notarize — see README)
 #
@@ -12,7 +14,17 @@ cd "$(dirname "$0")/.."
 APP_NAME="Macro Maker"
 EXECUTABLE="MacroMaker"
 BUILD_DIR="build"
-SIGN_IDENTITY="${SIGN_IDENTITY:--}"
+SIGN_IDENTITY="${SIGN_IDENTITY:-}"
+if [[ -z "$SIGN_IDENTITY" ]]; then
+  # Prefer the stable self-signed identity so TCC permissions (Accessibility etc.) survive
+  # rebuilds — an ad-hoc signature's designated requirement embeds the CDHash, so every build
+  # looks like a new app to TCC and macOS re-prompts. A certificate-anchored DR does not.
+  if security find-identity -v -p codesigning 2>/dev/null | grep -q '"Kheshav Dev"'; then
+    SIGN_IDENTITY="Kheshav Dev"
+  else
+    SIGN_IDENTITY="-"
+  fi
+fi
 MIN_MACOS="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' Support/Info.plist)"
 BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' Support/Info.plist)"
 
@@ -40,7 +52,8 @@ printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 echo "▸ Signing ($SIGN_IDENTITY)…"
 sign_args=(--force --options runtime --entitlements Support/MacroMaker.entitlements --sign "$SIGN_IDENTITY")
-[[ "$SIGN_IDENTITY" != "-" ]] && sign_args+=(--timestamp)
+# --timestamp needs Apple's timestamp server (fine for Developer ID, meaningless for self-signed).
+[[ "$SIGN_IDENTITY" == "Developer ID"* ]] && sign_args+=(--timestamp)
 codesign "${sign_args[@]}" "$APP"
 codesign --verify --strict --verbose=1 "$APP"
 

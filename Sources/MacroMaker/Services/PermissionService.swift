@@ -23,6 +23,9 @@ final class PermissionService {
     /// the window is closed), so the app can bring its window forward.
     @ObservationIgnored var onPermissionMissing: (() -> Void)?
     @ObservationIgnored private var timer: Timer?
+    /// Whether the system's "grant Accessibility?" dialog was already shown this launch.
+    /// It only fires once — after that the in-app banner is the only repeated UI.
+    @ObservationIgnored private(set) var didPromptForAccessibility = false
 
     init() {
         // macOS doesn't notify apps when permissions change, so poll (cheap).
@@ -49,7 +52,10 @@ final class PermissionService {
     }
 
     func requestAccessibility() {
-        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+        // The system prompt fires on the first call of this launch only — repeated calls
+        // (feature blocked, banner, settings, menu bar) would otherwise re-show it.
+        let options = ["AXTrustedCheckOptionPrompt": !didPromptForAccessibility] as CFDictionary
+        didPromptForAccessibility = true
         isAccessibilityTrusted = AXIsProcessTrustedWithOptions(options)
     }
 
