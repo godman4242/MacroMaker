@@ -190,6 +190,7 @@ final class AppModel {
 
     func launch() {
         applyActivationPolicy()
+        TargetSnapshot.shared.start()
         // Dangling links only: the index is the source of truth, and a hotkey for a macro that
         // was deleted from the library would find nothing at play time.
         let liveIDs = Set(library.records.map(\.id))
@@ -206,7 +207,14 @@ final class AppModel {
         }
         permissions.onPermissionMissing = { WindowCoordinator.shared.show(.main) }
         hotkeys.onTrigger = { [weak self] action in self?.perform(action, trigger: .hotkey) }
+        // Reassigning the toggle shortcut mid-hold must end the hold-mode run first: the new
+        // combo can never release a run it didn't start.
+        hotkeys.onToggleReassignedWhileHolding = { [weak self] in
+            self?.autoClicker.hotkeyReassigned(for: .toggleAutoClicker)
+        }
         hotkeys.activate()
+        // Any profile in the list whose macro types text gets the one-time typed-text warning.
+        warnAboutTypedTextIfNeeded(in: profiles.entries)
     }
 
     func shutdown() {
@@ -335,5 +343,28 @@ final class AppModel {
         if case let DecodingError.dataCorrupted(context) = error { return context.debugDescription }
         if error is DecodingError { return "It isn't a valid Macro Maker file." }
         return error.localizedDescription
+    }
+
+    // MARK: Typed-text import notice
+
+    private static let typedTextWarningKey = "typedTextWarningShown"
+
+    /// One-time alert: a profile whose macro types real text does so at playback — a file from
+    /// someone else could type anything. Shown once per app lifetime (launch + import), not per
+    /// profile, so it informs without becoming a dialog tax.
+    func warnAboutTypedTextIfNeeded(in entries: [ProfileEntry]) {
+        guard !UserDefaults.standard.bool(forKey: Self.typedTextWarningKey) else { return }
+        let typing = entries.filter { entry in
+            entry.macro?.events.contains { $0.textOverride != nil } ?? false
+        }
+        guard !typing.isEmpty else { return }
+        UserDefaults.standard.set(true, forKey: Self.typedTextWarningKey)
+        let names = typing.map(\.name).joined(separator: ", ")
+        let alert = NSAlert()
+        alert.messageText = "A profile contains typed text"
+        alert.informativeText = "“\(names)” carries recorded keystrokes or typed text — playing its macro types that text wherever the cursor is. Review the macro's steps before playing it."
+        alert.addButton(withTitle: "OK")
+        NSApp.activate()
+        alert.runModal()
     }
 }

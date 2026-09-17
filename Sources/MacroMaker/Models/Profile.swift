@@ -24,11 +24,17 @@ struct Profile: Codable, Equatable, Sendable, Identifiable {
     }
 
     /// Tolerant decode: the envelope defaults every field, so older or partial files still load.
+    /// A *newer* formatVersion is rejected loudly — this build can't know what it changed.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        let version = try c.decodeIfPresent(Int.self, forKey: .formatVersion) ?? 1
+        guard version <= Self.currentFormatVersion else {
+            throw DecodingError.dataCorruptedError(forKey: .formatVersion, in: c,
+                debugDescription: "This profile was saved by a newer Macro Maker (format v\(version); this build reads up to v\(Self.currentFormatVersion)).")
+        }
         id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Profile"
-        formatVersion = try c.decodeIfPresent(Int.self, forKey: .formatVersion) ?? 1
+        formatVersion = version
         autoClicker = try c.decodeIfPresent(AutoClickerSettings.self, forKey: .autoClicker) ?? AutoClickerSettings()
         keyPresser = try c.decodeIfPresent(KeyPresserSettings.self, forKey: .keyPresser) ?? KeyPresserSettings()
         webTarget = try c.decodeIfPresent(WebTargetSettings.self, forKey: .webTarget) ?? WebTargetSettings()

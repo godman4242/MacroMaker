@@ -68,14 +68,36 @@ enum HotkeyAction: Hashable, Sendable {
     /// Stable string identity (`toggleAutoClicker` or `macro:<uuid>`) for capture keys.
     var storageName: String { rawValue }
 
-    var slotID: UInt32 {
+    /// Carbon registration slot. Builtin slots 0...5 are declaration order; macro slots are
+    /// derived from the UUID bytes via FNV-1a (deterministic across launches — `hashValue` is
+    /// per-launch randomized, so the old `id.hashValue` slot moved the same macro between
+    /// launches). A collision-free slot is found by scanning against `taken`; without a scan
+    /// context the raw hash is returned.
+    func slotID(avoiding taken: Set<UInt32> = []) -> UInt32 {
         switch self {
         case let .builtin(action):
             return UInt32(BuiltinHotkeyAction.allCases.firstIndex(of: action)!)
         case let .macro(id):
-            // Stable across launches: derived from the UUID's low bits, independent of list order.
-            return Self.macroIDBase + UInt32(truncatingIfNeeded: abs(id.hashValue) % 60_000)
+            var slot = Self.macroIDBase + Self.fnv1a32(uuid: id) % Self.macroSlotRange
+            while taken.contains(slot) {
+                slot = slot + 1 >= Self.macroIDBase + Self.macroSlotRange ? Self.macroIDBase : slot + 1
+            }
+            return slot
         }
+    }
+
+    /// Back-compat for call sites that don't track taken slots (registration, tests).
+    var slotID: UInt32 { slotID(avoiding: []) }
+
+    /// Slot ids span `macroIDBase ..< macroIDBase + macroSlotRange`.
+    static let macroSlotRange: UInt32 = 60_000
+
+    private static func fnv1a32(uuid: UUID) -> UInt32 {
+        var hash: UInt32 = 0x811C_9DC5
+        for byte in withUnsafeBytes(of: uuid.uuid, { Array($0) }) {
+            hash = (hash ^ UInt32(byte)) &* 0x0100_0193
+        }
+        return hash
     }
 
     static func action(forSlotID id: UInt32, macros: inout [UUID: HotkeyAction]) -> HotkeyAction? {

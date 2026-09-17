@@ -52,4 +52,16 @@ struct KeyModifiers: OptionSet, Hashable, Codable, Sendable {
         if flags.contains(.command) { result.insert(.command) }
         self = result
     }
+
+    /// The modifier represented by one device-independent CGEventFlag (nil for any other flag).
+    init?(cgFlag: CGEventFlags) {
+        let mask = cgFlag.intersection([.maskControl, .maskAlternate, .maskShift, .maskCommand])
+        var result: KeyModifiers = []
+        if mask.contains(.maskControl) { result.insert(.control) }
+        if mask.contains(.maskAlternate) { result.insert(.option) }
+        if mask.contains(.maskShift) { result.insert(.shift) }
+        if mask.contains(.maskCommand) { result.insert(.command) }
+        guard result.rawValue != 0, mask.rawValue == cgFlag.rawValue else { return nil }
+        self = result
+    }
 }

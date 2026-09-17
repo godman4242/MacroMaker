@@ -5,14 +5,15 @@ import Foundation
 /// Posts mouse and keyboard events straight into a chosen app's process (`CGEventPostToPid`),
 /// so the target window can sit behind other apps or on another Space — and the cursor never moves.
 ///
-/// The click events follow the documented recipe for background delivery: a screen-space CGEvent
-/// whose private window-target fields (91/92) name the window under the point, subtype 3, and —
-/// when the app isn't active — the NX_COMMAND bit set so AppKit doesn't drop the click.
+/// The click events follow the documented recipe for background delivery: screen-space CGEvents
+/// built via `NSEvent.mouseEvent` (so the 12 auto-filled fields stay populated), whose private
+/// window-target fields (91/92) name the window under the point, subtype 3, and — when the app
+/// isn't active — the NX_COMMAND bit set so AppKit doesn't drop the click.
 /// The window-local point is applied through the private `CGEventSetWindowLocation` symbol,
 /// looked up at runtime and optional-chained: if it can't be resolved the UI says so loudly.
 enum BackgroundPoster {
 
-    /// One of an app's on-screen windows, as plain data (the testable seam over the window server).
+    /// One of an app's usable windows, as plain data (the testable seam over the window server).
     struct Window: Equatable, Sendable {
         let id: CGWindowID
         let bounds: CGRect
@@ -47,26 +48,57 @@ enum BackgroundPoster {
         return Window(id: CGWindowID(number), bounds: bounds)
     }
 
-    /// The app's front-most usable window (the window server lists windows front to back).
-    /// Re-queried before every click so a moved or resized window is followed.
-    static func primaryWindow(ofPID pid: pid_t) -> Window? {
-        guard let list = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] else {
-            return nil
+    /// The app's front-most usable window over one window-server listing (front to back).
+    /// `optionOnScreenOnly` first; a fully covered (occluded) window then falls back to
+    /// `.optionAll`, still layer-0 filtered — an occluded app is no excuse to drop its clicks.
+    static func primaryWindow(ofPID pid: pid_t, in list: [[String: Any]]) -> Window? {
+        list.lazy.compactMap { window(fromInfo: $0, ownerPID: pid) }.first
+    }
+
+    /// Re-runs the window-server queries: on-screen first, `.optionAll` fallback for occlusion.
+    static func resolveWindowLive(ofPID pid: pid_t) -> Window? {
+        for options in [CGWindowListOption.optionOnScreenOnly, .optionAll] {
+            guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else { continue }
+            if let window = primaryWindow(ofPID: pid, in: list) { return window }
         }
-        return list.lazy.compactMap { window(fromInfo: $0, ownerPID: pid) }.first
+        return nil
+    }
+
+    /// One run's reuse of window-server queries: the listing is cached for 300 ms and the
+    /// resolved window until the cache expires *or* a previous resolution failed, so a moving
+    /// window is followed without paying `CGWindowListCopyWindowInfo` per click.
+    final class WindowResolver: @unchecked Sendable {
+        private static let ttl: TimeInterval = 0.3
+
+        private let lock = NSLock()
+        nonisolated(unsafe) private var cacheDate: Date?
+        /// Last resolution when the cache was fresh — including a negative one (the occlusion
+        /// fallback has already run for this window of time, so don't fall through twice).
+        nonisolated(unsafe) private var lastWindow: Window??
+
+        init() {}
+
+        /// The worker's per-click window lookup. Cheap while fresh; on expiry (or after a
+        /// failure) both listings are re-pulled and the `.optionAll` fallback runs again.
+        func window(ofPID pid: pid_t) -> Window? {
+            lock.lock()
+            defer { lock.unlock() }
+            if let cacheDate, Date().timeIntervalSince(cacheDate) < Self.ttl, let window = lastWindow {
+                return window
+            }
+            let window = BackgroundPoster.resolveWindowLive(ofPID: pid)
+            self.cacheDate = Date()
+            self.lastWindow = .some(window)
+            return window
+        }
     }
 
     // MARK: Apps
 
-    /// The target's pid and active state in one synchronous main-thread sample, callable from a
-    /// worker thread (AutoClicker.samples the frontmost app the same way).
+    /// The target's pid and active state from the lock-protected snapshot — callable from a
+    /// worker thread without ever waiting on main (TargetSnapshot refreshes itself on main).
     nonisolated static func targetState(forBundleID bundleID: String) -> (pid: pid_t?, isActive: Bool) {
-        DispatchQueue.main.sync {
-            let pid = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
-                .first?.processIdentifier
-            let isActive = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundleID
-            return (pid, isActive)
-        }
+        TargetSnapshot.shared.targetState(forBundleID: bundleID)
     }
 
     @MainActor static func processID(forBundleID bundleID: String) -> pid_t? {
@@ -137,12 +169,62 @@ enum BackgroundPoster {
 
     // MARK: Posting
 
+    /// The CGEvent type NSEvent reports via the CGEventType property for one of our mouse events
+    /// (NSEvent.dragged→moved, so a synthesized drag must not be mistaken for a user move here).
+    static func equivalentCGEventType(_ type: NSEvent.EventType) -> CGEventType {
+        switch type {
+        case .leftMouseDown: .leftMouseDown
+        case .leftMouseUp: .leftMouseUp
+        case .leftMouseDragged: .leftMouseDragged
+        case .rightMouseDown: .rightMouseDown
+        case .rightMouseUp: .rightMouseUp
+        case .rightMouseDragged: .rightMouseDragged
+        case .otherMouseDown: .otherMouseDown
+        case .otherMouseUp: .otherMouseUp
+        case .otherMouseDragged: .otherMouseDragged
+        default: .null
+        }
+    }
+
+    /// The NSEvent type to seed `mouseEvent(with:)` with for a recipe event type (the reverse of
+    /// `equivalentCGEventType`, minus drags — background clicks only ever post down/up). Anything
+    /// else returns nil so a bad type fails loudly instead of synthesizing a move.
+    private static func nsEventType(_ type: CGEventType) -> NSEvent.EventType? {
+        switch type {
+        case .leftMouseDown: .leftMouseDown
+        case .leftMouseUp: .leftMouseUp
+        case .rightMouseDown: .rightMouseDown
+        case .rightMouseUp: .rightMouseUp
+        case .otherMouseDown: .otherMouseDown
+        case .otherMouseUp: .otherMouseUp
+        default: nil
+        }
+    }
+
     /// One mouse transition aimed at the window, ready to post to the owning process.
+    ///
+    /// Built through `NSEvent.mouseEvent(...).cgEvent` per the researched recipe: NSEvent fills the
+    /// 12 protected field numbers (0,1,2,41,43,44,50,51,55,59,102,108), and only the recipe's own
+    /// fields (3 button, 7 subtype, 91/92 window ids) plus the window-local point are written after.
+    /// The ⌘-flag background trick is *not* baked in here — it is applied at post time, where the
+    /// active-state snapshot lives.
+    /// Top-left global (CG) Y → bottom-left global (AppKit) Y. NSEvent.mouseEvent takes AppKit
+    /// coordinates and flips Y into CG display space itself, so a screen-space (top-left) point
+    /// must be pre-flipped — otherwise it lands mirrored (1080 − y) in the posted event.
+    private static var appKitGlobalMaxY: CGFloat {
+        NSScreen.screens.map(\.frame).reduce(CGRect.null) { $0.union($1) }.maxY
+    }
+
     static func mouseEvent(_ type: CGEventType, button: MouseButton, clickCount: Int,
                            screenPoint: CGPoint, window: Window) -> CGEvent? {
-        guard let event = CGEvent(mouseEventSource: nil, mouseType: type,
-                                  mouseCursorPosition: screenPoint, mouseButton: button.cgButton) else { return nil }
-        // Only the recipe's fields are set; the protected field numbers stay untouched.
+        let appKitPoint = CGPoint(x: screenPoint.x, y: appKitGlobalMaxY - screenPoint.y)
+        guard let nsType = nsEventType(type),
+              let event = NSEvent.mouseEvent(with: nsType, location: appKitPoint, modifierFlags: [],
+                                             timestamp: ProcessInfo.processInfo.systemUptime,
+                                             windowNumber: 0, context: nil, eventNumber: 0,
+                                             clickCount: clickCount, pressure: button == .left ? 1 : 0)?.cgEvent
+        else { return nil }
+        event.type = type  // NSEvent.dragged flattens to mouseMoved on some paths; restore the recipe's type.
         event.setIntegerValueField(.mouseEventButtonNumber, value: Int64(button.cgButton.rawValue))
         event.setIntegerValueField(.mouseEventClickState, value: Int64(clickCount))
         event.setIntegerValueField(.mouseEventSubtype, value: 3)

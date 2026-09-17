@@ -16,6 +16,8 @@ final class AutoClicker {
 
     let session = RunSession()
     private(set) var clickCount = 0
+    /// A one-line note about the live run (target-window loss, pause-monitor failure); nil = fine.
+    private(set) var runWarning: String?
 
     /// A cursor-capture countdown: pick one point (fixed mode) or two corners (region mode).
     enum PickMode { case point, regionCorner1, regionCorner2, directAppPoint }
@@ -69,6 +71,8 @@ final class AutoClicker {
         let maxClicks: Int?
         let maxDuration: TimeInterval?
         let stopOnFrontmostChange: Bool
+        /// Sampled at `begin` — after the countdown — never at toggle, when the user may still
+        /// be holding the shortcut (and thus frontmost in Macro Maker's own windows).
         let initialFrontmost: String?
         let restoreCursor: Bool
         let humanizer: HumanizerSettings
@@ -101,9 +105,7 @@ final class AutoClicker {
 
     func toggle(_ trigger: StartTrigger) {
         if session.phase.isActive {
-            tearDownPauseWatching()
-            session.stop()
-            clicksDone = 0
+            endRun()
             return
         }
         guard directAppProblem == nil else {
@@ -113,9 +115,11 @@ final class AutoClicker {
         guard permissions.ensureAccessibility() else { return }
         cancelPick()
         clicksDone = 0
-        let initialFrontmost = settings.stopOnFrontmostChange ? Self.frontmostBundleID() : nil
-        let plan = Plan(settings, initialFrontmost: initialFrontmost)
-        currentPlan = plan
+        runWarning = nil
+        // The frontmost-app baseline is sampled in begin(), after the countdown — at toggle()
+        // time the user's shortcut hand is still on the keyboard, which can leave Macro Maker
+        // frontmost and immediately trip the stop rule.
+        let plan = Plan(settings, initialFrontmost: nil)
         session.start(withCountdown: trigger == .button,
                       countdownExtra: Int(max(0, settings.delayedStartSeconds).rounded())) { [weak self] token in
             guard let begin = self?.begin(plan, token: token) else { return nil }
@@ -124,19 +128,41 @@ final class AutoClicker {
         }
     }
 
-    private func begin(_ plan: Plan, token: Int) -> (() -> Void)? {
+    /// Stops the run and tears down its watchers; the only "run over" path.
+    private func endRun() {
+        tearDownPauseWatching()
+        session.stop()
+        clicksDone = 0
+        runWarning = nil
+    }
+
+    private func begin(_ plan0: Plan, token: Int) -> (() -> Void)? {
+        var plan = plan0
+        if plan.stopOnFrontmostChange {
+            plan = Plan(settings, initialFrontmost: TargetSnapshot.shared.frontmostBundleID)
+        }
+        /// The run's own copy of the plan (initialFrontmost sampled at begin) lives here so
+        /// resume() can rebuild the worker from it.
+        currentPlan = plan
         runID += 1
         let run = runID
         let skip = clicksDone
+        // Window/app lookups that would otherwise cost a worker→main sync per click.
+        let snapshot = TargetSnapshot.shared
+        if plan.target == .directApp { snapshot.prewarm(bundleID: plan.directAppBundleID) }
+        let runPlan = plan  // immutable copy for the @Sendable worker closure
         let worker = WorkerThread.start(name: "AutoClicker") { worker in
-            Self.clickLoop(plan, skipping: skip, worker: worker) { count, finished in
+            Self.clickLoop(runPlan, skipping: skip, worker: worker, snapshot: snapshot) { count, finished, warning in
                 performOnMain { [weak self] in
                     guard let self, self.runID == run else { return }
                     self.clicksDone = count
                     self.clickCount = count
                     if finished {
+                        self.runWarning = warning
                         self.tearDownPauseWatching()
                         self.session.finish(token)
+                    } else if let warning {
+                        self.runWarning = warning
                     }
                 }
             }
@@ -156,7 +182,8 @@ final class AutoClicker {
 
     /// Called when the user chooses Resume now, or by the idle timer.
     func resume() {
-        guard session.isPaused, let plan = currentPlan else { return }
+        guard session.isPaused else { return }
+        guard let plan = currentPlan else { session.stop(); return }
         clickCount = clicksDone
         session.start(withCountdown: false) { [weak self] token in
             guard let begin = self?.begin(plan, token: token) else { return nil }
@@ -172,7 +199,11 @@ final class AutoClicker {
 
     private func startPauseWatching() {
         guard settings.pauseOnRealInput else { return }
-        RealInputMonitor.shared.start { [weak self] in self?.pauseIfNeeded() }
+        if !RealInputMonitor.shared.start(onRealInput: { [weak self] in self?.pauseIfNeeded() }) {
+            // The monitor couldn't install even on the local fallback: say so instead of
+            // letting the user believe their input will pause the run.
+            runWarning = RealInputMonitor.shared.lastFailure
+        }
         // Idle check: once per second asks whether auto-resume's deadline passed.
         resumeTimer?.invalidate()
         resumeTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
@@ -190,27 +221,55 @@ final class AutoClicker {
     }
 
     nonisolated private static func clickLoop(_ plan: Plan, skipping skip: Int, worker: WorkerThread,
-                                              report: @Sendable (_ count: Int, _ finished: Bool) -> Void) {
+                                              snapshot: TargetSnapshot,
+                                              report: @Sendable (_ count: Int, _ finished: Bool, _ warning: String?) -> Void) {
         let start = DispatchTime.now().uptimeNanoseconds
         let end = plan.maxDuration.map { start + UInt64($0 * 1_000_000_000) } ?? .max
         var deadline = start
         var count = skip
         var lastReport: UInt64 = 0
         var humanizer = Humanizer(plan.humanizer)
+        // Per-run caches (perf H1/H3/H4): window listing + app lookup ride on the snapshot and a
+        // TTL'd resolver; one event source serves every posted event of the run.
+        let source = EventSynthesizer.EventSource()
+        var direct: DirectRun?
+        if plan.target == .directApp {
+            direct = DirectRun(bundleID: plan.directAppBundleID, snapshot: snapshot)
+        }
+        var lastWarning: String?
 
         while !worker.isCancelled, DispatchTime.now().uptimeNanoseconds < end {
-            for _ in 0..<plan.burstSize {
-                clickOnce(plan)
-                count += 1
-                if let maxClicks = plan.maxClicks, count >= maxClicks { break }
+            burst: for _ in 0..<plan.burstSize {
+                if var directRun = direct {
+                    switch directRun.verifyTarget() {
+                    case .dead:
+                        direct = directRun
+                        report(count, true, "The target app quit or was replaced mid-run — the run stopped rather than click the wrong process.")
+                        return
+                    case .alive(let pid, let isActive):
+                        if directClickOnce(plan, pid: pid, isActive: isActive, resolver: directRun.resolver) {
+                            count += 1
+                        } else {
+                            // Undelivered click: never counted — the counter must mean "clicks
+                            // that reached the target", or stopAfterClicks lies.
+                            lastWarning = "Target window not found — bring it on-screen at least once; undelivered clicks aren't counted."
+                        }
+                        direct = directRun
+                        guard !worker.isCancelled else { break burst }
+                    }
+                } else {
+                    clickOnce(plan, source: source)
+                    count += 1
+                }
+                if let maxClicks = plan.maxClicks, count >= maxClicks { break burst }
             }
             if plan.stopOnFrontmostChange,
-               FrontmostStopRule.changed(from: plan.initialFrontmost, to: frontmostBundleID()) { break }
+               FrontmostStopRule.changed(from: plan.initialFrontmost, to: snapshot.frontmostBundleID) { break }
             if let maxClicks = plan.maxClicks, count >= maxClicks { break }
 
             let now = DispatchTime.now().uptimeNanoseconds
             if now - lastReport > 50_000_000 {
-                report(count, false)
+                report(count, false, lastWarning)
                 lastReport = now
             }
             var delay = TickSchedule.delay(interval: plan.interval, jitter: plan.jitterSeconds,
@@ -220,54 +279,84 @@ final class AutoClicker {
                                                  delay: UInt64(delay * 1_000_000_000), now: now)
             guard worker.sleep(untilUptime: min(deadline, end)) else { break }
         }
-        report(count, true)
+        report(count, true, lastWarning)
+    }
+
+    /// The direct-app run's per-run identity check: the pid captured when the run began must
+    /// still belong to the target bundle id (pid-reuse guard) — the snapshot holds pid→bundle,
+    /// so a process replaced by another app's never matches the plan's target.
+    /// A struct (not a class): the loop is the only caller and its `var` is exclusive to the
+    /// worker thread, so Sendable-by-exclusivity applies.
+    nonisolated private struct DirectRun: Sendable {
+        let bundleID: String
+        let resolver = BackgroundPoster.WindowResolver()
+        private var state = State.unchecked
+        private enum State { case unchecked, gone }
+        private let snapshot: TargetSnapshot
+
+        init(bundleID: String, snapshot: TargetSnapshot) {
+            self.bundleID = bundleID
+            self.snapshot = snapshot
+        }
+
+        enum Check { case alive(pid: pid_t, isActive: Bool), dead }
+
+        /// Polled per burst: the app must still be running *as the same process*.
+        mutating func verifyTarget() -> Check {
+            if case .gone = state { return .dead }
+            let target = snapshot.targetState(forBundleID: bundleID)
+            // The snapshot's resolve drops entries whose pid no longer owns the bundle id, so
+            // this pid always matches — a reused pid resolves to the new owner instead.
+            guard let pid = target.pid else {
+                state = .gone
+                return .dead
+            }
+            return .alive(pid: pid, isActive: target.isActive)
+        }
     }
 
     /// One click event: resolves the point for this event, then down/up.
-    nonisolated private static func clickOnce(_ plan: Plan) {
-        if plan.target == .directApp {
-            directClickOnce(plan)
-            return
-        }
+    nonisolated private static func clickOnce(_ plan: Plan, source: EventSynthesizer.EventSource) {
         let base: CGPoint? = switch plan.target {
         case .cursor: nil
         case .fixedPoint: plan.fixedPoint
         case .region: ClickGeometry.randomPoint(in: plan.region,
                                                 u1: .random(in: 0...1), u2: .random(in: 0...1))
-        case .directApp: nil  // never reached: early-returned to directClickOnce above
+        case .directApp: nil  // never reached: direct clicks are handled in the loop
         }
-        var point = base.map {
-            ClickGeometry.jitter($0, amount: plan.positionJitterPx,
-                                 u1: .random(in: 0...1), u2: .random(in: 0...1))
-        } ?? EventSynthesizer.cursorLocation
-        if plan.target == .cursor, plan.positionJitterPx > 0 {
-            point = ClickGeometry.jitter(point, amount: plan.positionJitterPx,
-                                         u1: .random(in: 0...1), u2: .random(in: 0...1))
-        }
+        let point = base ?? EventSynthesizer.cursorLocation
+        // One source of randomness per point: region mode picked its random point already, so
+        // positional jitter applies only to fixed/cursor targeting.
+        let jiggled = plan.target == .region || plan.positionJitterPx == 0 ? point
+            : ClickGeometry.jitter(point, amount: plan.positionJitterPx,
+                                   u1: .random(in: 0...1), u2: .random(in: 0...1))
 
         let before = plan.restoreCursor ? EventSynthesizer.cursorLocation : nil
-        EventSynthesizer.click(plan.button, at: plan.target == .cursor ? nil : point,
+        EventSynthesizer.click(plan.button, at: plan.target == .cursor ? nil : jiggled,
                                holdFor: TickSchedule.pressDuration(interval: plan.interval),
-                               clickCount: plan.clickCountPerEvent)
+                               clickCount: plan.clickCountPerEvent, source: source)
         // The real cursor follows HID clicks; optionally put it back where it was.
         if let before, EventSynthesizer.cursorLocation != before {
-            EventSynthesizer.postMouse(.mouseMoved, button: .left, at: before)
+            EventSynthesizer.postMouse(.mouseMoved, button: .left, at: before, source: source)
         }
     }
 
     /// Direct-app click: no cursor movement, no app raising — posted into the process.
-    /// The window's on-screen rect is re-queried each click, so a moving window is followed.
-    nonisolated private static func directClickOnce(_ plan: Plan) {
-        let state = BackgroundPoster.targetState(forBundleID: plan.directAppBundleID)
-        guard let pid = state.pid,
-              let window = BackgroundPoster.primaryWindow(ofPID: pid)
-        else { return }  // App quit or hid its window mid-run: skip the click, keep the loop alive.
-        let screenPoint = ClickGeometry.jitter(plan.directScreenPoint, amount: plan.positionJitterPx,
-                                               u1: .random(in: 0...1), u2: .random(in: 0...1))
+    /// Returns false (and counts nothing) when no window can be resolved, even occluded ones
+    /// via the WindowResolver's .optionAll fallback.
+    @discardableResult
+    nonisolated private static func directClickOnce(_ plan: Plan, pid: pid_t, isActive: Bool,
+                                                    resolver: BackgroundPoster.WindowResolver) -> Bool {
+        guard let window = resolver.window(ofPID: pid) else { return false }
+        // Same single-randomness rule: this point is fixed, positional jitter applies.
+        let screenPoint = plan.positionJitterPx == 0 ? plan.directScreenPoint
+            : ClickGeometry.jitter(plan.directScreenPoint, amount: plan.positionJitterPx,
+                                   u1: .random(in: 0...1), u2: .random(in: 0...1))
         BackgroundPoster.click(plan.button, screenPoint: screenPoint,
                                holdFor: TickSchedule.pressDuration(interval: plan.interval),
                                clickCount: plan.clickCountPerEvent,
-                               window: window, pid: pid, appIsActive: state.isActive)
+                               window: window, pid: pid, appIsActive: isActive)
+        return true
     }
 
     // MARK: Direct-app helpers (main-actor queries)
@@ -279,22 +368,22 @@ final class AutoClicker {
         guard let pid = BackgroundPoster.processID(forBundleID: bundleID) else {
             return "The target app isn't running."
         }
-        guard let window = BackgroundPoster.primaryWindow(ofPID: pid) else {
-            return "No usable window on screen — clicks can't land until one is visible."
+        guard let window = BackgroundPoster.resolveWindowLive(ofPID: pid) else {
+            return "Target window not found — bring it on-screen at least once."
         }
         let point = BackgroundPoster.windowPoint(
             fromScreenPoint: CGPoint(x: settings.directAppX, y: settings.directAppY), window: window)
         return "Window \(Int(window.bounds.width))×\(Int(window.bounds.height)) — clicks land at (\(Int(point.x)), \(Int(point.y))) inside it."
     }
 
-    /// Posts one click at the chosen target without starting a run. Reports when it skips.
+    /// Posts one click at the chosen target without starting a run. Reports loudly when it skips.
     func testClick() -> String {
         guard BackgroundPoster.targetingSupported else { return directAppProblem ?? "Background clicks aren't supported here." }
         guard let pid = BackgroundPoster.processID(forBundleID: settings.directAppBundleID) else {
-            return "The target app isn't running."
+            return "Test click failed — the target app isn't running."
         }
-        guard let window = BackgroundPoster.primaryWindow(ofPID: pid) else {
-            return "Test click skipped — the app has no on-screen window."
+        guard let window = BackgroundPoster.resolveWindowLive(ofPID: pid) else {
+            return "Test click failed — target window not found. Bring it on-screen at least once."
         }
         let point = ClickGeometry.jitter(CGPoint(x: settings.directAppX, y: settings.directAppY),
                                          amount: settings.jitterEnabled ? settings.jitterPx : 0,
@@ -306,11 +395,10 @@ final class AutoClicker {
         return "Test click sent."
     }
 
-    /// Sampled at tick boundaries so the app-switch check costs one call per tick.
+    /// Sampled at tick boundaries so the app-switch check costs one lock-protected read per tick —
+    /// never a main-queue hop (that's the deadlock this snapshot replaces).
     nonisolated static func frontmostBundleID() -> String? {
-        DispatchQueue.main.sync {
-            NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        }
+        TargetSnapshot.shared.frontmostBundleID
     }
 
     // MARK: Hold-to-click
@@ -328,6 +416,13 @@ final class AutoClicker {
             hotkeys?.onRelease = nil
             holdReleaseHooked = false
         }
+    }
+
+    /// Reassigning the toggle shortcut mid-hold ends the hold run before it leaks: the worker is
+    /// cancelled by session.stop() and the new combo can never release a run it didn't start.
+    func hotkeyReassigned(for action: HotkeyAction) {
+        guard action == .toggleAutoClicker, session.phase.isActive, settings.holdToClick else { return }
+        endRun()
     }
 
     // MARK: Point capture

@@ -253,6 +253,9 @@ struct RecorderView: View {
         case .editTime:
             if let t = Double(editorDraft.trimmingCharacters(in: .whitespaces)), t >= 0 {
                 updated.events[index].time = t
+                // A time edit can reorder the timeline; keep events sorted so playback and the
+                // table agree (stable: same-time pairs keep their recorded order).
+                updated.events = MacroLibraryRules.sortedByTime(events: updated.events)
             }
         }
         model.macro = updated
@@ -282,10 +285,10 @@ struct RecorderView: View {
 
     private func insertText(after index: Int) {
         guard let macro = model.macro, index >= 0, index < macro.events.count else { return }
-        let start = macro.events[index].time + 0.02
-        let typed = MacroLibraryRules.typedTextEvents("abc", start: start)
         var updated = macro
-        updated.events.insert(contentsOf: typed, at: index + 1)
+        // Shift later events by the typed step's duration, so the new steps overlap nothing —
+        // the same room "Insert Wait" makes, sized to what will be typed.
+        updated.events = MacroLibraryRules.insertTypedText(events: macro.events, atIndex: index, text: "abc")
         model.macro = updated
         model.autosaveMacro()
         // Select the first inserted step so the user immediately sees what "abc" means and can edit it.

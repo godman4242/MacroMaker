@@ -34,13 +34,27 @@ struct ProfileTests {
         #expect(profile.macro == nil)
     }
 
-    @Test func unknownFormatVersionStillDecodes() throws {
-        // Fields are tolerated; the formatVersion field is informational, newer versions
-        // decode fine as long as the known fields keep their shape.
-        let json = Data(#"{"name":"Future","formatVersion":99,"unknownField":true}"#.utf8)
+    @Test func newerFormatVersionFailsLoudly() throws {
+        // Item 9: a file from a newer Macro Maker must not silently decode into wrong settings.
+        let json = Data(#"{"name":"Future","formatVersion":3,"unknownField":true}"#.utf8)
+        #expect(throws: DecodingError.self) {
+            try Profile.from(jsonData: json)
+        }
+        // …and the failure names the version so the user knows why.
+        do {
+            _ = try Profile.from(jsonData: json)
+            Issue.record("expected the v3 profile to throw")
+        } catch {
+            let message = String(describing: error)
+            #expect(message.contains("3"))
+        }
+    }
+
+    @Test func currentFormatVersionStillDecodes() throws {
+        let json = Data(#"{"name":"Now","formatVersion":2}"#.utf8)
         let profile = try Profile.from(jsonData: json)
-        #expect(profile.name == "Future")
-        #expect(profile.formatVersion == 99)
+        #expect(profile.name == "Now")
+        #expect(profile.formatVersion == 2)
     }
 
     @Test func entryMirrorsTheProfileAndBack() {

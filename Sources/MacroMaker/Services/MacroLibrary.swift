@@ -25,11 +25,18 @@ final class MacroLibrary {
         // Mark entries whose file vanished so the UI can show and clean them.
         if let folder = Self.folder {
             for index in records.indices {
-                records[index].isOrphan = !FileManager.default.fileExists(atPath: folder.appending(path: records[index].fileName).path)
+                records[index].isOrphan = orphanIn(folder, fileName: records[index].fileName)
             }
         }
         self.records = records
         Persistence.save(records, key: Self.indexKey)
+    }
+
+    /// A record is an orphan when its file is missing — or its name can't be trusted (it would
+    /// never be reachable through the safe-name rule anyway).
+    private func orphanIn(_ folder: URL, fileName: String) -> Bool {
+        guard MacroLibraryRules.isSafeFileName(fileName) else { return true }
+        return !FileManager.default.fileExists(atPath: folder.appending(path: fileName).path)
     }
 
     // MARK: Import / add
@@ -39,14 +46,14 @@ final class MacroLibrary {
     @discardableResult
     func add(_ macro: Macro, named proposedName: String) -> MacroRecord? {
         guard let folder = Self.folder else { return nil }
-        let name = MacroLibraryRules.uniqueFileName(for: proposedName, taken: records.map(\.name))
+        let name = ProfileRules.cleanedName(proposedName)
         let fileName = MacroLibraryRules.uniqueFileName(
             for: proposedName,
             taken: diskFileNames() + records.map(\.fileName))
-        let url = folder.appending(path: fileName + "." + Macro.fileExtension)
+        let url = folder.appending(path: fileName)
 
         var record = MacroRecord(id: UUID(), name: name, createdAt: Date(),
-                                 fileName: url.lastPathComponent)
+                                 fileName: fileName)
         record.eventCount = macro.events.count
         record.durationSeconds = macro.duration
 
@@ -67,6 +74,10 @@ final class MacroLibrary {
 
     /// Removes a record and its file.
     func delete(_ record: MacroRecord) {
+        guard MacroLibraryRules.isSafeFileName(record.fileName) else {
+            lastError = "“\(record.fileName)” isn't a name this library can safely delete."
+            return
+        }
         if let folder = Self.folder {
             try? FileManager.default.removeItem(at: folder.appending(path: record.fileName))
         }
@@ -78,13 +89,12 @@ final class MacroLibrary {
     func rename(_ record: MacroRecord, to proposed: String) {
         guard let index = records.firstIndex(where: { $0.id == record.id }) else { return }
         let oldName = records[index].fileName
-        let newName = MacroLibraryRules.uniqueFileName(for: proposed, taken: records.map(\.name))
-        records[index].name = newName
+        records[index].name = ProfileRules.cleanedName(proposed)
         if let folder = Self.folder {
             let newFileName = MacroLibraryRules.uniqueFileName(
                 for: proposed, taken: diskFileNames().filter { $0 != oldName } + records.map(\.fileName).filter { $0 != oldName })
             let oldURL = folder.appending(path: oldName)
-            let newURL = folder.appending(path: newFileName + "." + Macro.fileExtension)
+            let newURL = folder.appending(path: newFileName)
             // The file name carries the display name for the Finder too.
             try? FileManager.default.moveItem(at: oldURL, to: newURL)
             records[index].fileName = newURL.lastPathComponent
@@ -99,7 +109,7 @@ final class MacroLibrary {
         let sourceURL = folder.appending(path: record.fileName)
         let newFileName = MacroLibraryRules.uniqueFileName(
             for: record.name + " copy", taken: diskFileNames() + records.map(\.fileName))
-        let targetURL = folder.appending(path: newFileName + "." + Macro.fileExtension)
+        let targetURL = folder.appending(path: newFileName)
         do {
             try FileManager.default.copyItem(at: sourceURL, to: targetURL)
         } catch {
@@ -128,9 +138,14 @@ final class MacroLibrary {
         persist()
     }
 
-    /// Loads the record's macro payload. Returns nil for orphans and corrupt files.
+    /// Loads the record's macro payload. Returns nil for orphans, corrupt files, and index
+    /// entries whose file name could escape the library folder.
     func load(_ record: MacroRecord) -> Macro? {
         guard let folder = Self.folder else { return nil }
+        guard MacroLibraryRules.isSafeFileName(record.fileName) else {
+            lastError = "“\(record.name)” has an unsafe file name in the library index and wasn't loaded."
+            return nil
+        }
         let url = folder.appending(path: record.fileName)
         let loaded = try? MacroFiles.read(from: url)
         if loaded == nil, !record.isOrphan {

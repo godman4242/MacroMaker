@@ -8,12 +8,27 @@ final class HotkeyService {
     private(set) var combos: [HotkeyAction: KeyCombo]
     /// Shortcuts macOS refused to register, usually because another app already owns them.
     private(set) var unavailable: Set<HotkeyAction> = []
+    /// Dynamic macro actions whose UUID-hash slot collided with another macro's; they were moved
+    /// to a free neighbouring slot. Both still work — the list is for the library UI's notice.
+    private(set) var slotConflicts: Set<UUID> = []
     /// Dynamic actions beyond the builtins (per-macro play shortcuts), capped for slot hygiene.
     private(set) var dynamicActions: [HotkeyAction] = []
 
-    @ObservationIgnored var onTrigger: ((HotkeyAction) -> Void)?
+    /// Single-subscriber by design: assigning replaces the previous trigger (asserted in debug
+    /// while the old one was live). The app routes every hotkey through AppModel.
+    @ObservationIgnored var onTrigger: ((HotkeyAction) -> Void)? {
+        willSet {
+            guard onTrigger != nil, newValue != nil else { return }
+            assertionFailure("HotkeyService.onTrigger is single-subscriber; the previous trigger is being replaced.")
+        }
+    }
     /// Called on the physical key-up of a hotkey's keys (hold-to-click). Event-driven, not polled.
+    /// Single-subscriber, like onTrigger.
     @ObservationIgnored var onRelease: ((HotkeyAction, KeyCombo) -> Void)? {
+        willSet {
+            guard onRelease != nil, newValue != nil else { return }
+            assertionFailure("HotkeyService.onRelease is single-subscriber; the previous handler is being replaced.")
+        }
         didSet { updateReleaseMonitor() }
     }
     @ObservationIgnored private var registered: [HotkeyAction: EventHotKeyRef] = [:]
@@ -66,7 +81,16 @@ final class HotkeyService {
     }
 
     /// Assigns a shortcut. If another action already uses it, that action loses it.
+    ///
+    /// Reassigning the *toggle* hotkey while its hold-to-click run is active ends that run
+    /// cleanly first — otherwise the run stays on with its keys unhooked (the reassigned combo
+    /// can never release it).
+    var onToggleReassignedWhileHolding: (() -> Void)?
+
     func setCombo(_ combo: KeyCombo?, for action: HotkeyAction) {
+        if action == .toggleAutoClicker, combos[action] != combo {
+            onToggleReassignedWhileHolding?()
+        }
         if let combo {
             for (other, existing) in combos where other != action && existing == combo {
                 combos[other] = nil
@@ -124,9 +148,18 @@ final class HotkeyService {
         unregisterAll()
         guard suspendCount == 0 else { return }
         var failed = Set<HotkeyAction>()
+        var conflicts = Set<UUID>()
+        var takenSlots = Set<UInt32>()
+        // Builtins own the low slots and never move; macros scan for a free slot past their hash.
+        for action in BuiltinHotkeyAction.allCases { takenSlots.insert(HotkeyAction.builtin(action).slotID) }
         for (action, combo) in combos {
+            let slot = action.slotID(avoiding: takenSlots)
+            if action.builtin == nil, slot != action.slotID, let id = action.macroID {
+                conflicts.insert(id)
+            }
+            takenSlots.insert(slot)
             var ref: EventHotKeyRef?
-            let id = EventHotKeyID(signature: HotkeyAction.signature, id: action.slotID)
+            let id = EventHotKeyID(signature: HotkeyAction.signature, id: slot)
             let status = RegisterEventHotKey(combo.keyCode, combo.modifiers.carbonFlags, id,
                                              GetApplicationEventTarget(), 0, &ref)
             if status == noErr, let ref {
@@ -136,6 +169,7 @@ final class HotkeyService {
             }
         }
         if failed != unavailable { unavailable = failed }
+        if conflicts != slotConflicts { slotConflicts = conflicts }
     }
 
     private func unregisterAll() {
@@ -169,7 +203,8 @@ final class HotkeyService {
 
     /// Hold-to-click: a global monitor (no permission needed for monitor-only `keyUp` taps on
     /// macOS 14+; falls back to a local monitor if the global one fails) watches for the physical
-    /// key-up of any registered combo and reports it. Event-driven — never polled.
+    /// key-up of any registered combo *or either of its modifier keys* — releasing ⌃ while ⌥C is
+    /// still down ends a ⌃⌥C hold, not just the full chord lifting. Event-driven — never polled.
     private func updateReleaseMonitor() {
         if let releaseMonitor {
             NSEvent.removeMonitor(releaseMonitor)
@@ -181,8 +216,8 @@ final class HotkeyService {
                 self?.handleRelease(event)
             }
         }
-        releaseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyUp, handler: handler)
-            ?? NSEvent.addLocalMonitorForEvents(matching: .keyUp) { event in
+        releaseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyUp, .flagsChanged], handler: handler)
+            ?? NSEvent.addLocalMonitorForEvents(matching: [.keyUp, .flagsChanged]) { event in
                 handler(event)
                 return event
             }
@@ -191,7 +226,21 @@ final class HotkeyService {
     private func handleRelease(_ event: NSEvent) {
         let modifiers = KeyModifiers(event.modifierFlags)
         for (action, combo) in combos {
-            guard combo.matches(keyCode: CGKeyCode(event.keyCode), modifiers: modifiers) else { continue }
+            let released: Bool
+            switch event.type {
+            case .keyUp:
+                released = combo.matches(keyCode: CGKeyCode(event.keyCode), modifiers: modifiers)
+            case .flagsChanged:
+                // Match on the modifier-flags subset, not the key code: releasing EITHER part of
+                // a ⌃⌥C-style combo ends the hold (the combo's main key rarely goes up too).
+                guard let releasedModifier = KeyCodes.modifierKey(for: CGKeyCode(event.keyCode)),
+                      let releasedFlag = KeyModifiers(cgFlag: releasedModifier.flag)
+                else { continue }
+                released = combo.modifiers.contains(releasedFlag)
+            default:
+                continue
+            }
+            guard released else { continue }
             onRelease?(action, combo)
         }
     }

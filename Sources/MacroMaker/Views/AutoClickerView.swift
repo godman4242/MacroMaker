@@ -110,6 +110,13 @@ struct AutoClickerView: View {
             .formStyle(.grouped)
             .disabled(clicker.session.phase.isActive)
 
+            if let warning = clicker.runWarning, clicker.session.phase != .idle {
+                // Surface a lost target window (or a failed pause monitor) while the run is on.
+                StatusMessage(kind: .warning, text: warning)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+            }
+
             RunControls(session: clicker.session,
                         startTitle: "Start Clicking",
                         hotkey: .toggleAutoClicker,

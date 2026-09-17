@@ -58,6 +58,13 @@ struct LibrarySection: View {
                               text: "All \(HotkeyAction.maxMacroHotkeys) macro hotkeys are in use — remove one to add another.")
                     .padding(.horizontal, 16)
             }
+            if !model.hotkeys.slotConflicts.isEmpty {
+                // Two macros hashed to the same Carbon slot; both still register (the loser was
+                // moved to a free neighbouring slot) — the notice is so the state is visible.
+                StatusMessage(kind: .warning,
+                              text: "\(model.hotkeys.slotConflicts.count) macro hotkey\(model.hotkeys.slotConflicts.count == 1 ? "" : "s") had an internal slot conflict and was moved — everything still works.")
+                    .padding(.horizontal, 16)
+            }
 
             if library.records.isEmpty {
                 ContentUnavailableView {

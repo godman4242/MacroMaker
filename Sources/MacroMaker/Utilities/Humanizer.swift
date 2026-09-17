@@ -136,4 +136,19 @@ extension Humanizer {
         }
         return max(0, gap + offset)
     }
+
+    /// The humanised replay grid for one pass of a macro: every *recorded* gap survives —
+    /// jittered, not zeroed — including the opening gap before the first event. Filling the
+    /// caller's buffer (allocated once per run even when the macro loops) keeps an
+    /// infinite-loop playback from allocating an array per pass. The buffer must already hold
+    /// at least `events.count` slots; extras are left untouched.
+    mutating func jitteredTimes(for events: [MacroEvent], into buffer: inout [TimeInterval]) {
+        var elapsed = 0.0
+        var previous = 0.0
+        for (index, event) in events.enumerated() {
+            elapsed += jittered(gap: event.time - previous)
+            previous = event.time
+            buffer[index] = elapsed
+        }
+    }
 }

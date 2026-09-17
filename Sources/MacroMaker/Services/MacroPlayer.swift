@@ -70,30 +70,29 @@ final class MacroPlayer {
         var progress = Progress()
         var lastReport: UInt64 = 0
         var humanizer = Humanizer(plan.humanizer)
+        // One reused event source for the whole run (CGEventSource is a real allocation —
+        // one per posted event costs a round-trip at playback rates), and one timing buffer
+        // for the humanised grid, refilled per pass instead of re-allocated (perf H5).
+        let source = EventSynthesizer.EventSource()
+        var jitteredTimes = [Double](repeating: 0, count: plan.events.count)
 
         playback: while plan.repeats.map({ progress.iteration < $0 }) ?? true {
             var heldKeys = Set<CGKeyCode>()
             var heldButtons: [MouseButton: CGPoint] = [:]
             // Whatever ends this pass — completion or Stop — nothing is left pressed.
-            defer { release(keys: heldKeys, buttons: heldButtons) }
+            defer { Self.release(keys: heldKeys, buttons: heldButtons, source: source) }
 
             let start = DispatchTime.now().uptimeNanoseconds
-            // Humanised replay jitters each inter-event gap; precompute so the grid stays stable.
-            var jitteredTimes: [Double] = []
+            // Humanised replay jitters each inter-event gap; the opening gap survives (the old
+            // code initialised `previous` from the first event's time, zeroing it).
             if plan.humanizer.enabled {
-                var jitteredStart = 0.0
-                var previous = plan.events.first?.time ?? 0
-                for event in plan.events {
-                    jitteredStart += humanizer.jittered(gap: event.time - previous)
-                    previous = event.time
-                    jitteredTimes.append(jitteredStart)
-                }
+                humanizer.jitteredTimes(for: plan.events, into: &jitteredTimes)
             }
             for (index, event) in plan.events.enumerated() {
                 let eventTime = plan.humanizer.enabled ? jitteredTimes[index] : event.time
                 let due = start + UInt64(eventTime / plan.speed * 1_000_000_000)
                 guard worker.sleep(untilUptime: due) else { break playback }
-                post(event, heldKeys: &heldKeys, heldButtons: &heldButtons)
+                post(event, heldKeys: &heldKeys, heldButtons: &heldButtons, source: source)
 
                 progress.eventIndex = index + 1
                 let now = DispatchTime.now().uptimeNanoseconds
@@ -110,44 +109,48 @@ final class MacroPlayer {
     }
 
     nonisolated private static func post(_ event: MacroEvent, heldKeys: inout Set<CGKeyCode>,
-                                         heldButtons: inout [MouseButton: CGPoint]) {
+                                         heldButtons: inout [MouseButton: CGPoint],
+                                         source: EventSynthesizer.EventSource) {
         // Caps Lock is a toggle, not a held key: replaying its flag would force uppercase.
         let flags = CGEventFlags(rawValue: event.flags).subtracting(.maskAlphaShift)
         switch event.action {
         case let .mouseDown(button, point, clickCount):
-            EventSynthesizer.postMouse(.mouseMoved, button: .left, at: point, flags: flags)
-            EventSynthesizer.postMouse(button.downEventType, button: button, at: point, clickCount: clickCount, flags: flags)
+            EventSynthesizer.postMouse(.mouseMoved, button: .left, at: point, flags: flags, source: source)
+            EventSynthesizer.postMouse(button.downEventType, button: button, at: point, clickCount: clickCount,
+                                       flags: flags, source: source)
             heldButtons[button] = point
         case let .mouseUp(button, point, clickCount):
             if let downPoint = heldButtons[button], downPoint != point {
                 // The button moved while down: a drag. Tell apps before releasing.
-                EventSynthesizer.postMouse(button.dragEventType, button: button, at: point, flags: flags)
+                EventSynthesizer.postMouse(button.dragEventType, button: button, at: point, flags: flags, source: source)
             }
-            EventSynthesizer.postMouse(button.upEventType, button: button, at: point, clickCount: clickCount, flags: flags)
+            EventSynthesizer.postMouse(button.upEventType, button: button, at: point, clickCount: clickCount,
+                                       flags: flags, source: source)
             heldButtons[button] = nil
         case let .keyDown(code, isRepeat):
             if let text = event.textOverride {
-                EventSynthesizer.postText(text, down: true, flags: flags)
+                EventSynthesizer.postText(text, down: true, flags: flags, source: source)
             } else {
-                EventSynthesizer.postKey(code, down: true, flags: flags, isRepeat: isRepeat)
+                EventSynthesizer.postKey(code, down: true, flags: flags, isRepeat: isRepeat, source: source)
                 heldKeys.insert(code)
             }
         case let .keyUp(code):
             if let text = event.textOverride {
-                EventSynthesizer.postText(text, down: false, flags: flags)
+                EventSynthesizer.postText(text, down: false, flags: flags, source: source)
             } else {
-                EventSynthesizer.postKey(code, down: false, flags: flags)
+                EventSynthesizer.postKey(code, down: false, flags: flags, source: source)
                 heldKeys.remove(code)
             }
         }
     }
 
-    nonisolated private static func release(keys: Set<CGKeyCode>, buttons: [MouseButton: CGPoint]) {
+    nonisolated private static func release(keys: Set<CGKeyCode>, buttons: [MouseButton: CGPoint],
+                                            source: EventSynthesizer.EventSource) {
         for code in keys {
-            EventSynthesizer.postKey(code, down: false, flags: [])
+            EventSynthesizer.postKey(code, down: false, flags: [], source: source)
         }
         for (button, point) in buttons {
-            EventSynthesizer.postMouse(button.upEventType, button: button, at: point)
+            EventSynthesizer.postMouse(button.upEventType, button: button, at: point, source: source)
         }
     }
 }
