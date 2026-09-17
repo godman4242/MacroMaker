@@ -116,12 +116,6 @@ enum HotkeyAction: Hashable, Sendable {
         return hash
     }
 
-    static func action(forSlotID id: UInt32, macros: inout [UUID: HotkeyAction]) -> HotkeyAction? {
-        if Int(id) < BuiltinHotkeyAction.allCases.count {
-            return .builtin(BuiltinHotkeyAction.allCases[Int(id)])
-        }
-        return macros.first(where: { $0.value.slotID == id })?.value
-    }
 }
 
 extension HotkeyAction: Codable {

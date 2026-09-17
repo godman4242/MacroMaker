@@ -69,8 +69,8 @@ NaN`), not as a compile error — a compile error proves nothing.
 - Clean build from a fresh scratch path — **0 warnings, 0 errors** under Swift 6 strict concurrency.
 - The layout gate re-run on each fix-pass binary — `TALLY FINAL: GOOD=10 BAD=0 OTHER=0
   IDENT-MISMATCH=0`, all four tabs bounded. Views changed, so the gate ran again each time.
-  ⚠️ **The v2.0.7 binary's run is outstanding.** The screen locked part way through it
-  (`GOOD=1 BAD=0 OTHER=9` — AX window trees read empty while locked, so those nine runs are
-  unmeasured, not failed; `BAD=0` throughout). `matrix3.sh` now re-checks the lock on every run
-  and aborts loudly instead of returning ambiguous OTHERs. Re-run on an unlocked screen:
-  `zsh /tmp/mm-fix/final-verify.sh`.
+  The v2.0.7 binary passed too: `GOOD=10 BAD=0 OTHER=0 IDENT-MISMATCH=0`, all four tabs bounded.
+  Its first attempt scored `GOOD=1 BAD=0 OTHER=9` because the screen locked part way through —
+  AX window trees read empty while the session is locked, so those nine runs were unmeasured,
+  not failed (`BAD=0` throughout). `matrix3.sh` now re-checks the lock on EVERY run and aborts
+  loudly rather than returning ambiguous OTHERs that read like a pass.

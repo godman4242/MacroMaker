@@ -168,12 +168,12 @@ final class HotkeyService {
             }
             takenSlots.insert(slot)
             var ref: EventHotKeyRef?
-            assignedSlots[slot] = action
             let id = EventHotKeyID(signature: HotkeyAction.signature, id: slot)
             let status = RegisterEventHotKey(combo.keyCode, combo.modifiers.carbonFlags, id,
                                              GetApplicationEventTarget(), 0, &ref)
             if status == noErr, let ref {
                 registered[action] = ref
+                assignedSlots[slot] = action   // only a slot that actually took
             } else {
                 failed.insert(action)
             }
