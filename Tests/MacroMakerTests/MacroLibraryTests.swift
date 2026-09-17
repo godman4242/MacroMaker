@@ -228,3 +228,63 @@ struct MacroRecordTests {
         #expect(up.summary == "(end character)")
     }
 }
+
+/// The library-index wipe found in the v2.0.5 sweep.
+///
+/// `MacroRecord.init(from:)` throws on a file name `isSafeFileName` rejects — a deliberate
+/// path-traversal defence. But the index was decoded as one array with `try?` + `?? []`, so a
+/// single bad entry made the WHOLE library decode to nil and present as empty; the next
+/// add/rename/delete then persisted that empty list over the top, making the loss permanent.
+/// Two separate producers could write such a name in the first place.
+@Suite("Library index integrity")
+struct LibraryIndexIntegrityTests {
+
+    /// Producer 1: the collision suffix was appended AFTER the length cap, so "-1" pushed the
+    /// stem past `maximumFileNameLength` and the result was no longer a `safeFileName` fixed
+    /// point — every name from the second save of a long-named macro onwards.
+    @Test func aCollisionOnALongNameStillProducesAStorableName() {
+        let long = String(repeating: "a", count: 130)
+        let first = MacroLibraryRules.uniqueFileName(for: long, taken: [])
+        #expect(MacroLibraryRules.isSafeFileName(first), "first save: \(first.count) chars")
+        var taken = [first]
+        for _ in 1...3 {
+            let next = MacroLibraryRules.uniqueFileName(for: long, taken: taken)
+            #expect(MacroLibraryRules.isSafeFileName(next), "collision \(taken.count): \(next.count) chars")
+            #expect(!taken.contains(next), "collisions must stay distinct")
+            taken.append(next)
+        }
+    }
+
+    /// Producer 2: `safeFileName` trimmed dots BEFORE capping the length, so the cap could leave
+    /// a trailing dot — an unsafe name on the FIRST save, with no collision needed at all.
+    @Test func safeFileNameIsIdempotentEvenWhenTheCapLandsOnADot() {
+        let awkward = String(repeating: "a", count: 119) + "." + String(repeating: "b", count: 20)
+        let once = MacroLibraryRules.safeFileName(for: awkward)
+        #expect(MacroLibraryRules.safeFileName(for: once) == once, "not a fixed point: \(once)")
+        #expect(MacroLibraryRules.isSafeFileName(once))
+    }
+
+    @Test func ordinaryNamesAreUntouched() {
+        #expect(MacroLibraryRules.uniqueFileName(for: "Login", taken: []) == "Login.macromaker")
+        #expect(MacroLibraryRules.uniqueFileName(for: "Login", taken: ["login.macromaker"]) == "Login-1.macromaker")
+        #expect(MacroLibraryRules.isSafeFileName("Login.macromaker"))
+    }
+
+    /// Blast radius: whatever wrote a bad entry — an older build, a future rule change, a
+    /// hand-edited defaults plist — one unreadable row must cost one row, not the library.
+    @Test func oneUnreadableIndexEntryDoesNotTakeTheOthersWithIt() throws {
+        let json = """
+        [{"id":"11111111-1111-1111-1111-111111111111","name":"Good one","fileName":"good.macromaker",
+          "eventCount":3,"durationSeconds":1.5,"isFavorite":false},
+         {"id":"22222222-2222-2222-2222-222222222222","name":"Traversal","fileName":"../../evil.macromaker",
+          "eventCount":1,"durationSeconds":1,"isFavorite":false},
+         {"id":"33333333-3333-3333-3333-333333333333","name":"Good two","fileName":"good2.macromaker",
+          "eventCount":2,"durationSeconds":2,"isFavorite":false}]
+        """
+        let records = MacroLibrary.records(fromIndex: Data(json.utf8))
+        #expect(records.map(\.name) == ["Good one", "Good two"],
+                "the unsafe entry must be dropped, not the whole library")
+        // The traversal defence itself must not be weakened by that tolerance.
+        #expect(!records.contains { $0.fileName.contains("..") })
+    }
+}

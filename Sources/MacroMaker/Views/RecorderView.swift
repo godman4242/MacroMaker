@@ -244,7 +244,7 @@ struct RecorderView: View {
         guard let editor else { return false }
         switch editor {
         case .renameText: return true   // clearing the text is a valid "play raw key"
-        case .editTime: return Double(editorDraft.trimmingCharacters(in: .whitespaces)) != nil
+        case .editTime: return (Double(editorDraft.trimmingCharacters(in: .whitespaces))?.isFinite ?? false)
         }
     }
 
@@ -258,7 +258,9 @@ struct RecorderView: View {
             let text = editorDraft.trimmingCharacters(in: .whitespaces)
             updated.events[index].textOverride = text.isEmpty ? nil : text
         case .editTime:
-            if let t = Double(editorDraft.trimmingCharacters(in: .whitespaces)), t >= 0 {
+            // `.isFinite` as well as `>= 0`: "inf" and "1e400" both parse and both satisfy
+            // `t >= 0`, and the value reaches `UInt64(_:)` in the playback loop, which traps.
+            if let t = Double(editorDraft.trimmingCharacters(in: .whitespaces)), t.isFinite, t >= 0 {
                 updated.events[index].time = t
                 // A time edit can reorder the timeline; keep events sorted so playback and the
                 // table agree (stable: same-time pairs keep their recorded order).

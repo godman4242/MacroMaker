@@ -1,5 +1,21 @@
 import SwiftUI
 
+/// Clamping shared by every numeric settings field.
+///
+/// `.number`'s parse strategy accepts "nan"/"NaN"/"NAN" and yields `Double.nan` (measured), and
+/// a NaN passes straight through `min(max(v, lo), hi)` because Swift's min/max propagate it —
+/// while `bounded != value` is true for NaN, so the write went ahead. Downstream that is fatal:
+/// the integer field bridges through `Int(_:rounded())`, which traps on NaN (measured, exit 133),
+/// and a NaN interval turns into the 1ms floor via `max(minimumDelay, nan)` — a click storm —
+/// in a settings blob `JSONEncoder` then refuses, so every later save is silently dropped.
+enum FieldValue {
+    /// The value to store, or nil when it must be ignored rather than written.
+    static func stored(_ newValue: Double, in range: ClosedRange<Double>) -> Double? {
+        guard newValue.isFinite else { return nil }
+        return min(max(newValue, range.lowerBound), range.upperBound)
+    }
+}
+
 /// A labelled number field with a stepper and unit, clamped to a range.
 struct NumberField: View {
     let title: String
@@ -47,7 +63,7 @@ struct NumberField: View {
         Binding(
             get: { value },
             set: { newValue in
-                let bounded = min(max(newValue, range.lowerBound), range.upperBound)
+                guard let bounded = FieldValue.stored(newValue, in: range) else { return }
                 if bounded != value { value = bounded }
             }
         )

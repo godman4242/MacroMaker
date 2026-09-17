@@ -12,6 +12,11 @@ final class WebClicker {
     }
 
     nonisolated static let minimumIntervalMs: Double = 100
+    /// The bound the interval field already enforces, hoisted so the run path enforces it too.
+    /// Only the UI clamped it, so a value from an imported profile or a corrupted defaults blob
+    /// reached `Duration.milliseconds(_:)` unchecked — above ~1.7e23 that call traps (measured:
+    /// exit 133, "Overflow in multiplication"), killing the app.
+    nonisolated static let maximumIntervalMs: Double = 3_600_000
     private static let storageKey = "webTarget"
 
     var settings = Persistence.load(WebTargetSettings.self, key: WebClicker.storageKey) ?? WebTargetSettings() {
@@ -37,7 +42,9 @@ final class WebClicker {
             browser = s.browser
             urlMatch = s.urlMatch.trimmingCharacters(in: .whitespacesAndNewlines)
             script = WebClickScript.javaScript(for: s.locator)
-            intervalMs = max(WebClicker.minimumIntervalMs, s.intervalMs)
+            intervalMs = s.intervalMs.isFinite
+                ? min(max(WebClicker.minimumIntervalMs, s.intervalMs), WebClicker.maximumIntervalMs)
+                : WebClicker.minimumIntervalMs
         }
     }
 

@@ -129,6 +129,69 @@ struct BackgroundPosterTests {
 
     /// Captures events instead of delivering them (see BackgroundPoster.eventPoster).
     private final class PostedEventBox: @unchecked Sendable { var events: [CGEvent] = [] }
+
+    // MARK: Delivery defects found in the v2.0.5 sweep
+    //
+    // These live in THIS suite, not a sibling one: `.serialized` only orders tests within a
+    // suite, and posting a click drives the same process-wide `windowLocationResolver` seam
+    // that `windowLocationResolverSeamDrivesTheSupportFlagAndCallsThrough` swaps and records.
+    // As a separate suite they ran concurrently and corrupted each other (observed).
+
+    /// `NSEvent.mouseEvent(...).cgEvent` does its own top-left/bottom-left flip, and it measures
+    /// that flip against the PRIMARY screen's maxY. Measured on a 1920x1080 primary: for every
+    /// input, appKitY + cgY == 1080.0 exactly. Flipping about the UNION of all screens therefore
+    /// offsets every background click by however far another display extends above the primary.
+    /// `MacroRecorder` already flips about `NSScreen.screens.first` for the inverse conversion.
+    @Test func flipIsMeasuredAgainstThePrimaryScreenNotTheUnionOfAllScreens() {
+        let primary = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        let above = CGRect(x: 0, y: 1080, width: 1920, height: 400)   // external display on top
+        // Union maxY would be 1480 -> 980. The flip NSEvent actually applies is about 1080.
+        #expect(BackgroundPoster.appKitY(fromScreenY: 500, screenFrames: [primary, above]) == 580)
+        // Order must not matter: `screens.first` is the primary, and a union is order-free too,
+        // so this case pins that the fix reads the primary rather than "the first listed".
+        #expect(BackgroundPoster.appKitY(fromScreenY: 500, screenFrames: [primary]) == 580)
+    }
+
+    /// With no screens at all (display asleep, session switched) the union is `CGRect.null`,
+    /// whose maxY is +infinity — every click would be posted at an infinite coordinate.
+    @Test func noScreensYieldsAFiniteNumber() {
+        #expect(BackgroundPoster.appKitY(fromScreenY: 500, screenFrames: []).isFinite)
+    }
+
+    /// Every synthesized event carries `eventTag` in `.eventSourceUserData` so Macro Maker's own
+    /// output is recognisable — that is what stops "pause when I use the mouse" from pausing on
+    /// the clicker's own clicks, and what stops the recorder capturing them. `setSource` RESETS
+    /// that field to the new source's user data, so writing the tag before `setSource` erases it.
+    /// Measured directly: userData 305419896 -> 0 across `setSource`.
+    @Test func backgroundPostedClicksStillCarryTheSelfTag() {
+        let previous = BackgroundPoster.eventPoster
+        defer { BackgroundPoster.eventPoster = previous }
+        nonisolated(unsafe) var tags: [Int64] = []
+        BackgroundPoster.eventPoster = { event, _ in
+            tags.append(event.getIntegerValueField(.eventSourceUserData))
+        }
+        BackgroundPoster.click(.left, screenPoint: CGPoint(x: 300, y: 400), holdFor: 0,
+                               clickCount: 1,
+                               window: BackgroundPoster.Window(id: 7, bounds: CGRect(x: 0, y: 0, width: 800, height: 600)),
+                               pid: 1234, appIsActive: false)
+        #expect(tags.count == 2, "a click is a down and an up, got \(tags.count)")
+        #expect(tags.allSatisfy { $0 == EventSynthesizer.eventTag },
+                "posted clicks lost the self-tag: \(tags) != \(EventSynthesizer.eventTag)")
+    }
+
+    /// The keyboard path has the identical ordering bug, and it was not even reachable from a
+    /// test until `postKey` was routed through the same delivery seam as the mouse path.
+    @Test func backgroundPostedKeysStillCarryTheSelfTag() {
+        let previous = BackgroundPoster.eventPoster
+        defer { BackgroundPoster.eventPoster = previous }
+        nonisolated(unsafe) var tags: [Int64] = []
+        BackgroundPoster.eventPoster = { event, _ in
+            tags.append(event.getIntegerValueField(.eventSourceUserData))
+        }
+        BackgroundPoster.keyEvent(0, down: true, flags: [], pid: 1234)
+        #expect(tags == [EventSynthesizer.eventTag],
+                "posted keys lost the self-tag: \(tags) != [\(EventSynthesizer.eventTag)]")
+    }
 }
 
 @Suite("Direct-app settings")

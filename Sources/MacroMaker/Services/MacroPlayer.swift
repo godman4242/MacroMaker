@@ -90,7 +90,7 @@ final class MacroPlayer {
             }
             for (index, event) in plan.events.enumerated() {
                 let eventTime = plan.humanizer.enabled ? jitteredTimes[index] : event.time
-                let due = start + UInt64(eventTime / plan.speed * 1_000_000_000)
+                let due = start + Self.dueOffsetNanos(seconds: eventTime, speed: plan.speed)
                 guard worker.sleep(untilUptime: due) else { break playback }
                 post(event, heldKeys: &heldKeys, heldButtons: &heldButtons, source: source)
 
@@ -142,6 +142,22 @@ final class MacroPlayer {
                 heldKeys.remove(code)
             }
         }
+    }
+
+    /// The longest offset a single event may be scheduled at. A macro is a replay of something a
+    /// person did, so a day is already absurd — it exists only to keep the conversion in range.
+    nonisolated static let maximumEventOffsetSeconds: TimeInterval = 86_400
+
+    /// The event's offset from the start of playback, in nanoseconds.
+    ///
+    /// `UInt64(Double)` traps on a negative, infinite or NaN value (measured: exit 133), and
+    /// nothing upstream used to bound this — a hand-edited or corrupted file could carry
+    /// `1e400`, and a zero speed divides into infinity. Clamping here is the braces; rejecting
+    /// the value at decode time is the belt.
+    nonisolated static func dueOffsetNanos(seconds: TimeInterval, speed: Double) -> UInt64 {
+        let scaled = seconds / speed
+        guard !scaled.isNaN else { return 0 }
+        return UInt64(min(max(scaled, 0), maximumEventOffsetSeconds) * 1_000_000_000)
     }
 
     nonisolated private static func release(keys: Set<CGKeyCode>, buttons: [MouseButton: CGPoint],

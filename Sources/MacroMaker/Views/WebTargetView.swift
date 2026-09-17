@@ -68,7 +68,7 @@ struct WebTargetView: View {
 
                 Section("Timing") {
                     NumberField("Click every", value: $web.settings.intervalMs, unit: "ms",
-                                range: WebClicker.minimumIntervalMs...3_600_000, step: 100)
+                                range: WebClicker.minimumIntervalMs...WebClicker.maximumIntervalMs, step: 100)
                 }
 
                 Section("Shortcut") {

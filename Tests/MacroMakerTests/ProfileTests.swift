@@ -86,3 +86,42 @@ struct ProfileRulesTests {
         #expect(ProfileRules.uniqueName(forDuplicateOf: "farm", taken: ["farm copy"]) == "farm copy 2")
     }
 }
+
+/// The profile importer accepted ANY top-level JSON object: `Profile.init(from:)` defaults every
+/// field, including `name`, so `ProfileService.importFile(at:)`'s "it isn't a valid Macro Maker
+/// profile" error could never fire for well-formed JSON. `Macro` has guarded on its `format` key
+/// since v2.0; profiles never did. Applying such an import resets every feature to defaults.
+@Suite("Profile identity")
+struct ProfileIdentityTests {
+
+    @Test func arbitraryJsonIsNotAProfile() {
+        #expect(throws: DecodingError.self) { try Profile.from(jsonData: Data("{}".utf8)) }
+        #expect(throws: DecodingError.self) {
+            try Profile.from(jsonData: Data(#"{"hello":"world"}"#.utf8))
+        }
+        // The shape that made this worst: it looks named, so it imports wearing a real title.
+        #expect(throws: DecodingError.self) {
+            try Profile.from(jsonData: Data(#"{"name":"Quarterly Report"}"#.utf8))
+        }
+    }
+
+    @Test func aFileDeclaringADifferentFormatIsRejected() {
+        #expect(throws: DecodingError.self) {
+            try Profile.from(jsonData: Data(#"{"format":"macromaker","name":"A macro, not a profile"}"#.utf8))
+        }
+    }
+
+    @Test func profilesThisBuildWritesDeclareTheirFormat() throws {
+        let data = try Profile(name: "Round trip").jsonData()
+        let text = try #require(String(data: data, encoding: .utf8))
+        #expect(text.contains("macromakerprofile"), "a saved profile must identify itself")
+        #expect(try Profile.from(jsonData: data).name == "Round trip")
+    }
+
+    /// The tolerance that must survive: a genuine older file has no `format` key, but every
+    /// profile this app has ever written carries at least one settings section.
+    @Test func aGenuineOlderProfileWithoutTheFormatKeyStillLoads() throws {
+        let json = Data(#"{"name":"Old","autoClicker":{"button":"left","intervalMs":250}}"#.utf8)
+        #expect(try Profile.from(jsonData: json).name == "Old")
+    }
+}

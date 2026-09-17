@@ -61,6 +61,12 @@ enum MacroLibraryRules {
         base = base.trimmingCharacters(in: CharacterSet(charactersIn: "."))
         if base.isEmpty { base = "Macro" }
         if base.count > maximumFileNameLength { base = String(base.prefix(maximumFileNameLength)) }
+        // Trimming before the cap is not enough: `prefix` can land on a dot or a space, and the
+        // result is then not a fixed point of this function — which is exactly what
+        // `isSafeFileName` tests, so the name was written to disk and then rejected on read.
+        // One trim with the union of both sets is itself idempotent.
+        base = base.trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ".")))
+        if base.isEmpty { base = "Macro" }
         return base + extensionSuffix
     }
 
@@ -86,7 +92,17 @@ enum MacroLibraryRules {
         let stem = full.hasSuffix(extensionSuffix) ? String(full.dropLast(extensionSuffix.count)) : full
         let taken = Set(taken.map { $0.lowercased() })
         func candidate(_ index: Int) -> String {
-            index == 0 ? full : "\(stem)-\(index)\(extensionSuffix)"
+            guard index > 0 else { return full }
+            // Budget the suffix INSIDE the cap. Appending "-N" after `safeFileName` had already
+            // capped the stem pushed the name past `maximumFileNameLength`, so it was no longer
+            // a `safeFileName` fixed point and `isSafeFileName` rejected it — the record saved
+            // fine and then read back as "file missing", and on the next launch its throw took
+            // the entire library index down with it.
+            let suffix = "-\(index)"
+            let budget = max(1, maximumFileNameLength - suffix.count)
+            // Re-normalise through safeFileName so truncating the stem cannot leave a trailing
+            // dot either. Distinct indices stay distinct, so the caller's loop still terminates.
+            return safeFileName(for: String(stem.prefix(budget)) + suffix)
         }
         var index = 0
         while taken.contains(candidate(index).lowercased()) { index += 1 }

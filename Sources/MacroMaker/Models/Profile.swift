@@ -7,9 +7,15 @@ import Foundation
 struct Profile: Codable, Equatable, Sendable, Identifiable {
     static let currentFormatVersion = 2
     static let fileExtension = "macromakerprofile"
+    /// Identifies the payload as a profile, exactly as `Macro` identifies a macro. Without it
+    /// `from(jsonData:)` accepted ANY top-level JSON object — `{"name":"Quarterly Report"}`
+    /// imported as a complete, all-defaults profile wearing that title, and applying it reset
+    /// every feature. Written by every profile this build saves.
+    static let formatName = "macromakerprofile"
 
     var id: UUID
     var name: String
+    private(set) var format = Self.formatName
     var formatVersion = currentFormatVersion
     var autoClicker = AutoClickerSettings()
     var keyPresser = KeyPresserSettings()
@@ -27,6 +33,20 @@ struct Profile: Codable, Equatable, Sendable, Identifiable {
     /// A *newer* formatVersion is rejected loudly — this build can't know what it changed.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        let declared = try c.decodeIfPresent(String.self, forKey: .format)
+        guard declared == nil || declared == Self.formatName else {
+            throw DecodingError.dataCorruptedError(forKey: .format, in: c,
+                debugDescription: "This isn't a Macro Maker profile (it declares format \"\(declared ?? "")\").")
+        }
+        // Files written before v2.0.5 carry no `format` key, so it cannot simply be required.
+        // Every profile this app has ever written does encode its settings sections, so asking
+        // for one identifying key rejects arbitrary JSON without rejecting a genuine older file.
+        guard declared != nil || c.contains(.formatVersion) || c.contains(.autoClicker)
+                || c.contains(.keyPresser) || c.contains(.webTarget) || c.contains(.playback) else {
+            throw DecodingError.dataCorruptedError(forKey: .format, in: c,
+                debugDescription: "This file isn't a Macro Maker profile.")
+        }
+        format = Self.formatName
         let version = try c.decodeIfPresent(Int.self, forKey: .formatVersion) ?? 1
         guard version <= Self.currentFormatVersion else {
             throw DecodingError.dataCorruptedError(forKey: .formatVersion, in: c,

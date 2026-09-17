@@ -38,9 +38,10 @@ struct IntervalField: View {
         Binding(
             get: { unit.fromMilliseconds(milliseconds) },
             set: { newValue in
-                let bounded = min(max(newValue, unit.displayRange.lowerBound), unit.displayRange.upperBound)
-                let ms = unit.toMilliseconds(bounded)
-                let clampedMs = min(max(ms, 1), IntervalUnit.maximumIntervalMs)
+                guard let bounded = FieldValue.stored(newValue, in: unit.displayRange),
+                      let clampedMs = FieldValue.stored(unit.toMilliseconds(bounded),
+                                                        in: 1...IntervalUnit.maximumIntervalMs)
+                else { return }
                 if clampedMs != milliseconds { milliseconds = clampedMs }
             }
         )

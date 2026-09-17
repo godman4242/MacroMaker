@@ -213,13 +213,24 @@ enum BackgroundPoster {
     /// Top-left global (CG) Y → bottom-left global (AppKit) Y. NSEvent.mouseEvent takes AppKit
     /// coordinates and flips Y into CG display space itself, so a screen-space (top-left) point
     /// must be pre-flipped — otherwise it lands mirrored (1080 − y) in the posted event.
-    private static var appKitGlobalMaxY: CGFloat {
-        NSScreen.screens.map(\.frame).reduce(CGRect.null) { $0.union($1) }.maxY
+    /// A top-left screen Y as the bottom-left AppKit Y that `NSEvent.mouseEvent` expects.
+    ///
+    /// The flip constant is the PRIMARY screen's maxY, not the union of every screen.
+    /// `NSEvent.mouseEvent(...).cgEvent` performs its own flip, and it was measured directly:
+    /// on a 1920x1080 primary, appKitY + cgY == 1080.0 for every input. Flipping about the union
+    /// agrees with that only while the primary is the topmost display — put a second display
+    /// above it and every background click lands high by exactly the overhang. `MacroRecorder`
+    /// already flips about `NSScreen.screens.first` for the inverse conversion; this is now
+    /// consistent with it. Using `.first` also removes the empty-screens case: the union of no
+    /// rects is `CGRect.null`, whose maxY is +infinity.
+    static func appKitY(fromScreenY y: CGFloat, screenFrames: [CGRect]) -> CGFloat {
+        (screenFrames.first?.maxY ?? 0) - y
     }
 
     static func mouseEvent(_ type: CGEventType, button: MouseButton, clickCount: Int,
                            screenPoint: CGPoint, window: Window) -> CGEvent? {
-        let appKitPoint = CGPoint(x: screenPoint.x, y: appKitGlobalMaxY - screenPoint.y)
+        let appKitPoint = CGPoint(x: screenPoint.x,
+                                  y: appKitY(fromScreenY: screenPoint.y, screenFrames: NSScreen.screens.map(\.frame)))
         guard let nsType = nsEventType(type),
               let event = NSEvent.mouseEvent(with: nsType, location: appKitPoint, modifierFlags: [],
                                              timestamp: ProcessInfo.processInfo.systemUptime,
@@ -256,7 +267,6 @@ enum BackgroundPoster {
         // Same contract as the HID path: explicit flags (never the user's held keys) and the
         // self-tag so the recorder ignores Macro Maker's own output.
         event.flags = clickFlags(appIsActive: appIsActive).union(.maskNonCoalesced)
-        event.setIntegerValueField(.eventSourceUserData, value: EventSynthesizer.eventTag)
         // Re-home the event onto a fresh private source before posting. NSEvent's .cgEvent is
         // shared-sourced (stateID 0), and posting through that source at click rates wedges its
         // cumulative modifier/button state — ⌘ then reads as physically held to the window
@@ -266,6 +276,11 @@ enum BackgroundPoster {
         let fresh = CGEventSource(stateID: .hidSystemState)
         fresh?.localEventsSuppressionInterval = 0
         event.setSource(fresh)
+        // The self-tag goes on AFTER setSource, never before: setSource resets
+        // .eventSourceUserData to the new source's own user data. Measured: the tag read back as
+        // 0 when written first, so every background-posted event went out untagged and
+        // pause-on-real-input would treat the clicker's own clicks as the user taking over.
+        event.setIntegerValueField(.eventSourceUserData, value: EventSynthesizer.eventTag)
         eventPoster(event, pid)
     }
 
@@ -290,11 +305,12 @@ enum BackgroundPoster {
 
     private static func postKey(_ event: CGEvent, flags: CGEventFlags, pid: pid_t) {
         event.flags = flags.union(.maskNonCoalesced)
-        event.setIntegerValueField(.eventSourceUserData, value: EventSynthesizer.eventTag)
         // Same fresh-source rule as the mouse path: these events are built with a nil source.
         let fresh = CGEventSource(stateID: .hidSystemState)
         fresh?.localEventsSuppressionInterval = 0
         event.setSource(fresh)
-        event.postToPid(pid)
+        // Tag after setSource — see post(_:appIsActive:pid:).
+        event.setIntegerValueField(.eventSourceUserData, value: EventSynthesizer.eventTag)
+        eventPoster(event, pid)
     }
 }

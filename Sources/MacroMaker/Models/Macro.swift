@@ -132,6 +132,13 @@ extension MacroEvent: Codable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         time = try c.decode(TimeInterval.self, forKey: .time)
+        // A time that is negative or non-finite reaches `UInt64(_:)` in the playback loop, which
+        // traps and kills the app. JSON has no NaN literal, but `1e400` parses to +infinity.
+        guard time.isFinite, time >= 0 else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .time, in: c,
+                debugDescription: "Event time must be a finite, non-negative number of seconds, got \(time).")
+        }
         flags = try c.decodeIfPresent(UInt64.self, forKey: .flags) ?? 0
         textOverride = try c.decodeIfPresent(String.self, forKey: .textOverride)
         let type = try c.decode(EventType.self, forKey: .type)

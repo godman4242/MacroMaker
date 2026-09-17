@@ -10,7 +10,23 @@ final class MacroLibrary {
     private(set) var records: [MacroRecord]
 
     init(load: Bool = true) {
-        records = load ? (Persistence.load([MacroRecord].self, key: Self.indexKey) ?? []) : []
+        records = load ? (UserDefaults.standard.data(forKey: Self.indexKey).map(Self.records(fromIndex:)) ?? []) : []
+    }
+
+    /// The stored index, decoded one entry at a time.
+    ///
+    /// `MacroRecord.init(from:)` deliberately throws on a file name `isSafeFileName` rejects —
+    /// that is the path-traversal defence and it stays. But decoding the array in one go meant
+    /// one such entry threw, `try?` turned the whole result into nil and `?? []` presented an
+    /// empty library; the next add/rename/delete then persisted that empty list over the top,
+    /// so the loss was permanent. Whatever produced the bad name — an older build, a future
+    /// rule change, a hand-edited defaults plist — it must cost one row, not all of them.
+    nonisolated static func records(fromIndex data: Data) -> [MacroRecord] {
+        struct Tolerant: Decodable {
+            let record: MacroRecord?
+            init(from decoder: Decoder) throws { record = try? MacroRecord(from: decoder) }
+        }
+        return ((try? JSONDecoder().decode([Tolerant].self, from: data)) ?? []).compactMap(\.record)
     }
 
     var lastError: String?
