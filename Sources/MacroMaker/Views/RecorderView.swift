@@ -140,7 +140,7 @@ struct RecorderView: View {
             } description: {
                 Text("Press Record, then click and type in any app. Press Stop Recording (or its shortcut) when done, then Play to replay it with the original timing.")
             }
-            .frame(maxHeight: .infinity)
+            .frame(minHeight: 240)
         } else {
             Table(events.enumerated().map { Row(id: $0.offset, event: $0.element) },
                   selection: $selectedEvent) {
@@ -166,7 +166,14 @@ struct RecorderView: View {
                     editorDraft = renameText(for: index)
                 }
             }
-            .frame(maxHeight: .infinity)
+            // The recorder is the one tab with a second scroller: this Table scrolls its own
+            // rows inside the page that the detail-root ScrollView scrolls. That needs an
+            // explicit height range — inside a ScrollView nothing proposes a height, so
+            // `maxHeight: .infinity` would resolve to the Table's ideal size and either
+            // collapse it or let a long macro grow it without bound. A fixed range keeps the
+            // table a predictable block: long macros scroll inside it, the page scrolls
+            // around it, and neither scroller can swallow the other.
+            .frame(minHeight: 240, maxHeight: 420)
         }
     }
 

@@ -26,10 +26,11 @@ final class WindowCoordinator {
             window = makeWindow(kind)
             // A saved frame can exceed this screen (saved on a bigger display, or grown by
             // a pre-fix build's unbounded layout): a 1050pt-tall window on a 1050pt screen
-            // straddles the menu bar, which then hides the title bar. Re-center the frame
-            // inside the VISIBLE area — this is a move, not a resize, so nothing later
-            // pushes it back. center()/cascadePosition alone won't do it (they work on
-            // AppKit's cascade rect), and centerClip() clips without recentering.
+            // straddles the menu bar, which then hides the title bar. `fitted(inside:)` caps
+            // and centers only a frame that is too BIG, and otherwise nudges or leaves it —
+            // see its doc comment for why "otherwise leaves it" matters. AppKit's own
+            // center()/cascadePosition work on the cascade rect and won't do this, and
+            // centerClip() clips without moving.
             let fixed = window.frame.fittedToVisibleScreen(of: window.screen)
             if fixed.size != window.frame.size {
                 window.setFrame(fixed, display: true)
@@ -69,15 +70,10 @@ final class WindowCoordinator {
     }
 
     private func makeWindow(title: String, size: NSSize, resizable: Bool, content: some View) -> NSWindow {
-        // NSHostingView pinned by autoresizing, NOT an NSHostingController as
-        // contentViewController. v2.0.2 set the controller's sizingOptions = [], which cut the
-        // hosting view loose from the window's content bounds: in the field the
-        // NavigationSplitView was laid out at an intrinsic height unrelated to the window
-        // (measured live via System Events: 2734pt tall inside a 1050pt window, vertically
-        // centered, top at y=-790) — the sidebar rows rendered in invisible space above the
-        // window. Pinning the view to the frame makes that state structurally impossible:
-        // SwiftUI proposals derive from the hosting view's frame, so ScrollViews get a
-        // bounded proposal and scroll instead of overflowing, at every window size.
+        // NSHostingView pinned to the content bounds by autoresizing; sizingOptions = [] so
+        // SwiftUI's intrinsic size never sizes the WINDOW. Necessary but not sufficient: what
+        // actually keeps the NavigationSplitView inside the window is the shape of the detail
+        // column — see the comment on ContentView's `detail:` closure.
         // The settings window's no-grow guarantee doesn't depend on the hosting mechanism at
         // all: it is non-resizable, so nothing ever proposes the Form's ~1050pt intrinsic
         // height to the window.
@@ -97,15 +93,34 @@ final class WindowCoordinator {
     }
 }
 
-private extension NSRect {
-    /// Clamped to the screen's visible frame: size capped to the area, then centered.
-    /// A frame taller than the screen (saved by a pre-fix build) must be RESIZED,
-    /// not just moved — origin-only recentring keeps the overflow invisible.
+extension NSRect {
+    /// This frame placed inside the screen's visible area (the screen minus the menu bar and Dock).
     func fittedToVisibleScreen(of screen: NSScreen?) -> NSRect {
         guard let area = screen?.visibleFrame else { return self }
+        return fitted(inside: area)
+    }
+
+    /// Placed inside `area`, changing as little as possible:
+    ///   - bigger than the area on either axis -> capped to it and centered. This is the v2.0.3
+    ///     rescue for a frame poisoned by a pre-fix build's unbounded layout (2742pt tall), which
+    ///     must be RESIZED — origin-only recentring just hides the overflow.
+    ///   - fits but hangs off an edge -> slid back by the smallest offset that works.
+    ///   - already inside -> returned untouched.
+    ///
+    /// That last case is load-bearing. `show()` runs this clamp on EVERY open, not only on first
+    /// creation, and the main window is opened from the menu bar, a hotkey, a Dock reopen and the
+    /// permission prompt. Centering unconditionally therefore threw the window back to the middle
+    /// of the screen every single time it was opened, discarding wherever the user had dragged it
+    /// and defeating the `MacroMaker.main` frame autosave. Covered by `ScreenFitTests`.
+    func fitted(inside area: NSRect) -> NSRect {
         let size = NSSize(width: min(width, area.width), height: min(height, area.height))
-        return NSRect(x: area.midX - size.width / 2,
-                      y: area.midY - size.height / 2,
+        guard size == self.size else {
+            return NSRect(x: area.midX - size.width / 2,
+                          y: area.midY - size.height / 2,
+                          width: size.width, height: size.height)
+        }
+        return NSRect(x: min(max(minX, area.minX), area.maxX - size.width),
+                      y: min(max(minY, area.minY), area.maxY - size.height),
                       width: size.width, height: size.height)
     }
 }

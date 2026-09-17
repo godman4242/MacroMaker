@@ -75,3 +75,47 @@ struct WindowLayoutTests {
                 "content height \(content.frame.height) != window content height \(rect.height)")
     }
 }
+
+/// `show()` re-runs the screen-fit clamp on EVERY open (the async settle block sits outside the
+/// "first creation" branch), and the main window is opened from the menu bar, a hotkey, a Dock
+/// reopen and a permission prompt. So the clamp must be a no-op for a frame that already fits:
+/// anything else silently throws away the position the user dragged the window to, and defeats
+/// the `MacroMaker.main` frame autosave.
+@Suite("Screen-fit clamp")
+struct ScreenFitTests {
+    /// A 1440x900 display with the menu bar taken off the top.
+    private let area = NSRect(x: 0, y: 0, width: 1440, height: 875)
+
+    @Test func aFrameThatAlreadyFitsIsLeftExactlyWhereTheUserPutIt() {
+        let userPlaced = NSRect(x: 40, y: 60, width: 620, height: 760)
+        #expect(userPlaced.fitted(inside: area) == userPlaced)
+    }
+
+    @Test func anOversizedFrameIsResizedAndCentered() {
+        // The v2.0.3 rescue: a frame poisoned by a pre-fix build's unbounded layout.
+        let poisoned = NSRect(x: 100, y: -1800, width: 851, height: 2742)
+        let fixed = poisoned.fitted(inside: area)
+        #expect(fixed.height == area.height)
+        #expect(fixed.width == 851)
+        #expect(fixed.midX == area.midX)
+        #expect(fixed.midY == area.midY)
+    }
+
+    @Test func aFrameHangingOffAnEdgeIsNudgedBackNotRecentered() {
+        // Half off the right edge and below the bottom: slide it in by the smallest amount that
+        // works, keeping the user's rough placement instead of teleporting to the middle.
+        let hanging = NSRect(x: 1200, y: -50, width: 620, height: 760)
+        let fixed = hanging.fitted(inside: area)
+        #expect(fixed.size == hanging.size)
+        #expect(fixed.maxX == area.maxX)
+        #expect(fixed.minY == area.minY)
+        #expect(fixed.midX != area.midX, "a nudge, not a re-center")
+    }
+
+    @Test func aFrameWiderThanTheScreenIsCappedOnThatAxisOnly() {
+        let tooWide = NSRect(x: -200, y: 100, width: 2000, height: 400)
+        let fixed = tooWide.fitted(inside: area)
+        #expect(fixed.width == area.width)
+        #expect(fixed.height == 400)
+    }
+}

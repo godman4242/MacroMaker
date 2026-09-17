@@ -27,15 +27,42 @@ struct ContentView: View {
             .listStyle(.sidebar)
             .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 220)
         } detail: {
-            VStack(spacing: 0) {
-                if !model.permissions.isAccessibilityTrusted {
-                    PermissionBanner()
+            // The detail column's root must be a ScrollView with no layout wrapper around it.
+            // A ScrollView proposes a bounded height to the split, so the split can never be
+            // taller than the window. Wrap it in anything that lays out — a VStack, or even a
+            // .safeAreaInset on the ScrollView itself — and the split adopts the detail's full
+            // intrinsic height instead (the tab Forms run to ~2742pt): it then draws taller than
+            // the window with its top ABOVE the window's, and the sidebar rows render in
+            // invisible space off the top of the screen. Identity-only modifiers (.id) are safe.
+            // This only reproduces when the app is launched as a .app bundle — a `swift run`
+            // binary never shows it — so measure any change here by launching the built bundle
+            // and reading the live AX frames, never by running the debug binary.
+            // Measured over bundle launches: this shape GOOD 6/6 · VStack root with the
+            // ScrollView inside BAD 8/8 · ScrollView under .safeAreaInset BAD 8/8.
+            ScrollView {
+                // The banner and hero ride along as a pinned section header, so Stop All — the
+                // only global emergency stop — stays on screen however far a tab is scrolled.
+                LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                    Section {
+                        detailView
+                            .frame(maxWidth: .infinity, alignment: .topLeading)
+                    } header: {
+                        VStack(spacing: 0) {
+                            if !model.permissions.isAccessibilityTrusted {
+                                PermissionBanner()
+                            }
+                            StatusHero()
+                            Divider()
+                        }
+                        .background(.bar)   // opaque: content scrolls underneath the header
+                    }
                 }
-                StatusHero()
-                Divider()
-                detailView
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            // Fresh identity per tab, so each tab opens at the top. It has to sit on the
+            // ScrollView, not on its content: the scroller's offset belongs to the ScrollView,
+            // and rebuilding only the content leaves it where the previous tab was (measured —
+            // the recorder opened halfway down its event table).
+            .id(model.selectedTab)
         }
         .navigationSplitViewStyle(.balanced)
         .sheet(isPresented: $model.showOnboarding) {
@@ -44,13 +71,13 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var detailView: some View {
-        // The form-based tabs are taller than any sane window; the ScrollView bounds the
-        // layout to the window and keeps every section reachable. RecorderView manages its
-        // own height internally and must NOT sit in a ScrollView.
+        // None of these views scrolls itself: the detail-root ScrollView above scrolls the
+        // whole page. The recorder's event table is the one thing that still scrolls
+        // internally, and it pins its own height there so the two never fight.
         switch model.selectedTab {
-        case .autoClicker: ScrollView { AutoClickerView() }
-        case .keyPresser: ScrollView { KeyPresserView() }
-        case .webTarget: ScrollView { WebTargetView() }
+        case .autoClicker: AutoClickerView()
+        case .keyPresser: KeyPresserView()
+        case .webTarget: WebTargetView()
         case .recorder: RecorderView()
         }
     }
