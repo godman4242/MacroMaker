@@ -203,6 +203,10 @@ final class AppModel {
     func launch() {
         applyActivationPolicy()
         TargetSnapshot.shared.start()
+        // One-time validation (F14) of the private CGEventSetWindowLocation symbol: present AND
+        // behaving as (event, point). A failure disables directApp targeting loudly via
+        // `targetingSupported`/`directAppProblem` instead of posting mis-aimed events.
+        BackgroundPoster.validateWindowTargeting()
         // Dangling links only: the index is the source of truth, and a hotkey for a macro that
         // was deleted from the library would find nothing at play time.
         let liveIDs = Set(library.records.map(\.id))

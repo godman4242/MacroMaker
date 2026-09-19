@@ -37,7 +37,9 @@ final class AutoClicker {
     var directAppProblem: String? {
         guard settings.target == .directApp else { return nil }
         guard BackgroundPoster.targetingSupported else {
-            return "This macOS build doesn't support background clicks: the CGEventSetWindowLocation call is missing."
+            // Launch validation says exactly what failed (missing symbol / failed round-trip).
+            return BackgroundPoster.windowTargetingProblem
+                ?? "This macOS build doesn't support background clicks: the CGEventSetWindowLocation call is missing."
         }
         guard !settings.directAppBundleID.isEmpty else { return "Pick an app to click in." }
         guard BackgroundPoster.processID(forBundleID: settings.directAppBundleID) != nil else {
@@ -313,13 +315,15 @@ final class AutoClicker {
                         direct = directRun
                         report(count, true, "The target app quit or was replaced mid-run — the run stopped rather than click the wrong process.")
                         return
-                    case .alive(let pid, let isActive):
-                        if directClickOnce(plan, pid: pid, isActive: isActive, resolver: directRun.resolver) {
-                            count += 1
-                        } else {
+                    case .alive(let pid):
+                        if let undelivered = directClickOnce(plan, pid: pid, resolver: directRun.resolver) {
                             // Undelivered click: never counted — the counter must mean "clicks
-                            // that reached the target", or stopAfterClicks lies.
-                            lastWarning = "Target window not found — bring it on-screen at least once; undelivered clicks aren't counted."
+                            // that reached the target", or stopAfterClicks lies. The warning
+                            // string says WHY (no window / undeliverable event) so the banner
+                            // tells the user what to do instead of counting silence.
+                            lastWarning = undelivered
+                        } else {
+                            count += 1
                         }
                         direct = directRun
                         guard !worker.isCancelled else { break burst }
@@ -366,7 +370,7 @@ final class AutoClicker {
             self.snapshot = snapshot
         }
 
-        enum Check { case alive(pid: pid_t, isActive: Bool), dead }
+        enum Check { case alive(pid: pid_t), dead }
 
         /// Polled per burst: the app must still be running *as the same process*.
         mutating func verifyTarget() -> Check {
@@ -378,7 +382,7 @@ final class AutoClicker {
                 state = .gone
                 return .dead
             }
-            return .alive(pid: pid, isActive: target.isActive)
+            return .alive(pid: pid)
         }
     }
 
@@ -412,21 +416,29 @@ final class AutoClicker {
     }
 
     /// Direct-app click: no cursor movement, no app raising — posted into the process.
-    /// Returns false (and counts nothing) when no window can be resolved, even occluded ones
-    /// via the WindowResolver's .optionAll fallback.
-    @discardableResult
-    nonisolated private static func directClickOnce(_ plan: Plan, pid: pid_t, isActive: Bool,
-                                                    resolver: BackgroundPoster.WindowResolver) -> Bool {
-        guard let window = resolver.window(ofPID: pid) else { return false }
+    /// Returns nil when the click was delivered; otherwise a one-line warning naming why
+    /// (no window resolvable — even via the .optionAll fallback — or an undeliverable event).
+    /// Nothing is counted when this returns a warning.
+    nonisolated private static func directClickOnce(_ plan: Plan, pid: pid_t,
+                                                    resolver: BackgroundPoster.WindowResolver) -> String? {
         // Same single-randomness rule: this point is fixed, positional jitter applies.
-        let screenPoint = plan.positionJitterPx == 0 ? plan.directScreenPoint
+        let picked = plan.positionJitterPx == 0 ? plan.directScreenPoint
             : ClickGeometry.jitter(plan.directScreenPoint, amount: plan.positionJitterPx,
                                    u1: .random(in: 0...1), u2: .random(in: 0...1))
-        BackgroundPoster.click(plan.button, screenPoint: screenPoint,
-                               holdFor: TickSchedule.pressDuration(interval: plan.interval),
-                               clickCount: plan.clickCountPerEvent,
-                               window: window, pid: pid, appIsActive: isActive)
-        return true
+        // F6/H6: prefer the app's window that CONTAINS the point over its front-most one —
+        // for multi-window apps the captured spot lives in a specific window.
+        guard let window = resolver.window(ofPID: pid, containing: picked) else {
+            return "Target window not found — bring it on-screen at least once; undelivered clicks aren't counted."
+        }
+        // H5: jitter can push the point outside the window it must land in — clamp it back.
+        let screenPoint = ClickGeometry.clamp(picked, to: window.bounds)
+        guard BackgroundPoster.click(plan.button, screenPoint: screenPoint,
+                                     holdFor: TickSchedule.pressDuration(interval: plan.interval),
+                                     clickCount: plan.clickCountPerEvent,
+                                     window: window, pid: pid) else {
+            return "Clicks couldn't be delivered to the target app (its event or window aim failed); undelivered clicks aren't counted."
+        }
+        return nil
     }
 
     // MARK: Direct-app helpers (main-actor queries)
@@ -438,30 +450,57 @@ final class AutoClicker {
         guard let pid = BackgroundPoster.processID(forBundleID: bundleID) else {
             return "The target app isn't running."
         }
-        guard let window = BackgroundPoster.resolveWindowLive(ofPID: pid) else {
+        let point = CGPoint(x: settings.directAppX, y: settings.directAppY)
+        guard let window = BackgroundPoster.resolveWindowLive(ofPID: pid, containing: point) else {
             return "Target window not found — bring it on-screen at least once."
         }
-        let point = BackgroundPoster.windowPoint(
-            fromScreenPoint: CGPoint(x: settings.directAppX, y: settings.directAppY), window: window)
-        return "Window \(Int(window.bounds.width))×\(Int(window.bounds.height)) — clicks land at (\(Int(point.x)), \(Int(point.y))) inside it."
+        let local = BackgroundPoster.windowPoint(fromScreenPoint: point, window: window)
+        // H4: say it when the captured spot lies outside every window of the app — the click
+        // then falls back to the front-most window and lands wherever that one is.
+        let whereItLands = window.bounds.contains(point)
+            ? "inside it"
+            : "outside it — clicks fall back to the app's front-most window"
+        return "Window \(Int(window.bounds.width))×\(Int(window.bounds.height)) — captured spot is (\(Int(local.x)), \(Int(local.y))) \(whereItLands)."
     }
 
-    /// Posts one click at the chosen target without starting a run. Reports loudly when it skips.
+    /// The pick-time half of H4: a direct-app point captured outside every window of the chosen
+    /// app is a user mistake that used to surface only as silently undelivered clicks. Nil =
+    /// fine (no app chosen / app not running yet — the status line covers those) or the point
+    /// lies inside one of the app's windows.
+    func directAppPickWarning(for point: CGPoint) -> String? {
+        guard !settings.directAppBundleID.isEmpty,
+              let pid = BackgroundPoster.processID(forBundleID: settings.directAppBundleID) else { return nil }
+        let windows = BackgroundPoster.resolveWindowsLive(ofPID: pid)
+        guard !windows.isEmpty else { return nil }  // nothing to check against yet
+        guard windows.contains(where: { $0.bounds.contains(point) }) else {
+            return "That spot isn't inside any window of the chosen app — background clicks aim at its windows; pick again inside one."
+        }
+        return nil
+    }
+
+    /// Posts one click at the chosen target without starting a run. "Sent" only when the event
+    /// really went out fully aimed; every skip says why.
     func testClick() -> String {
         guard BackgroundPoster.targetingSupported else { return directAppProblem ?? "Background clicks aren't supported here." }
+        guard permissions.ensureAccessibility() else {
+            return "Test click failed — Accessibility permission is off, so the click can't be posted."
+        }
         guard let pid = BackgroundPoster.processID(forBundleID: settings.directAppBundleID) else {
             return "Test click failed — the target app isn't running."
         }
-        guard let window = BackgroundPoster.resolveWindowLive(ofPID: pid) else {
+        let base = CGPoint(x: settings.directAppX, y: settings.directAppY)
+        guard let window = BackgroundPoster.resolveWindowLive(ofPID: pid, containing: base) else {
             return "Test click failed — target window not found. Bring it on-screen at least once."
         }
-        let point = ClickGeometry.jitter(CGPoint(x: settings.directAppX, y: settings.directAppY),
-                                         amount: settings.jitterEnabled ? settings.jitterPx : 0,
-                                         u1: .random(in: 0...1), u2: .random(in: 0...1))
-        BackgroundPoster.click(settings.button, screenPoint: point, holdFor: 0.05,
-                               clickCount: max(1, settings.clickCountPerEvent.rawValue),
-                               window: window, pid: pid,
-                               appIsActive: BackgroundPoster.isActive(bundleID: settings.directAppBundleID))
+        let point = ClickGeometry.clamp(
+            ClickGeometry.jitter(base, amount: settings.jitterEnabled ? settings.jitterPx : 0,
+                                 u1: .random(in: 0...1), u2: .random(in: 0...1)),
+            to: window.bounds)
+        guard BackgroundPoster.click(settings.button, screenPoint: point, holdFor: 0.05,
+                                     clickCount: max(1, settings.clickCountPerEvent.rawValue),
+                                     window: window, pid: pid) else {
+            return "Test click failed — the click's event couldn't be built or aimed at the window."
+        }
         return "Test click sent."
     }
 
@@ -546,7 +585,15 @@ final class AutoClicker {
             updated.directAppY = location.y.rounded()
             updated.target = .directApp
         }
+        // H4's pick-time check: warn the moment a direct-app spot is captured outside every
+        // window of the chosen app — the run itself still posts (occlusion/another Space is
+        // legitimate), but the user learns immediately instead of from missing clicks.
+        var pickWarning: String?
+        if mode == .directAppPoint {
+            pickWarning = directAppPickWarning(for: location)
+        }
         settings = updated
+        runWarning = pickWarning
         pickCountdown = nil
         activePick = nil
     }

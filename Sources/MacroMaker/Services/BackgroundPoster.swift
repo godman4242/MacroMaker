@@ -1,16 +1,18 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import os
 
 /// Posts mouse and keyboard events straight into a chosen app's process (`CGEventPostToPid`),
 /// so the target window can sit behind other apps or on another Space — and the cursor never moves.
 ///
 /// The click events follow the documented recipe for background delivery: screen-space CGEvents
-/// built via `NSEvent.mouseEvent` (so the 12 auto-filled fields stay populated), whose private
-/// window-target fields (91/92) name the window under the point, subtype 3, and — when the app
-/// isn't active — the NX_COMMAND bit set so AppKit doesn't drop the click.
-/// The window-local point is applied through the private `CGEventSetWindowLocation` symbol,
-/// looked up at runtime and optional-chained: if it can't be resolved the UI says so loudly.
+/// built via `NSEvent.mouseEvent` (so the 12 auto-filled fields stay populated), seeded with the
+/// target window's number, whose private window-target fields (91/92) and subtype 3 name the
+/// window under the point. The window-local point is applied through the private
+/// `CGEventSetWindowLocation` symbol — resolved and round-trip validated once at launch, and
+/// re-applied after `setSource`. A missing symbol or failed aim fails the click loudly instead
+/// of posting a mis-aimed event; no fake modifiers ride a background click.
 enum BackgroundPoster {
 
     /// One of an app's usable windows, as plain data (the testable seam over the window server).
@@ -48,20 +50,39 @@ enum BackgroundPoster {
         return Window(id: CGWindowID(number), bounds: bounds)
     }
 
-    /// The app's front-most usable window over one window-server listing (front to back).
-    /// `optionOnScreenOnly` first; a fully covered (occluded) window then falls back to
-    /// `.optionAll`, still layer-0 filtered — an occluded app is no excuse to drop its clicks.
-    static func primaryWindow(ofPID pid: pid_t, in list: [[String: Any]]) -> Window? {
-        list.lazy.compactMap { window(fromInfo: $0, ownerPID: pid) }.first
+    /// The app's usable layer-0 windows over one window-server listing (front to back).
+    static func windows(ofPID pid: pid_t, in list: [[String: Any]]) -> [Window] {
+        list.compactMap { window(fromInfo: $0, ownerPID: pid) }
+    }
+
+    /// The window a click is aimed at (F6/H6): the app's window that CONTAINS the captured
+    /// point, falling back to the front-most one when the point lies in none of them (occluded,
+    /// another Space, or a window moved since capture) — an occluded app is no excuse to drop
+    /// its clicks.
+    static func window(ofPID pid: pid_t, in list: [[String: Any]], containing point: CGPoint?) -> Window? {
+        let windows = list.lazy.compactMap { window(fromInfo: $0, ownerPID: pid) }
+        if let point, let hit = windows.first(where: { $0.bounds.contains(point) }) { return hit }
+        return windows.first
     }
 
     /// Re-runs the window-server queries: on-screen first, `.optionAll` fallback for occlusion.
-    static func resolveWindowLive(ofPID pid: pid_t) -> Window? {
+    static func resolveWindowLive(ofPID pid: pid_t, containing point: CGPoint? = nil) -> Window? {
         for options in [CGWindowListOption.optionOnScreenOnly, .optionAll] {
             guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else { continue }
-            if let window = primaryWindow(ofPID: pid, in: list) { return window }
+            if let window = window(ofPID: pid, in: list, containing: point) { return window }
         }
         return nil
+    }
+
+    /// Every usable window of the app, live: the pick-time containment check (H4) needs all of
+    /// them, not just the front-most. Same on-screen-first, `.optionAll`-fallback rule.
+    static func resolveWindowsLive(ofPID pid: pid_t) -> [Window] {
+        for options in [CGWindowListOption.optionOnScreenOnly, .optionAll] {
+            guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else { continue }
+            let windows = windows(ofPID: pid, in: list)
+            if !windows.isEmpty { return windows }
+        }
+        return []
     }
 
     /// One run's reuse of window-server queries: both listings are cached for 300 ms — misses
@@ -80,15 +101,17 @@ enum BackgroundPoster {
 
         init() {}
 
-        /// The worker's per-click window lookup. Cheap while fresh; on expiry (or after a
+        /// The worker's per-click window lookup, preferring the window that contains the click
+        /// point (F6). Cheap while fresh — the point is only a preference at resolve time, so the
+        /// cached window can outlive a jittered point's containment; on expiry (or after a
         /// failure) both listings are re-pulled and the `.optionAll` fallback runs again.
-        func window(ofPID pid: pid_t) -> Window? {
+        func window(ofPID pid: pid_t, containing point: CGPoint?) -> Window? {
             lock.lock()
             defer { lock.unlock() }
             if let cacheDate, Date().timeIntervalSince(cacheDate) < Self.ttl, let window = lastWindow {
                 return window
             }
-            let window = BackgroundPoster.resolveWindowLive(ofPID: pid)
+            let window = BackgroundPoster.resolveWindowLive(ofPID: pid, containing: point)
             self.cacheDate = Date()
             self.lastWindow = .some(window)
             return window
@@ -117,56 +140,98 @@ enum BackgroundPoster {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
-    /// Which app is active right now (the ⌘-flag rule depends on it).
-    @MainActor static func isActive(bundleID: String) -> Bool {
-        NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundleID
-    }
-
     // MARK: Window-location seam
 
     /// Runtime seam for the private `CGEventSetWindowLocation` symbol — swapped for a fake in tests.
     protocol WindowLocationResolver {
         var isAvailable: Bool { get }
+        /// Signature validation (F14): true when a set→get round-trip stores the point. The
+        /// default vouches only for availability — the system resolver measures the round-trip.
+        func signatureRoundTrips() -> Bool
         /// Applies a window-local point to the event. Returns false when the symbol is missing.
         @discardableResult func setWindowLocation(of event: CGEvent, to point: CGPoint) -> Bool
     }
 
     struct SystemWindowLocationResolver: WindowLocationResolver {
-        private typealias CFunction = @convention(c) (CGEvent, CGPoint) -> Void
-        private let function: CFunction? = {
-            // RTLD_DEFAULT is ((void *) -2) in dlfcn.h; the macro doesn't import into Swift.
-            let rtldDefault = UnsafeMutableRawPointer(bitPattern: -2)
-            guard let symbol = dlsym(rtldDefault, "CGEventSetWindowLocation") else { return nil }
-            return unsafeBitCast(symbol, to: CFunction.self)
-        }()
+        private typealias Setter = @convention(c) (CGEvent, CGPoint) -> Void
+        private typealias Getter = @convention(c) (CGEvent) -> CGPoint
 
-        var isAvailable: Bool { function != nil }
+        /// Seam over dlsym so tests can force the missing-symbol path (F14) without touching
+        /// the dyld tables. Read once per resolver instance, at init.
+        nonisolated(unsafe) static var symbolLookup: (String) -> UnsafeMutableRawPointer? = { name in
+            // RTLD_DEFAULT is ((void *) -2) in dlfcn.h; the macro doesn't import into Swift.
+            dlsym(UnsafeMutableRawPointer(bitPattern: -2), name)
+        }
+
+        private let setter: Setter?
+        private let getter: Getter?
+
+        init() {
+            setter = Self.symbolLookup("CGEventSetWindowLocation").map { unsafeBitCast($0, to: Setter.self) }
+            getter = Self.symbolLookup("CGEventGetWindowLocation").map { unsafeBitCast($0, to: Getter.self) }
+        }
+
+        var isAvailable: Bool { setter != nil }
+
+        /// The private API's C signature is assumed, not documented — a set→get round-trip on
+        /// a scratch event proves the call takes (event, point) and stores it, instead of every
+        /// posted click silently mis-aiming.
+        func signatureRoundTrips() -> Bool {
+            guard let setter, let getter,
+                  let scratch = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
+                                        mouseCursorPosition: .zero, mouseButton: .left)
+            else { return false }
+            let probe = CGPoint(x: 123, y: 456)
+            setter(scratch, probe)
+            return getter(scratch) == probe
+        }
 
         @discardableResult func setWindowLocation(of event: CGEvent, to point: CGPoint) -> Bool {
-            guard let function else { return false }
-            function(event, point)
+            guard let setter else { return false }
+            setter(event, point)
             return true
         }
     }
 
     nonisolated(unsafe) static var windowLocationResolver: any WindowLocationResolver = SystemWindowLocationResolver()
 
+    private static let targetingLog = Logger(subsystem: "MacroMaker", category: "BackgroundPoster")
+
+    /// The launch-time verdict (F14): nil until validation fails. A set line disables
+    /// directApp targeting loudly — `targetingSupported` goes false and `directAppProblem`
+    /// says so — instead of posting mis-aimed events.
+    nonisolated(unsafe) static var windowTargetingProblem: String?
+
+    /// One-time startup validation: symbol presence plus signature round-trip. Called once
+    /// from AppModel.launch; takes the resolver so tests can drive each failure branch.
+    @discardableResult
+    static func validateWindowTargeting(resolver: (any WindowLocationResolver)? = nil) -> Bool {
+        let resolver = resolver ?? windowLocationResolver
+        guard resolver.isAvailable else {
+            windowTargetingProblem = "background window targeting not supported on this OS: CGEventSetWindowLocation is missing"
+            targetingLog.warning("directApp targeting disabled: \(windowTargetingProblem ?? "", privacy: .public)")
+            return false
+        }
+        guard resolver.signatureRoundTrips() else {
+            windowTargetingProblem = "background window targeting not supported on this OS: CGEventSetWindowLocation doesn't behave as (event, point)"
+            targetingLog.warning("directApp targeting disabled: \(windowTargetingProblem ?? "", privacy: .public)")
+            return false
+        }
+        windowTargetingProblem = nil
+        targetingLog.info("directApp targeting validated: window-location symbol present and round-trips")
+        return true
+    }
+
     /// False triggers the loud UI failure: background clicks can't be aimed without the symbol.
-    static var targetingSupported: Bool { windowLocationResolver.isAvailable }
+    static var targetingSupported: Bool {
+        windowLocationResolver.isAvailable && windowTargetingProblem == nil
+    }
 
     // MARK: Coordinates & flags
 
     /// Screen point → window-local point (translate by the negative window origin).
     static func windowPoint(fromScreenPoint point: CGPoint, window: Window) -> CGPoint {
         CGPoint(x: point.x - window.bounds.origin.x, y: point.y - window.bounds.origin.y)
-    }
-
-    /// 0x00100000 is the NX_COMMAND device-independent bit. Background-posted clicks are dropped
-    /// by AppKit unless the event pretends ⌘ is held when the target app isn't the active one.
-    static let backgroundClickFlag = CGEventFlags(rawValue: 0x0010_0000)
-
-    static func clickFlags(appIsActive: Bool) -> CGEventFlags {
-        appIsActive ? [] : backgroundClickFlag
     }
 
     // MARK: Posting
@@ -206,10 +271,11 @@ enum BackgroundPoster {
     /// One mouse transition aimed at the window, ready to post to the owning process.
     ///
     /// Built through `NSEvent.mouseEvent(...).cgEvent` per the researched recipe: NSEvent fills the
-    /// 12 protected field numbers (0,1,2,41,43,44,50,51,55,59,102,108), and only the recipe's own
-    /// fields (3 button, 7 subtype, 91/92 window ids) plus the window-local point are written after.
-    /// The ⌘-flag background trick is *not* baked in here — it is applied at post time, where the
-    /// active-state snapshot lives.
+    /// 12 protected field numbers (0,1,2,41,43,44,50,51,55,59,102,108). The event is seeded with
+    /// the target window's NUMBER (F1: windowNumber 0 resolves to no window in the target's
+    /// AppKit — the classic silently-dropped click), plus button and click count. The window-target
+    /// payload itself (subtype, fields 91/92, the private window location) is applied at post
+    /// time, after `setSource` — see `post(_:window:screenPoint:pid:)`.
     /// Top-left global (CG) Y → bottom-left global (AppKit) Y. NSEvent.mouseEvent takes AppKit
     /// coordinates and flips Y into CG display space itself, so a screen-space (top-left) point
     /// must be pre-flipped — otherwise it lands mirrored (1080 − y) in the posted event.
@@ -227,46 +293,60 @@ enum BackgroundPoster {
         (screenFrames.first?.maxY ?? 0) - y
     }
 
+    /// The AppKit conversion the recipe builds on. A seam: `NSEvent.mouseEvent` is documented
+    /// to be able to return nil, and tests force that path to prove the failure surfaces
+    /// instead of swallowing the click.
+    nonisolated(unsafe) static var nsMouseEventBuilder:
+        (_ type: NSEvent.EventType, _ location: CGPoint, _ clickCount: Int,
+         _ windowNumber: Int, _ pressure: Float) -> CGEvent? = { type, location, clickCount, windowNumber, pressure in
+            NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
+                               timestamp: ProcessInfo.processInfo.systemUptime,
+                               windowNumber: windowNumber, context: nil, eventNumber: 0,
+                               clickCount: clickCount, pressure: pressure)?.cgEvent
+        }
+
     static func mouseEvent(_ type: CGEventType, button: MouseButton, clickCount: Int,
                            screenPoint: CGPoint, window: Window) -> CGEvent? {
         let appKitPoint = CGPoint(x: screenPoint.x,
                                   y: appKitY(fromScreenY: screenPoint.y, screenFrames: NSScreen.screens.map(\.frame)))
         guard let nsType = nsEventType(type),
-              let event = NSEvent.mouseEvent(with: nsType, location: appKitPoint, modifierFlags: [],
-                                             timestamp: ProcessInfo.processInfo.systemUptime,
-                                             windowNumber: 0, context: nil, eventNumber: 0,
-                                             clickCount: clickCount, pressure: button == .left ? 1 : 0)?.cgEvent
+              let event = nsMouseEventBuilder(nsType, appKitPoint, clickCount, Int(window.id),
+                                              button == .left ? 1 : 0)
         else { return nil }
         event.type = type  // NSEvent.dragged flattens to mouseMoved on some paths; restore the recipe's type.
         event.setIntegerValueField(.mouseEventButtonNumber, value: Int64(button.cgButton.rawValue))
         event.setIntegerValueField(.mouseEventClickState, value: Int64(clickCount))
-        event.setIntegerValueField(.mouseEventSubtype, value: 3)
-        event.setIntegerValueField(windowField, value: Int64(window.id))
-        event.setIntegerValueField(handlerWindowField, value: Int64(window.id))
-        windowLocationResolver.setWindowLocation(of: event, to: windowPoint(fromScreenPoint: screenPoint, window: window))
         return event
     }
 
-    /// A complete click delivered to the process: down, hold, up.
+    /// A complete click delivered to the process: down, hold, up. False = undelivered: nothing
+    /// went out (the AppKit conversion returned nil, or the window aim was refused), so the
+    /// caller must not count the click — F5's silent swallow ends here.
+    @discardableResult
     static func click(_ button: MouseButton, screenPoint: CGPoint, holdFor duration: TimeInterval,
-                      clickCount: Int, window: Window, pid: pid_t, appIsActive: Bool) {
-        post(mouseEvent(button.downEventType, button: button, clickCount: clickCount,
-                        screenPoint: screenPoint, window: window),
-             appIsActive: appIsActive, pid: pid)
+                      clickCount: Int, window: Window, pid: pid_t) -> Bool {
+        guard post(mouseEvent(button.downEventType, button: button, clickCount: clickCount,
+                              screenPoint: screenPoint, window: window),
+                   window: window, screenPoint: screenPoint, pid: pid) else { return false }
         if duration > 0 { Thread.sleep(forTimeInterval: duration) }
-        post(mouseEvent(button.upEventType, button: button, clickCount: clickCount,
-                        screenPoint: screenPoint, window: window),
-             appIsActive: appIsActive, pid: pid)
+        return post(mouseEvent(button.upEventType, button: button, clickCount: clickCount,
+                               screenPoint: screenPoint, window: window),
+                    window: window, screenPoint: screenPoint, pid: pid)
     }
 
     /// Delivery seam: swapped in tests so `click` can be asserted without hitting real processes.
     nonisolated(unsafe) static var eventPoster: (CGEvent, pid_t) -> Void = { $0.postToPid($1) }
 
-    private static func post(_ event: CGEvent?, appIsActive: Bool, pid: pid_t) {
-        guard let event else { return }
-        // Same contract as the HID path: explicit flags (never the user's held keys) and the
-        // self-tag so the recorder ignores Macro Maker's own output.
-        event.flags = clickFlags(appIsActive: appIsActive).union(.maskNonCoalesced)
+    private static func post(_ event: CGEvent?, window: Window, screenPoint: CGPoint, pid: pid_t) -> Bool {
+        guard let event else {
+            // F5: NSEvent.mouseEvent is documented to be able to return nil. That used to
+            // vanish silently — nothing posted, and the caller still counted a delivery.
+            targetingLog.warning("background click lost: the AppKit event conversion returned nil")
+            return false
+        }
+        // Same contract as the HID path: explicit flags only (never the user's held keys —
+        // and no fake ⌘; background clicks stopped pretending modifiers are held).
+        event.flags = .maskNonCoalesced
         // Re-home the event onto a fresh private source before posting. NSEvent's .cgEvent is
         // shared-sourced (stateID 0), and posting through that source at click rates wedges its
         // cumulative modifier/button state — ⌘ then reads as physically held to the window
@@ -276,12 +356,24 @@ enum BackgroundPoster {
         let fresh = CGEventSource(stateID: .hidSystemState)
         fresh?.localEventsSuppressionInterval = 0
         event.setSource(fresh)
-        // The self-tag goes on AFTER setSource, never before: setSource resets
-        // .eventSourceUserData to the new source's own user data. Measured: the tag read back as
-        // 0 when written first, so every background-posted event went out untagged and
-        // pause-on-real-input would treat the clicker's own clicks as the user taking over.
+        // The window-target recipe goes on AFTER setSource, never before: setSource resets
+        // source-owned per-event data — measured directly, .eventSourceUserData read back as
+        // 0 when written first, and one proven wipe is enough to put everything delivery
+        // depends on (subtype, fields 91/92, the private window location, the self-tag) on
+        // the safe side of the call.
+        event.setIntegerValueField(.mouseEventSubtype, value: 3)
+        event.setIntegerValueField(windowField, value: Int64(window.id))
+        event.setIntegerValueField(handlerWindowField, value: Int64(window.id))
+        guard windowLocationResolver.setWindowLocation(
+            of: event, to: windowPoint(fromScreenPoint: screenPoint, window: window)) else {
+            // Fail loud, not mis-aimed: a click the resolver can't aim never leaves the app.
+            targetingLog.warning("background click lost: the window aim was refused — nothing posted")
+            return false
+        }
+        // The self-tag rides the same after-setSource rule (see above).
         event.setIntegerValueField(.eventSourceUserData, value: EventSynthesizer.eventTag)
         eventPoster(event, pid)
+        return true
     }
 
     // MARK: Keyboard
@@ -313,4 +405,10 @@ enum BackgroundPoster {
         event.setIntegerValueField(.eventSourceUserData, value: EventSynthesizer.eventTag)
         eventPoster(event, pid)
     }
+}
+
+extension BackgroundPoster.WindowLocationResolver {
+    /// Default signature validation: vouches only for availability — the system resolver
+    /// measures the actual set→get round-trip.
+    func signatureRoundTrips() -> Bool { isAvailable }
 }

@@ -163,6 +163,108 @@ struct StopLifecycleTests {
                 "a timed-out Stop must be visible, not silently declared done")
     }
 
+    // MARK: Wave 2 — an undeliverable click must fail loud, not count
+
+    /// F5: a click whose NSEvent conversion returns nil used to vanish silently — nothing
+    /// posted, no warning, and `directClickOnce` still counted it as delivered. The failure
+    /// must surface through the runWarning channel and never tick the "clicks that reached
+    /// the target" counter.
+    @Test func anUndeliverableClickSurfacesAWarningInsteadOfCounting() async throws {
+        let model = AppModel.shared
+        let clicker = model.autoClicker
+        let defaults = UserDefaults.standard
+        let savedSettingsBlob = defaults.data(forKey: AutoClicker.storageKey)
+        let savedSettings = clicker.settings
+        let savedPoster = BackgroundPoster.eventPoster
+        let savedBuilder = BackgroundPoster.nsMouseEventBuilder
+        model.permissions.forceAccessibilityTrusted = true
+        BackgroundPoster.eventPoster = { _, _ in }
+        // Force F5's failure path: the AppKit conversion returns nil for every event.
+        BackgroundPoster.nsMouseEventBuilder = { _, _, _, _, _ in nil }
+        defer {
+            BackgroundPoster.eventPoster = savedPoster
+            BackgroundPoster.nsMouseEventBuilder = savedBuilder
+            model.permissions.forceAccessibilityTrusted = false
+            model.stopAll()
+            clicker.settings = savedSettings
+            if let savedSettingsBlob { defaults.set(savedSettingsBlob, forKey: AutoClicker.storageKey) }
+            else { defaults.removeObject(forKey: AutoClicker.storageKey) }
+        }
+
+        var settings = clicker.settings
+        settings.target = .directApp
+        settings.directAppBundleID = "com.apple.finder"
+        // Both limits: old code counted the undelivered clicks and would race the click limit;
+        // new code never counts them, so the duration limit is what ends the run.
+        settings.stopAfterClicks = true
+        settings.maxClicks = 5
+        settings.stopAfterDuration = true
+        settings.maxDurationSeconds = 0.3
+        clicker.settings = settings
+
+        clicker.toggle(.hotkey)
+        let deadline = Date().addingTimeInterval(5)
+        while clicker.session.phase != .idle, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(clicker.session.phase == .idle, "the duration limit must end the run")
+        #expect(clicker.clickCount == 0,
+                "a click that never became an event must never be counted as delivered")
+        #expect(clicker.runWarning != nil,
+                "the swallowed conversion failure must be visible in the UI, not silent")
+    }
+
+    /// Fix 6 (appkit-accept #2): testClick used to say "sent" merely because it called the
+    /// poster. Truth now: AX granted AND a fully-aimed event (window fields, self-tag, no fake
+    /// modifiers) actually went out the poster seam — a failed build says so instead of lying.
+    @Test func testClickReportsSentOnlyForADeliveredWellAimedEvent() async throws {
+        let model = AppModel.shared
+        let clicker = model.autoClicker
+        let defaults = UserDefaults.standard
+        let savedSettingsBlob = defaults.data(forKey: AutoClicker.storageKey)
+        let savedSettings = clicker.settings
+        let savedPoster = BackgroundPoster.eventPoster
+        let savedBuilder = BackgroundPoster.nsMouseEventBuilder
+        model.permissions.forceAccessibilityTrusted = true
+        final class EventBox: @unchecked Sendable { var events: [CGEvent] = [] }
+        let box = EventBox()
+        BackgroundPoster.eventPoster = { event, _ in box.events.append(event) }
+        defer {
+            BackgroundPoster.eventPoster = savedPoster
+            BackgroundPoster.nsMouseEventBuilder = savedBuilder
+            model.permissions.forceAccessibilityTrusted = false
+            model.stopAll()
+            clicker.settings = savedSettings
+            if let savedSettingsBlob { defaults.set(savedSettingsBlob, forKey: AutoClicker.storageKey) }
+            else { defaults.removeObject(forKey: AutoClicker.storageKey) }
+        }
+
+        var settings = clicker.settings
+        settings.target = .directApp
+        settings.directAppBundleID = "com.apple.finder"
+        clicker.settings = settings
+
+        let reply = clicker.testClick()
+        #expect(reply == "Test click sent.", "a healthy click must report sent, got: \(reply)")
+        #expect(box.events.count == 2, "a click is a down and an up, got \(box.events.count)")
+        for event in box.events {
+            #expect(NSEvent(cgEvent: event)?.windowNumber ?? 0 > 0,
+                    "the test event must name a real window of the target app")
+            #expect(event.getIntegerValueField(CGEventField(rawValue: 91)!) > 0)
+            #expect(event.getIntegerValueField(CGEventField(rawValue: 92)!) > 0)
+            #expect(event.flags == .maskNonCoalesced, "no fake modifiers on a test click")
+            #expect(event.getIntegerValueField(.eventSourceUserData) == EventSynthesizer.eventTag)
+        }
+
+        // The failure branch: the AppKit conversion dies, so "sent" would be a lie.
+        BackgroundPoster.nsMouseEventBuilder = { _, _, _, _, _ in nil }
+        box.events.removeAll()
+        let failed = clicker.testClick()
+        #expect(failed != "Test click sent.", "an undeliverable test click must not claim success")
+        #expect(failed.contains("failed"), "the failure must say so, got: \(failed)")
+        #expect(box.events.isEmpty, "nothing may be posted when the event can't be built")
+    }
+
     // MARK: a stale natural-finish report cannot resurrect the warning
 
     /// The worker finished naturally (limit reached) and queued its final report; the user

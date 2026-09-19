@@ -17,6 +17,14 @@ enum ClickGeometry {
                        y: point.y + CGFloat(2 * clamp01(u2) - 1) * CGFloat(amount))
     }
 
+    /// Pulls a point back inside a rect (H5: jitter must not push a click outside the window
+    /// it is aimed at). An empty rect returns the point unchanged.
+    static func clamp(_ point: CGPoint, to rect: CGRect) -> CGPoint {
+        guard !rect.isEmpty else { return point }
+        return CGPoint(x: min(max(point.x, rect.minX), rect.maxX),
+                       y: min(max(point.y, rect.minY), rect.maxY))
+    }
+
     private static func clamp01(_ value: Double) -> Double {
         min(1, max(0, value))
     }
