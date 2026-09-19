@@ -26,6 +26,10 @@ final class PermissionService {
     /// Whether the system's "grant Accessibility?" dialog was already shown this launch.
     /// It only fires once — after that the in-app banner is the only repeated UI.
     @ObservationIgnored private(set) var didPromptForAccessibility = false
+    /// Test seam: run-lifecycle tests execute in a process the user never granted
+    /// Accessibility to — and must never trip the real system prompt. When set,
+    /// `ensureAccessibility` says yes without touching (or prompting) the real state.
+    @ObservationIgnored var forceAccessibilityTrusted = false
 
     init() {
         // macOS doesn't notify apps when permissions change, so poll (cheap).
@@ -43,6 +47,7 @@ final class PermissionService {
 
     /// Returns `true` if Accessibility is granted; otherwise shows the system prompt and returns `false`.
     func ensureAccessibility() -> Bool {
+        if forceAccessibilityTrusted { return true }
         refresh()
         guard !isAccessibilityTrusted else { return true }
         requestAccessibility()

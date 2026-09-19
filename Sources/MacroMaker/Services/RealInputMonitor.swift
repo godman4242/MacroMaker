@@ -10,16 +10,17 @@ import Foundation
 /// passive `.keyDown` mask on the global monitor is enough to spot real key presses without
 /// that entitlement. Mouse buttons are always visible there.
 ///
-/// **Single-subscriber** (asserted in debug): it exists for pause-on-real-input, which only the
-/// AutoClicker uses; a second subscriber would silently eat the first one's callback.
+/// **Single-subscriber**: it exists for pause-on-real-input, which only the AutoClicker uses,
+/// and a re-start while the watcher is live swaps the callback rather than counting a second
+/// subscriber (begin and resume of one run both land in `start`).
 @MainActor
 final class RealInputMonitor {
     static let shared = RealInputMonitor()
 
     private var monitors: [Any] = []
-    /// Reentrant *stop* bookkeeping is deliberate: start asserts single-subscriber in debug, but
-    /// a stop imbalance still leaves the tap up while any subscriber is registered.
-    private var subscribers = 0
+    /// Whether the one watcher is registered (0 or 1). Observable for tests: 0 means the
+    /// monitors are genuinely removed.
+    private(set) var subscribers = 0
     private var onRealInput: () -> Void = {}
     /// Set when no monitor could be installed (global denied *and* local returned nil) so the
     /// feature can say "pause-on-real-input can't work" instead of silently never firing.
@@ -32,13 +33,14 @@ final class RealInputMonitor {
     static let watchedTypes: [NSEvent.EventTypeMask] = [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]
 
     /// Starts watching. `onRealInput` fires on every real key/mouse press until `stop`.
+    /// Idempotent: the single watcher re-starts on every begin *and* resume of the same run,
+    /// so a start while already watching swaps the callback instead of counting a second
+    /// subscriber — the old debug assert trapped on the first pause→resume, and the double
+    /// count left the monitors installed for the rest of the process.
     /// Returns false (and records `lastFailure`) when no monitor could be installed.
     @discardableResult
     func start(onRealInput: @escaping () -> Void) -> Bool {
-        assert(subscribers == 0,
-               "RealInputMonitor is single-subscriber; a second start replaces the first callback.")
         self.onRealInput = onRealInput
-        subscribers += 1
         guard monitors.isEmpty else { return true }
         let mask = Self.watchedTypes.reduce(NSEvent.EventTypeMask()) { $0.union($1) }
         if let global = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: { [weak self] event in
@@ -47,6 +49,7 @@ final class RealInputMonitor {
         }) {
             monitors.append(global)
             lastFailure = nil
+            subscribers = 1
             return true
         }
         // Global monitors need nothing for these passive types on macOS 14+, but an EventKit-style
@@ -57,15 +60,18 @@ final class RealInputMonitor {
         }) {
             monitors.append(local)
             lastFailure = nil
+            subscribers = 1
             return true
         }
         lastFailure = "Pause-on-real-input isn't available: macOS refused both input monitors."
         return false
     }
 
+    /// Idempotent: a stop without a live watcher (double stop, or a start that couldn't
+    /// install anything) removes nothing and can't underflow the count.
     func stop() {
-        subscribers = max(0, subscribers - 1)
-        guard subscribers == 0 else { return }
+        subscribers = 0
+        guard !monitors.isEmpty else { return }
         monitors.forEach(NSEvent.removeMonitor)
         monitors = []
     }

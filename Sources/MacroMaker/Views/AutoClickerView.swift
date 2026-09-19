@@ -115,7 +115,7 @@ struct AutoClickerView: View {
                 // finished: true, and the same main-actor hop then sets the phase to .idle — so
                 // requiring a non-idle phase meant SwiftUI never observed a state where it was
                 // visible, and background clicking stopped with no explanation at all. Both
-                // toggle() and endRun() clear runWarning when a run starts, so nothing goes stale.
+                // toggle() and the session's stop hook clear runWarning when a run ends, so nothing goes stale.
                 StatusMessage(kind: .warning, text: warning)
                     .padding(.horizontal, 16)
                     .padding(.top, 8)

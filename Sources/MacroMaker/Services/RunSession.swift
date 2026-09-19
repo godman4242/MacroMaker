@@ -10,6 +10,11 @@ final class RunSession {
 
     @ObservationIgnored private var countdownTask: Task<Void, Never>?
     @ObservationIgnored private var cancelWork: (() -> Void)?
+    /// The feature's teardown, run on every stop of an *active* session. Stops come from
+    /// outside the feature too ("Stop Everything", hold-release, profile apply, shutdown)
+    /// and those callers can't know about the feature's own watchers — the pause-on-input
+    /// monitor and its 1 Hz resume timer used to leak on exactly those paths.
+    @ObservationIgnored var onStop: (() -> Void)?
     /// Bumped on every start and stop, so late callbacks from an old run are ignored.
     @ObservationIgnored private var generation = 0
 
@@ -39,6 +44,7 @@ final class RunSession {
     }
 
     func stop() {
+        let wasActive = phase != .idle
         generation += 1
         countdownTask?.cancel()
         countdownTask = nil
@@ -47,6 +53,8 @@ final class RunSession {
         cancel?()
         startedAt = nil
         if phase != .idle { phase = .idle }
+        // After the work is cancelled, so teardown sees the session in its final state.
+        if wasActive { onStop?() }
     }
 
     /// Called by the work when it ends on its own (limit reached, macro finished, error).

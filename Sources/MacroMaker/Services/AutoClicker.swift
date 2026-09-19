@@ -4,7 +4,8 @@ import Foundation
 
 @MainActor @Observable
 final class AutoClicker {
-    private static let storageKey = "autoClicker"
+    /// Internal so tests can save/restore the persisted blob around run-lifecycle tests.
+    static let storageKey = "autoClicker"
 
     var settings = Persistence.load(AutoClickerSettings.self, key: AutoClicker.storageKey) ?? AutoClickerSettings() {
         didSet {
@@ -48,12 +49,17 @@ final class AutoClicker {
     @ObservationIgnored private let permissions: PermissionService
     @ObservationIgnored private weak var hotkeys: HotkeyService?
     @ObservationIgnored private var pickTask: Task<Void, Never>?
-    @ObservationIgnored private var runID = 0
+    /// The current run's id; a stop retires it so late worker reports land nowhere.
+    @ObservationIgnored private(set) var runID = 0
     @ObservationIgnored private var holdReleaseHooked = false
 
     init(permissions: PermissionService, hotkeys: HotkeyService) {
         self.permissions = permissions
         self.hotkeys = hotkeys
+        // Every stop of an active session ends the run the same way: "Stop Everything",
+        // hold-release, profile apply and shutdown all stop the session directly, and they
+        // used to skip the teardown below — leaking the input monitor and resume timer.
+        session.onStop = { [weak self] in self?.tearDownRun() }
         configureHoldRelease()
     }
 
@@ -105,7 +111,7 @@ final class AutoClicker {
 
     func toggle(_ trigger: StartTrigger) {
         if session.phase.isActive {
-            endRun()
+            session.stop()
             return
         }
         guard directAppProblem == nil else {
@@ -130,10 +136,15 @@ final class AutoClicker {
         }
     }
 
-    /// Stops the run and tears down its watchers; the only "run over" path.
-    private func endRun() {
+    /// Everything a stopped run must leave behind: no pause watcher (input monitor plus
+    /// its 1 Hz resume timer), no stale run state — and a retired run id, so a report
+    /// queued before the stop (the worker finishing naturally in the same instant)
+    /// resurrects nothing; see `handleWorkerReport`. Runs on every stop path — the in-app
+    /// Stop and the external ones ("Stop Everything", hold-release, profile apply,
+    /// shutdown) alike, via the session's stop hook.
+    private func tearDownRun() {
+        runID += 1
         tearDownPauseWatching()
-        session.stop()
         clicksDone = 0
         elapsedBefore = 0
         workerStartedAt = nil
@@ -162,31 +173,44 @@ final class AutoClicker {
         let worker = WorkerThread.start(name: "AutoClicker") { worker in
             Self.clickLoop(runPlan, skipping: skip, elapsed: elapsed, worker: worker, snapshot: snapshot) { count, finished, warning in
                 performOnMain { [weak self] in
-                    guard let self, self.runID == run else { return }
-                    self.clicksDone = count
-                    self.clickCount = count
-                    // A pause cancels the worker, and a cancelled worker reports exactly like a
-                    // finished one. `session.finish` already ignores it (it requires .running),
-                    // but the teardown did not — so every pause invalidated the 1s resume timer
-                    // and stopped the input monitor, and `resumeIfIdle` is driven ONLY by that
-                    // timer, which is only re-armed from inside a start. Auto-resume was
-                    // therefore structurally unreachable, not merely racy.
-                    if finished, !self.session.isPaused {
-                        self.runWarning = warning
-                        self.tearDownPauseWatching()
-                        self.session.finish(token)
-                    } else if let warning {
-                        self.runWarning = warning
-                    }
+                    self?.handleWorkerReport(run: run, token: token, count: count, finished: finished, warning: warning)
                 }
             }
         }
-        return { worker.cancelAndWait() }
+        return { [weak self] in
+            worker.cancelAndWait(onOverrun: { [weak self] in
+                guard let self, self.session.phase == .idle else { return }
+                self.runWarning = "Stop didn't finish within its 1-second budget — the run may still be completing in the background."
+            })
+        }
     }
 
     /// Seconds a time-limited run has already spent across earlier (paused) workers.
     @ObservationIgnored private var elapsedBefore: TimeInterval = 0
     @ObservationIgnored private var workerStartedAt: Date?
+
+    /// The worker's report, drained on the main actor in FIFO order. `run` is the id the
+    /// report was issued under: a stop retires the id, so a report queued just before a
+    /// manual Stop — the worker finishing naturally in the same instant — resurrects
+    /// neither the warning banner nor the counters for a run the user already dismissed.
+    func handleWorkerReport(run: Int, token: Int, count: Int, finished: Bool, warning: String?) {
+        guard runID == run else { return }
+        clicksDone = count
+        clickCount = count
+        // A pause cancels the worker, and a cancelled worker reports exactly like a
+        // finished one. `session.finish` already ignores it (it requires .running),
+        // but the teardown did not — so every pause invalidated the 1s resume timer
+        // and stopped the input monitor, and `resumeIfIdle` is driven ONLY by that
+        // timer, which is only re-armed from inside a start. Auto-resume was
+        // therefore structurally unreachable, not merely racy.
+        if finished, !session.isPaused {
+            runWarning = warning
+            tearDownPauseWatching()
+            session.finish(token)
+        } else if let warning {
+            runWarning = warning
+        }
+    }
 
     // MARK: Pause on real input
 
@@ -468,7 +492,7 @@ final class AutoClicker {
     /// cancelled by session.stop() and the new combo can never release a run it didn't start.
     func hotkeyReassigned(for action: HotkeyAction) {
         guard action == .toggleAutoClicker, session.phase.isActive, settings.holdToClick else { return }
-        endRun()
+        session.stop()
     }
 
     // MARK: Point capture

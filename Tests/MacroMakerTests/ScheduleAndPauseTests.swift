@@ -122,6 +122,20 @@ struct RunSessionPauseTests {
         session.start(withCountdown: true) { _ in Issue.record("countdown begin shouldn't run"); return nil }
         #expect(session.phase == .paused)
     }
+
+    /// Stops that come from outside the feature ("Stop Everything", hold-release, profile
+    /// apply, shutdown) must trigger the feature's teardown too — the hook is how a
+    /// session stop reaches watchers the state machine can't know about.
+    @Test func stoppingAnActiveSessionRunsTheStopHookOnce() {
+        let session = RunSession()
+        var stops = 0
+        session.onStop = { stops += 1 }
+        session.start(withCountdown: false) { _ in { } }
+        session.stop()
+        #expect(stops == 1, "an active session's stop must fire the teardown hook")
+        session.stop()
+        #expect(stops == 1, "an idle session has nothing to tear down")
+    }
 }
 
 @Suite("Real-input rules")

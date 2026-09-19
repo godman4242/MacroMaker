@@ -35,12 +35,30 @@ final class WorkerThread: Sendable {
         if wasRunning { wakeUp.signal() }
     }
 
+    private static let log = Logger(subsystem: "MacroMaker", category: "WorkerThread")
+
     /// Cancels, then blocks until the body has returned. The body never waits on the main thread,
     /// so calling this from the main thread can't deadlock.
+    ///
+    /// A missed deadline is no longer silent: the wait is retried once on a background queue
+    /// (Stop never blocks the main thread beyond its single budget — a wedged window-server
+    /// call holds the worker past any timeout), the overrun is logged, and if the retry also
+    /// misses, `onOverrun` reports it on the main actor. The old callers dropped the result
+    /// and declared the run stopped while the worker could still be posting.
     @discardableResult
-    func cancelAndWait(timeout: TimeInterval = 1) -> Bool {
+    func cancelAndWait(timeout: TimeInterval = 1,
+                       onOverrun: (@MainActor @Sendable () -> Void)? = nil) -> Bool {
         cancel()
-        return finished.wait(timeout: .now() + timeout) == .success
+        if finished.wait(timeout: .now() + timeout) == .success { return true }
+        Self.log.error("Worker overran Stop's \(timeout, privacy: .public)-second budget; retrying the wait off the main thread")
+        DispatchQueue.global(qos: .userInitiated).async {
+            let settled = self.finished.wait(timeout: .now() + timeout) == .success
+            if !settled {
+                Self.log.error("Worker still live after Stop — it may still be clicking or typing")
+                if let onOverrun { performOnMain { onOverrun() } }
+            }
+        }
+        return false
     }
 
     /// Sleeps until `deadline` (in `DispatchTime` uptime nanoseconds).
