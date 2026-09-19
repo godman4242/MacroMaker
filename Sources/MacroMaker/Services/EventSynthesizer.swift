@@ -17,6 +17,10 @@ enum EventSynthesizer {
         CGEvent(source: nil)?.location ?? .zero
     }
 
+    /// Where synthesized events go. The default posts to the HID tap (the real cursor, the
+    /// frontmost app); tests capture instead, so playback never touches the user's machine.
+    nonisolated(unsafe) static var eventPoster: (CGEvent) -> Void = { $0.post(tap: .cghidEventTap) }
+
     /// One event source reused for a whole run: `CGEventSource(stateID:)` is a real allocation,
     /// and making one per posted event costs a round-trip at click rates. The suppression
     /// interval is written on it at checkout, keeping `localEventsSuppressionInterval = 0`
@@ -136,6 +140,6 @@ enum EventSynthesizer {
         // hotkey that started the clicker) leak in and turn a click into a Control-click.
         event.flags = flags.union(.maskNonCoalesced)
         event.setIntegerValueField(.eventSourceUserData, value: eventTag)
-        event.post(tap: .cghidEventTap)
+        eventPoster(event)
     }
 }

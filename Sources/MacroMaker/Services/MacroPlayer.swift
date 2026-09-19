@@ -24,7 +24,7 @@ final class MacroPlayer {
         self.permissions = permissions
     }
 
-    private struct Plan: Sendable {
+    struct Plan: Sendable {
         let events: [MacroEvent]
         /// nil = loop until stopped.
         let repeats: Int?
@@ -65,8 +65,8 @@ final class MacroPlayer {
         }
     }
 
-    nonisolated private static func play(_ plan: Plan, worker: WorkerThread,
-                                         report: @Sendable (Progress, Bool) -> Void) {
+    nonisolated static func play(_ plan: Plan, worker: WorkerThread,
+                                 report: @Sendable (Progress, Bool) -> Void) {
         var progress = Progress()
         var lastReport: UInt64 = 0
         var humanizer = Humanizer(plan.humanizer)
@@ -76,6 +76,7 @@ final class MacroPlayer {
         let source = EventSynthesizer.EventSource()
         var jitteredTimes = [Double](repeating: 0, count: plan.events.count)
 
+        var cancelled = false
         playback: while plan.repeats.map({ progress.iteration < $0 }) ?? true {
             var heldKeys = Set<CGKeyCode>()
             var heldButtons: [MouseButton: CGPoint] = [:]
@@ -91,7 +92,10 @@ final class MacroPlayer {
             for (index, event) in plan.events.enumerated() {
                 let eventTime = plan.humanizer.enabled ? jitteredTimes[index] : event.time
                 let due = start + Self.dueOffsetNanos(seconds: eventTime, speed: plan.speed)
-                guard worker.sleep(untilUptime: due) else { break playback }
+                guard worker.sleep(untilUptime: due) else {
+                    cancelled = true
+                    break playback
+                }
                 post(event, heldKeys: &heldKeys, heldButtons: &heldButtons, source: source)
 
                 progress.eventIndex = index + 1
@@ -103,9 +107,14 @@ final class MacroPlayer {
             }
             progress.iteration += 1
             // A brief breather between passes, so a zero-length macro can't spin the CPU.
-            guard worker.sleep(seconds: 0.01) else { break }
+            guard worker.sleep(seconds: 0.01) else {
+                cancelled = true
+                break
+            }
         }
-        report(progress, true)
+        // A cancelled run is not a finished one: Stop already ended the session, and claiming
+        // natural completion is the same reporting lie AutoClicker had to patch (review finding 7).
+        report(progress, !cancelled)
     }
 
     nonisolated private static func post(_ event: MacroEvent, heldKeys: inout Set<CGKeyCode>,
@@ -120,10 +129,9 @@ final class MacroPlayer {
                                        flags: flags, source: source)
             heldButtons[button] = point
         case let .mouseUp(button, point, clickCount):
-            if let downPoint = heldButtons[button], downPoint != point {
-                // The button moved while down: a drag. Tell apps before releasing.
-                EventSynthesizer.postMouse(button.dragEventType, button: button, at: point, flags: flags, source: source)
-            }
+            // No fabricated drag transition (review finding 6): a recording carries only what
+            // was recorded, and replay posts exactly that — a synthetic dragged event at the
+            // release point reads to apps as a jump-click, not the drag the user made.
             EventSynthesizer.postMouse(button.upEventType, button: button, at: point, clickCount: clickCount,
                                        flags: flags, source: source)
             heldButtons[button] = nil

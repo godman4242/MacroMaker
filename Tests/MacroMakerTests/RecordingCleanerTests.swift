@@ -47,6 +47,28 @@ import Testing
         #expect(RecordingCleaner.clean(raw).map(\.action) == [.keyDown(keyA, isRepeat: false), .keyUp(keyA)])
     }
 
+    @Test func dropsTrailingHeldMouseButton() {
+        // Stopped while the left button was still down (stop hotkey mid-press): a dangling
+        // down would replay as a phantom down…instant-up click on every pass.
+        let raw = [
+            event(1, .keyDown(keyA, isRepeat: false)), event(1.5, .keyUp(keyA)),
+            event(2, .mouseDown(.left, .zero, clickCount: 1)),
+        ]
+        #expect(RecordingCleaner.clean(raw).map(\.action) == [.keyDown(keyA, isRepeat: false), .keyUp(keyA)],
+                "a trailing held button must drop exactly like a trailing held key")
+    }
+
+    @Test func dropsAnInterleavedTrailingRunOfHeldKeysAndButtons() {
+        // Shift still held with the button down at stop: the whole trailing run goes.
+        let raw = [
+            event(1, .keyDown(keyA, isRepeat: false)), event(1.5, .keyUp(keyA)),
+            event(2, .keyDown(CGKeyCode(kVK_Shift), isRepeat: false)),
+            event(2.5, .mouseDown(.right, .zero, clickCount: 1)),
+        ]
+        #expect(RecordingCleaner.clean(raw).map(\.action) == [.keyDown(keyA, isRepeat: false), .keyUp(keyA)],
+                "the trailing held-run cleanup must cross input types, not stop at the first button")
+    }
+
     @Test func emptyAndStopOnlyRecordingsBecomeEmpty() {
         #expect(RecordingCleaner.clean([]).isEmpty)
         #expect(RecordingCleaner.clean([event(1, .keyDown(control, isRepeat: false)), event(1.1, .keyDown(keyR, isRepeat: false))]).isEmpty)

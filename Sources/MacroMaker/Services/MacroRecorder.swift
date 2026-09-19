@@ -16,6 +16,13 @@ final class MacroRecorder {
     /// Buttons pressed on Macro Maker's own windows; their releases are ignored too.
     @ObservationIgnored private var ignoredButtons = Set<MouseButton>()
 
+    /// Builds the listen-only tap. The real one needs an Input Monitoring grant the test
+    /// runner doesn't have, so tests swap in an inert mach port and drive `handle(_:)` directly.
+    nonisolated(unsafe) static var tapBuilder: (CGEventMask, UnsafeMutableRawPointer?) -> CFMachPort? = { mask, userInfo in
+        CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .listenOnly,
+                          eventsOfInterest: mask, callback: recorderTapCallback, userInfo: userInfo)
+    }
+
     /// Starts recording. Returns false (and sets `errorMessage`) if macOS refuses the event tap.
     @discardableResult
     func start() -> Bool {
@@ -24,9 +31,7 @@ final class MacroRecorder {
                                     .otherMouseDown, .otherMouseUp, .keyDown, .keyUp, .flagsChanged]
         let mask = types.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << CGEventMask($1.rawValue)) }
 
-        guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .listenOnly,
-                                          eventsOfInterest: mask, callback: recorderTapCallback,
-                                          userInfo: Unmanaged.passUnretained(self).toOpaque())
+        guard let tap = Self.tapBuilder(mask, Unmanaged.passUnretained(self).toOpaque())
         else {
             CGRequestListenEventAccess()
             errorMessage = "macOS blocked recording. Allow Macro Maker in System Settings ▸ Privacy & Security ▸ Input Monitoring, then try again."
@@ -66,7 +71,7 @@ final class MacroRecorder {
         return events
     }
 
-    fileprivate func handle(_ event: TapEvent) {
+    func handle(_ event: TapEvent) {
         if event.type == .tapDisabledByTimeout || event.type == .tapDisabledByUserInput {
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
             return
@@ -98,7 +103,14 @@ final class MacroRecorder {
         default:
             return
         }
-        let time = Double(DispatchTime.now().uptimeNanoseconds - startUptime) / 1_000_000_000
+        // The window server stamps the event when the input actually happened; this callback runs
+        // on the main run loop, which is periodically busy repainting the live-event table, so
+        // arrival time silently inflates fast sequences (review finding 1). An unstamped event
+        // (timestamp 0) falls back to arrival; a stamp older than the start clamps to 0.
+        let stamp = event.timestampNanos
+        let time = stamp > 0
+            ? Double(stamp - min(stamp, startUptime)) / 1_000_000_000
+            : Double(DispatchTime.now().uptimeNanoseconds - startUptime) / 1_000_000_000
         liveEvents.append(MacroEvent(time: time, action: action, flags: event.flags))
     }
 
@@ -113,7 +125,7 @@ final class MacroRecorder {
 }
 
 /// The parts of a CGEvent the recorder needs, extracted on the tap's thread.
-private struct TapEvent: Sendable {
+struct TapEvent: Sendable {
     let type: CGEventType
     let location: CGPoint
     let keyCode: CGKeyCode
@@ -122,6 +134,9 @@ private struct TapEvent: Sendable {
     let buttonNumber: Int64
     let isAutorepeat: Bool
     let isOwnEvent: Bool
+    /// The window server's own clock for the input, in nanoseconds since startup (zero when
+    /// unstamped) — the accurate moment the event happened, not when main got around to it.
+    let timestampNanos: UInt64
 
     init(type: CGEventType, event: CGEvent) {
         self.type = type
@@ -132,6 +147,7 @@ private struct TapEvent: Sendable {
         buttonNumber = event.getIntegerValueField(.mouseEventButtonNumber)
         isAutorepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
         isOwnEvent = event.getIntegerValueField(.eventSourceUserData) == EventSynthesizer.eventTag
+        timestampNanos = event.timestamp
     }
 }
 

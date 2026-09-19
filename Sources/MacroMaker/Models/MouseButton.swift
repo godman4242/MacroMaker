@@ -31,14 +31,6 @@ enum MouseButton: String, Codable, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    var dragEventType: CGEventType {
-        switch self {
-        case .left: .leftMouseDragged
-        case .right: .rightMouseDragged
-        case .middle: .otherMouseDragged
-        }
-    }
-
     /// Maps a CGEvent mouse button number (0 = left, 1 = right, 2 = middle) to a button.
     /// Extra buttons (back/forward) are not supported and return `nil`.
     init?(buttonNumber: Int64) {

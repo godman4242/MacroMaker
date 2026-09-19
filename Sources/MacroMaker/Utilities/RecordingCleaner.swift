@@ -4,8 +4,9 @@ import CoreGraphics
 enum RecordingCleaner {
     /// - Drops key/mouse "ups" whose "down" happened before recording began
     ///   (e.g. releasing the ⌃⌥R that started the recording).
-    /// - Drops the trailing run of keys still held when recording stopped
-    ///   (e.g. pressing the ⌃⌥R that stopped it) — replaying those would leave keys stuck down.
+    /// - Drops the trailing run of keys *and buttons* still held when recording stopped
+    ///   (e.g. pressing the ⌃⌥R that stopped it, or a button still down at the stop) — replaying
+    ///   those would leave inputs stuck down.
     /// - Shifts time so the first event happens at 0 (no dead wait at the start of playback).
     static func clean(_ events: [MacroEvent]) -> [MacroEvent] {
         var heldKeys = Set<CGKeyCode>()
@@ -27,7 +28,14 @@ enum RecordingCleaner {
             }
         }
 
-        while let last = kept.last, case let .keyDown(code, _) = last.action, heldKeys.contains(code) {
+        while let last = kept.last {
+            let stillHeld: Bool
+            switch last.action {
+            case let .keyDown(code, _): stillHeld = heldKeys.contains(code)
+            case let .mouseDown(button, _, _): stillHeld = heldButtons.contains(button)
+            default: stillHeld = false
+            }
+            guard stillHeld else { break }
             kept.removeLast()
         }
 
