@@ -1,0 +1,2792 @@
+diff --git a/Sources/MacroMaker/App/AppModel.swift b/Sources/MacroMaker/App/AppModel.swift
+index 8023aa5..63199be 100644
+--- a/Sources/MacroMaker/App/AppModel.swift
++++ b/Sources/MacroMaker/App/AppModel.swift
+@@ -203,6 +203,10 @@ final class AppModel {
+     func launch() {
+         applyActivationPolicy()
+         TargetSnapshot.shared.start()
++        // One-time validation (F14) of the private CGEventSetWindowLocation symbol: present AND
++        // behaving as (event, point). A failure disables directApp targeting loudly via
++        // `targetingSupported`/`directAppProblem` instead of posting mis-aimed events.
++        BackgroundPoster.validateWindowTargeting()
+         // Dangling links only: the index is the source of truth, and a hotkey for a macro that
+         // was deleted from the library would find nothing at play time.
+         let liveIDs = Set(library.records.map(\.id))
+@@ -237,6 +241,7 @@ final class AppModel {
+ 
+     func shutdown() {
+         stopAll()
++        // Nothing is on screen to show a warning at quit; MacroFiles logs the failure.
+         MacroFiles.autosave(macro)
+     }
+ 
+@@ -276,7 +281,7 @@ final class AppModel {
+             // An empty recording (e.g. started and stopped by accident) keeps the previous macro.
+             guard !events.isEmpty else { return }
+             macro = Macro(name: "Recording \(Self.recordingNameFormatter.string(from: Date()))", events: events)
+-            MacroFiles.autosave(macro)
++            if let warning = MacroFiles.autosave(macro) { fileError = warning }
+         } else {
+             guard !player.session.phase.isActive else {
+                 NSSound.beep()
+@@ -336,14 +341,14 @@ final class AppModel {
+     /// Writes the current macro to the "Last Recording" autosave (called after step edits too,
+     /// so quitting mid-edit doesn't lose them).
+     func autosaveMacro() {
+-        MacroFiles.autosave(macro)
++        if let warning = MacroFiles.autosave(macro) { fileError = warning }
+     }
+ 
+     private func load(_ opened: Macro) {
+         player.session.stop()
+         macro = opened
+         fileError = nil
+-        MacroFiles.autosave(opened)
++        if let warning = MacroFiles.autosave(opened) { fileError = warning }
+     }
+ 
+     private func applyActivationPolicy() {
+diff --git a/Sources/MacroMaker/Models/FeatureSettings.swift b/Sources/MacroMaker/Models/FeatureSettings.swift
+index 0845ff4..5acaef2 100644
+--- a/Sources/MacroMaker/Models/FeatureSettings.swift
++++ b/Sources/MacroMaker/Models/FeatureSettings.swift
+@@ -1,5 +1,16 @@
+ import Foundation
+ 
++/// Bounds a decoded Double. Decoded settings are untrusted — a defaults blob or an imported
++/// profile can carry values the UI's NumberFields would never let through, and the run paths
++/// convert them straight into `Int`/`UInt64`, which trap on out-of-range input (measured:
++/// exit 133). The ranges mirror the UI fields exactly, so honest settings are untouched.
++/// Swift's min/max propagate NaN, so a non-finite value falls back to the field's default
++/// rather than a bound.
++private func clamped(_ raw: Double?, fallback: Double, in range: ClosedRange<Double>) -> Double {
++    guard let raw, raw.isFinite else { return fallback }
++    return min(max(raw, range.lowerBound), range.upperBound)
++}
++
+ struct AutoClickerSettings: Codable, Equatable, Sendable {
+     enum Target: String, Codable, CaseIterable, Sendable {
+         case cursor, fixedPoint, region
+@@ -51,35 +62,44 @@ struct AutoClickerSettings: Codable, Equatable, Sendable {
+     init() {}
+ 
+     /// Tolerant decoding: v2 fields default when missing, so a v1 settings blob still loads.
++    /// Every decoded Double is bounded (`clamped`) so a hostile or corrupt value can never
++    /// reach the `Int`/`UInt64` conversions in the run paths.
+     init(from decoder: Decoder) throws {
+         let c = try decoder.container(keyedBy: CodingKeys.self)
+         button = try c.decodeIfPresent(MouseButton.self, forKey: .button) ?? .left
+-        intervalMs = try c.decodeIfPresent(Double.self, forKey: .intervalMs) ?? 100
++        intervalMs = clamped(try c.decodeIfPresent(Double.self, forKey: .intervalMs), fallback: 100,
++                             in: 1...IntervalUnit.maximumIntervalMs)
+         randomizeInterval = try c.decodeIfPresent(Bool.self, forKey: .randomizeInterval) ?? false
+-        randomOffsetMs = try c.decodeIfPresent(Double.self, forKey: .randomOffsetMs) ?? 20
++        randomOffsetMs = clamped(try c.decodeIfPresent(Double.self, forKey: .randomOffsetMs), fallback: 20,
++                                 in: 0...60_000)
+         target = try c.decodeIfPresent(Target.self, forKey: .target) ?? .cursor
+-        x = try c.decodeIfPresent(Double.self, forKey: .x) ?? 500
+-        y = try c.decodeIfPresent(Double.self, forKey: .y) ?? 500
++        x = clamped(try c.decodeIfPresent(Double.self, forKey: .x), fallback: 500, in: -20_000...20_000)
++        y = clamped(try c.decodeIfPresent(Double.self, forKey: .y), fallback: 500, in: -20_000...20_000)
+         stopAfterClicks = try c.decodeIfPresent(Bool.self, forKey: .stopAfterClicks) ?? false
+         maxClicks = try c.decodeIfPresent(Int.self, forKey: .maxClicks) ?? 100
+         stopAfterDuration = try c.decodeIfPresent(Bool.self, forKey: .stopAfterDuration) ?? false
+-        maxDurationSeconds = try c.decodeIfPresent(Double.self, forKey: .maxDurationSeconds) ?? 60
++        maxDurationSeconds = clamped(try c.decodeIfPresent(Double.self, forKey: .maxDurationSeconds), fallback: 60,
++                                     in: 0.1...86_400)
+         intervalUnit = try c.decodeIfPresent(IntervalUnit.self, forKey: .intervalUnit) ?? .milliseconds
+         burstSize = try c.decodeIfPresent(Int.self, forKey: .burstSize) ?? 1
+         clickCountPerEvent = try c.decodeIfPresent(ClickCount.self, forKey: .clickCountPerEvent) ?? .single
+         region = try c.decodeIfPresent(ClickRegion.self, forKey: .region) ?? ClickRegion()
+         jitterEnabled = try c.decodeIfPresent(Bool.self, forKey: .jitterEnabled) ?? false
+-        jitterPx = try c.decodeIfPresent(Double.self, forKey: .jitterPx) ?? 5
++        jitterPx = clamped(try c.decodeIfPresent(Double.self, forKey: .jitterPx), fallback: 5, in: 0...200)
+         stopOnFrontmostChange = try c.decodeIfPresent(Bool.self, forKey: .stopOnFrontmostChange) ?? false
+         holdToClick = try c.decodeIfPresent(Bool.self, forKey: .holdToClick) ?? false
+-        delayedStartSeconds = try c.decodeIfPresent(Double.self, forKey: .delayedStartSeconds) ?? 0
++        delayedStartSeconds = clamped(try c.decodeIfPresent(Double.self, forKey: .delayedStartSeconds), fallback: 0,
++                                       in: 0...600)
+         restoreCursor = try c.decodeIfPresent(Bool.self, forKey: .restoreCursor) ?? false
+         humanizer = try c.decodeIfPresent(HumanizerSettings.self, forKey: .humanizer) ?? HumanizerSettings()
+         directAppBundleID = try c.decodeIfPresent(String.self, forKey: .directAppBundleID) ?? ""
+-        directAppX = try c.decodeIfPresent(Double.self, forKey: .directAppX) ?? 400
+-        directAppY = try c.decodeIfPresent(Double.self, forKey: .directAppY) ?? 300
++        directAppX = clamped(try c.decodeIfPresent(Double.self, forKey: .directAppX), fallback: 400,
++                             in: -20_000...20_000)
++        directAppY = clamped(try c.decodeIfPresent(Double.self, forKey: .directAppY), fallback: 300,
++                             in: -20_000...20_000)
+         pauseOnRealInput = try c.decodeIfPresent(Bool.self, forKey: .pauseOnRealInput) ?? false
+-        autoResumeSeconds = try c.decodeIfPresent(Double.self, forKey: .autoResumeSeconds) ?? 5
++        autoResumeSeconds = clamped(try c.decodeIfPresent(Double.self, forKey: .autoResumeSeconds), fallback: 5,
++                                    in: 1...600)
+     }
+ }
+ 
+@@ -101,7 +121,8 @@ struct KeyPresserSettings: Codable, Equatable, Sendable {
+         let c = try decoder.container(keyedBy: CodingKeys.self)
+         keyText = try c.decodeIfPresent(String.self, forKey: .keyText) ?? "space"
+         mode = try c.decodeIfPresent(Mode.self, forKey: .mode) ?? .autoPress
+-        intervalMs = try c.decodeIfPresent(Double.self, forKey: .intervalMs) ?? 100
++        intervalMs = clamped(try c.decodeIfPresent(Double.self, forKey: .intervalMs), fallback: 100,
++                             in: 1...IntervalUnit.maximumIntervalMs)
+         humanizer = try c.decodeIfPresent(HumanizerSettings.self, forKey: .humanizer) ?? HumanizerSettings()
+         sendToBundleID = try c.decodeIfPresent(String.self, forKey: .sendToBundleID) ?? ""
+     }
+@@ -164,6 +185,23 @@ struct WebTargetSettings: Codable, Equatable, Sendable {
+         case .coordinates: .point(x: x, y: y)
+         }
+     }
++
++    init() {}
++
++    /// Tolerant decoding: absent or unreadable fields default, and the Doubles are bounded like
++    /// every other decoded setting (the UI NumberFields enforce these ranges on the way in).
++    init(from decoder: Decoder) throws {
++        let c = try decoder.container(keyedBy: CodingKeys.self)
++        browser = try c.decodeIfPresent(Browser.self, forKey: .browser) ?? .safari
++        urlMatch = try c.decodeIfPresent(String.self, forKey: .urlMatch) ?? ""
++        locatorKind = try c.decodeIfPresent(LocatorKind.self, forKey: .locatorKind) ?? .css
++        cssSelector = try c.decodeIfPresent(String.self, forKey: .cssSelector) ?? ""
++        xpath = try c.decodeIfPresent(String.self, forKey: .xpath) ?? ""
++        x = clamped(try c.decodeIfPresent(Double.self, forKey: .x), fallback: 100, in: 0...100_000)
++        y = clamped(try c.decodeIfPresent(Double.self, forKey: .y), fallback: 100, in: 0...100_000)
++        intervalMs = clamped(try c.decodeIfPresent(Double.self, forKey: .intervalMs), fallback: 1000,
++                             in: Double(WebClicker.minimumIntervalMs)...IntervalUnit.maximumIntervalMs)
++    }
+ }
+ 
+ struct PlaybackSettings: Codable, Equatable, Sendable {
+@@ -178,7 +216,7 @@ struct PlaybackSettings: Codable, Equatable, Sendable {
+         let c = try decoder.container(keyedBy: CodingKeys.self)
+         repeatCount = try c.decodeIfPresent(Int.self, forKey: .repeatCount) ?? 1
+         loopForever = try c.decodeIfPresent(Bool.self, forKey: .loopForever) ?? false
+-        speed = try c.decodeIfPresent(Double.self, forKey: .speed) ?? 1
++        speed = clamped(try c.decodeIfPresent(Double.self, forKey: .speed), fallback: 1, in: 0.25...4)
+         humanizer = try c.decodeIfPresent(HumanizerSettings.self, forKey: .humanizer) ?? HumanizerSettings()
+     }
+ }
+diff --git a/Sources/MacroMaker/Models/HotkeyAction.swift b/Sources/MacroMaker/Models/HotkeyAction.swift
+index b307cd9..ad2be56 100644
+--- a/Sources/MacroMaker/Models/HotkeyAction.swift
++++ b/Sources/MacroMaker/Models/HotkeyAction.swift
+@@ -1,4 +1,5 @@
+ import Carbon.HIToolbox
++import os
+ 
+ /// A global keyboard shortcut: a key plus at least one modifier (or a function key on its own).
+ struct KeyCombo: Codable, Hashable, Sendable {
+@@ -156,6 +157,94 @@ extension HotkeyAction: RawRepresentable {
+     }
+ }
+ 
++extension HotkeyAction {
++    /// One stored entry: the action's name, its combo (nil = deliberately cleared), and whether
++    /// the combo READ — that flag is what separates a stored null from a corrupt value.
++    private struct StoredEntry {
++        let name: String?
++        let combo: KeyCombo?
++        let readable: Bool
++    }
++
++    /// The stored `[HotkeyAction: KeyCombo?]` blob, decoded one entry at a time: one unknown
++    /// action name (a deleted builtin case, a malformed `macro:` uuid, a hand-edited plist)
++    /// or one unreadable combo costs that entry alone — never every custom shortcut, which
++    /// is what a whole-dictionary decode wiped out when a single entry made it throw.
++    ///
++    /// `JSONEncoder` writes a dictionary whose keys aren't String/Int as an UNKEYED ARRAY of
++    /// alternating name/value elements — that is the v1 on-disk format. A hand-edited plist
++    /// may instead hold a keyed object; both shapes are read, entry by entry.
++    nonisolated static func storedCombos(from data: Data) -> [HotkeyAction: KeyCombo?] {
++        // The v1 shape: ["toggleAutoClicker", {"keyCode":8,"modifiers":3}, "stopAll", null, ...]
++        struct TolerantArray: Decodable {
++            let entries: [StoredEntry]
++            init(from decoder: Decoder) throws {
++                var u = try decoder.unkeyedContainer()
++                var entries: [StoredEntry] = []
++                while !u.isAtEnd {
++                    let name = try? u.decode(String.self)
++                    var combo: KeyCombo?
++                    var readable = false
++                    if !u.isAtEnd {
++                        // do/catch, not `try?`: SE-0230 flattens `try?` over an optional-typed
++                        // expression, erasing the line between a stored null (a deliberately
++                        // cleared hotkey) and a value that failed to decode.
++                        do {
++                            combo = try u.decode(KeyCombo?.self)
++                            readable = true
++                        } catch { }
++                    }
++                    entries.append(StoredEntry(name: name, combo: combo, readable: readable))
++                }
++                self.entries = entries
++            }
++        }
++        // Keyed-object variant of the same blob, for hand-edited plists.
++        struct TolerantValue: Decodable {
++            let combo: KeyCombo?
++            let readable: Bool
++            init(from decoder: Decoder) throws {
++                let value = try decoder.singleValueContainer()
++                var combo: KeyCombo?
++                var readable = false
++                do {
++                    combo = try value.decode(KeyCombo?.self)
++                    readable = true
++                } catch { }
++                self.combo = combo
++                self.readable = readable
++            }
++        }
++        let log = Logger(subsystem: "MacroMaker", category: "HotkeyAction")
++        let entries: [StoredEntry]
++        if let array = try? JSONDecoder().decode(TolerantArray.self, from: data) {
++            entries = array.entries
++        } else if let object = try? JSONDecoder().decode([String: TolerantValue].self, from: data) {
++            entries = object.map { StoredEntry(name: $0.key, combo: $0.value.combo, readable: $0.value.readable) }
++        } else {
++            log.fault("The stored hotkey blob was unreadable; every custom shortcut was reset.")
++            return [:]
++        }
++        var combos: [HotkeyAction: KeyCombo?] = [:]
++        for entry in entries {
++            guard let name = entry.name else {
++                log.fault("A stored hotkey entry had an unreadable name and was skipped.")
++                continue
++            }
++            guard let action = HotkeyAction(rawValue: name) else {
++                log.fault("Stored hotkey “\(name, privacy: .public)” names an unknown action and was skipped.")
++                continue
++            }
++            guard entry.readable else {
++                log.fault("The stored shortcut for “\(name, privacy: .public)” was unreadable and was reset.")
++                continue
++            }
++            combos[action] = entry.combo
++        }
++        return combos
++    }
++}
++
+ /// Backwards-compatible dot-syntax: `.toggleAutoClicker` resolves to `.builtin(.toggleAutoClicker)`.
+ extension HotkeyAction {
+     static let toggleAutoClicker = HotkeyAction.builtin(.toggleAutoClicker)
+diff --git a/Sources/MacroMaker/Models/MouseButton.swift b/Sources/MacroMaker/Models/MouseButton.swift
+index 73ba7a8..2c9dd3e 100644
+--- a/Sources/MacroMaker/Models/MouseButton.swift
++++ b/Sources/MacroMaker/Models/MouseButton.swift
+@@ -31,14 +31,6 @@ enum MouseButton: String, Codable, CaseIterable, Identifiable, Sendable {
+         }
+     }
+ 
+-    var dragEventType: CGEventType {
+-        switch self {
+-        case .left: .leftMouseDragged
+-        case .right: .rightMouseDragged
+-        case .middle: .otherMouseDragged
+-        }
+-    }
+-
+     /// Maps a CGEvent mouse button number (0 = left, 1 = right, 2 = middle) to a button.
+     /// Extra buttons (back/forward) are not supported and return `nil`.
+     init?(buttonNumber: Int64) {
+diff --git a/Sources/MacroMaker/Models/Profile.swift b/Sources/MacroMaker/Models/Profile.swift
+index dc35f22..3c5d299 100644
+--- a/Sources/MacroMaker/Models/Profile.swift
++++ b/Sources/MacroMaker/Models/Profile.swift
+@@ -123,4 +123,14 @@ enum ProfileRules {
+         while taken.contains("\(base) \(index)".lowercased()) { index += 1 }
+         return "\(base) \(index)"
+     }
++
++    /// A display name distinct from every taken one, comparing case-insensitively:
++    /// "X" → "X 2" → "X 3"… (an unused name is returned unchanged).
++    static func uniqueDisplayName(for name: String, taken: [String]) -> String {
++        let taken = Set(taken.map { $0.lowercased() })
++        if !taken.contains(name.lowercased()) { return name }
++        var index = 2
++        while taken.contains("\(name) \(index)".lowercased()) { index += 1 }
++        return "\(name) \(index)"
++    }
+ }
+diff --git a/Sources/MacroMaker/Services/AutoClicker.swift b/Sources/MacroMaker/Services/AutoClicker.swift
+index 37c0d2f..5df0720 100644
+--- a/Sources/MacroMaker/Services/AutoClicker.swift
++++ b/Sources/MacroMaker/Services/AutoClicker.swift
+@@ -4,7 +4,8 @@ import Foundation
+ 
+ @MainActor @Observable
+ final class AutoClicker {
+-    private static let storageKey = "autoClicker"
++    /// Internal so tests can save/restore the persisted blob around run-lifecycle tests.
++    static let storageKey = "autoClicker"
+ 
+     var settings = Persistence.load(AutoClickerSettings.self, key: AutoClicker.storageKey) ?? AutoClickerSettings() {
+         didSet {
+@@ -36,7 +37,9 @@ final class AutoClicker {
+     var directAppProblem: String? {
+         guard settings.target == .directApp else { return nil }
+         guard BackgroundPoster.targetingSupported else {
+-            return "This macOS build doesn't support background clicks: the CGEventSetWindowLocation call is missing."
++            // Launch validation says exactly what failed (missing symbol / failed round-trip).
++            return BackgroundPoster.windowTargetingProblem
++                ?? "This macOS build doesn't support background clicks: the CGEventSetWindowLocation call is missing."
+         }
+         guard !settings.directAppBundleID.isEmpty else { return "Pick an app to click in." }
+         guard BackgroundPoster.processID(forBundleID: settings.directAppBundleID) != nil else {
+@@ -48,12 +51,17 @@ final class AutoClicker {
+     @ObservationIgnored private let permissions: PermissionService
+     @ObservationIgnored private weak var hotkeys: HotkeyService?
+     @ObservationIgnored private var pickTask: Task<Void, Never>?
+-    @ObservationIgnored private var runID = 0
++    /// The current run's id; a stop retires it so late worker reports land nowhere.
++    @ObservationIgnored private(set) var runID = 0
+     @ObservationIgnored private var holdReleaseHooked = false
+ 
+     init(permissions: PermissionService, hotkeys: HotkeyService) {
+         self.permissions = permissions
+         self.hotkeys = hotkeys
++        // Every stop of an active session ends the run the same way: "Stop Everything",
++        // hold-release, profile apply and shutdown all stop the session directly, and they
++        // used to skip the teardown below — leaking the input monitor and resume timer.
++        session.onStop = { [weak self] in self?.tearDownRun() }
+         configureHoldRelease()
+     }
+ 
+@@ -105,7 +113,7 @@ final class AutoClicker {
+ 
+     func toggle(_ trigger: StartTrigger) {
+         if session.phase.isActive {
+-            endRun()
++            session.stop()
+             return
+         }
+         guard directAppProblem == nil else {
+@@ -130,10 +138,15 @@ final class AutoClicker {
+         }
+     }
+ 
+-    /// Stops the run and tears down its watchers; the only "run over" path.
+-    private func endRun() {
++    /// Everything a stopped run must leave behind: no pause watcher (input monitor plus
++    /// its 1 Hz resume timer), no stale run state — and a retired run id, so a report
++    /// queued before the stop (the worker finishing naturally in the same instant)
++    /// resurrects nothing; see `handleWorkerReport`. Runs on every stop path — the in-app
++    /// Stop and the external ones ("Stop Everything", hold-release, profile apply,
++    /// shutdown) alike, via the session's stop hook.
++    private func tearDownRun() {
++        runID += 1
+         tearDownPauseWatching()
+-        session.stop()
+         clicksDone = 0
+         elapsedBefore = 0
+         workerStartedAt = nil
+@@ -162,32 +175,45 @@ final class AutoClicker {
+         let worker = WorkerThread.start(name: "AutoClicker") { worker in
+             Self.clickLoop(runPlan, skipping: skip, elapsed: elapsed, worker: worker, snapshot: snapshot) { count, finished, warning in
+                 performOnMain { [weak self] in
+-                    guard let self, self.runID == run else { return }
+-                    self.clicksDone = count
+-                    self.clickCount = count
+-                    // A pause cancels the worker, and a cancelled worker reports exactly like a
+-                    // finished one. `session.finish` already ignores it (it requires .running),
+-                    // but the teardown did not — so every pause invalidated the 1s resume timer
+-                    // and stopped the input monitor, and `resumeIfIdle` is driven ONLY by that
+-                    // timer, which is only re-armed from inside a start. Auto-resume was
+-                    // therefore structurally unreachable, not merely racy.
+-                    if finished, !self.session.isPaused {
+-                        self.runWarning = warning
+-                        self.tearDownPauseWatching()
+-                        self.session.finish(token)
+-                    } else if let warning {
+-                        self.runWarning = warning
+-                    }
++                    self?.handleWorkerReport(run: run, token: token, count: count, finished: finished, warning: warning)
+                 }
+             }
+         }
+-        return { worker.cancelAndWait() }
++        return { [weak self] in
++            worker.cancelAndWait(onOverrun: { [weak self] in
++                guard let self, self.session.phase == .idle else { return }
++                self.runWarning = "Stop didn't finish within its 1-second budget — the run may still be completing in the background."
++            })
++        }
+     }
+ 
+     /// Seconds a time-limited run has already spent across earlier (paused) workers.
+     @ObservationIgnored private var elapsedBefore: TimeInterval = 0
+     @ObservationIgnored private var workerStartedAt: Date?
+ 
++    /// The worker's report, drained on the main actor in FIFO order. `run` is the id the
++    /// report was issued under: a stop retires the id, so a report queued just before a
++    /// manual Stop — the worker finishing naturally in the same instant — resurrects
++    /// neither the warning banner nor the counters for a run the user already dismissed.
++    func handleWorkerReport(run: Int, token: Int, count: Int, finished: Bool, warning: String?) {
++        guard runID == run else { return }
++        clicksDone = count
++        clickCount = count
++        // A pause cancels the worker, and a cancelled worker reports exactly like a
++        // finished one. `session.finish` already ignores it (it requires .running),
++        // but the teardown did not — so every pause invalidated the 1s resume timer
++        // and stopped the input monitor, and `resumeIfIdle` is driven ONLY by that
++        // timer, which is only re-armed from inside a start. Auto-resume was
++        // therefore structurally unreachable, not merely racy.
++        if finished, !session.isPaused {
++            runWarning = warning
++            tearDownPauseWatching()
++            session.finish(token)
++        } else if let warning {
++            runWarning = warning
++        }
++    }
++
+     // MARK: Pause on real input
+ 
+     /// Pausing a run cancels the worker (via RunSession.pause) but keeps the count; resuming
+@@ -289,13 +315,15 @@ final class AutoClicker {
+                         direct = directRun
+                         report(count, true, "The target app quit or was replaced mid-run — the run stopped rather than click the wrong process.")
+                         return
+-                    case .alive(let pid, let isActive):
+-                        if directClickOnce(plan, pid: pid, isActive: isActive, resolver: directRun.resolver) {
+-                            count += 1
+-                        } else {
++                    case .alive(let pid):
++                        if let undelivered = directClickOnce(plan, pid: pid, resolver: directRun.resolver) {
+                             // Undelivered click: never counted — the counter must mean "clicks
+-                            // that reached the target", or stopAfterClicks lies.
+-                            lastWarning = "Target window not found — bring it on-screen at least once; undelivered clicks aren't counted."
++                            // that reached the target", or stopAfterClicks lies. The warning
++                            // string says WHY (no window / undeliverable event) so the banner
++                            // tells the user what to do instead of counting silence.
++                            lastWarning = undelivered
++                        } else {
++                            count += 1
+                         }
+                         direct = directRun
+                         guard !worker.isCancelled else { break burst }
+@@ -342,7 +370,7 @@ final class AutoClicker {
+             self.snapshot = snapshot
+         }
+ 
+-        enum Check { case alive(pid: pid_t, isActive: Bool), dead }
++        enum Check { case alive(pid: pid_t), dead }
+ 
+         /// Polled per burst: the app must still be running *as the same process*.
+         mutating func verifyTarget() -> Check {
+@@ -354,7 +382,7 @@ final class AutoClicker {
+                 state = .gone
+                 return .dead
+             }
+-            return .alive(pid: pid, isActive: target.isActive)
++            return .alive(pid: pid)
+         }
+     }
+ 
+@@ -388,21 +416,29 @@ final class AutoClicker {
+     }
+ 
+     /// Direct-app click: no cursor movement, no app raising — posted into the process.
+-    /// Returns false (and counts nothing) when no window can be resolved, even occluded ones
+-    /// via the WindowResolver's .optionAll fallback.
+-    @discardableResult
+-    nonisolated private static func directClickOnce(_ plan: Plan, pid: pid_t, isActive: Bool,
+-                                                    resolver: BackgroundPoster.WindowResolver) -> Bool {
+-        guard let window = resolver.window(ofPID: pid) else { return false }
++    /// Returns nil when the click was delivered; otherwise a one-line warning naming why
++    /// (no window resolvable — even via the .optionAll fallback — or an undeliverable event).
++    /// Nothing is counted when this returns a warning.
++    nonisolated private static func directClickOnce(_ plan: Plan, pid: pid_t,
++                                                    resolver: BackgroundPoster.WindowResolver) -> String? {
+         // Same single-randomness rule: this point is fixed, positional jitter applies.
+-        let screenPoint = plan.positionJitterPx == 0 ? plan.directScreenPoint
++        let picked = plan.positionJitterPx == 0 ? plan.directScreenPoint
+             : ClickGeometry.jitter(plan.directScreenPoint, amount: plan.positionJitterPx,
+                                    u1: .random(in: 0...1), u2: .random(in: 0...1))
+-        BackgroundPoster.click(plan.button, screenPoint: screenPoint,
+-                               holdFor: TickSchedule.pressDuration(interval: plan.interval),
+-                               clickCount: plan.clickCountPerEvent,
+-                               window: window, pid: pid, appIsActive: isActive)
+-        return true
++        // F6/H6: prefer the app's window that CONTAINS the point over its front-most one —
++        // for multi-window apps the captured spot lives in a specific window.
++        guard let window = resolver.window(ofPID: pid, containing: picked) else {
++            return "Target window not found — bring it on-screen at least once; undelivered clicks aren't counted."
++        }
++        // H5: jitter can push the point outside the window it must land in — clamp it back.
++        let screenPoint = ClickGeometry.clamp(picked, to: window.bounds)
++        guard BackgroundPoster.click(plan.button, screenPoint: screenPoint,
++                                     holdFor: TickSchedule.pressDuration(interval: plan.interval),
++                                     clickCount: plan.clickCountPerEvent,
++                                     window: window, pid: pid) else {
++            return "Clicks couldn't be delivered to the target app (its event or window aim failed); undelivered clicks aren't counted."
++        }
++        return nil
+     }
+ 
+     // MARK: Direct-app helpers (main-actor queries)
+@@ -414,30 +450,57 @@ final class AutoClicker {
+         guard let pid = BackgroundPoster.processID(forBundleID: bundleID) else {
+             return "The target app isn't running."
+         }
+-        guard let window = BackgroundPoster.resolveWindowLive(ofPID: pid) else {
++        let point = CGPoint(x: settings.directAppX, y: settings.directAppY)
++        guard let window = BackgroundPoster.resolveWindowLive(ofPID: pid, containing: point) else {
+             return "Target window not found — bring it on-screen at least once."
+         }
+-        let point = BackgroundPoster.windowPoint(
+-            fromScreenPoint: CGPoint(x: settings.directAppX, y: settings.directAppY), window: window)
+-        return "Window \(Int(window.bounds.width))×\(Int(window.bounds.height)) — clicks land at (\(Int(point.x)), \(Int(point.y))) inside it."
++        let local = BackgroundPoster.windowPoint(fromScreenPoint: point, window: window)
++        // H4: say it when the captured spot lies outside every window of the app — the click
++        // then falls back to the front-most window and lands wherever that one is.
++        let whereItLands = window.bounds.contains(point)
++            ? "inside it"
++            : "outside it — clicks fall back to the app's front-most window"
++        return "Window \(Int(window.bounds.width))×\(Int(window.bounds.height)) — captured spot is (\(Int(local.x)), \(Int(local.y))) \(whereItLands)."
+     }
+ 
+-    /// Posts one click at the chosen target without starting a run. Reports loudly when it skips.
++    /// The pick-time half of H4: a direct-app point captured outside every window of the chosen
++    /// app is a user mistake that used to surface only as silently undelivered clicks. Nil =
++    /// fine (no app chosen / app not running yet — the status line covers those) or the point
++    /// lies inside one of the app's windows.
++    func directAppPickWarning(for point: CGPoint) -> String? {
++        guard !settings.directAppBundleID.isEmpty,
++              let pid = BackgroundPoster.processID(forBundleID: settings.directAppBundleID) else { return nil }
++        let windows = BackgroundPoster.resolveWindowsLive(ofPID: pid)
++        guard !windows.isEmpty else { return nil }  // nothing to check against yet
++        guard windows.contains(where: { $0.bounds.contains(point) }) else {
++            return "That spot isn't inside any window of the chosen app — background clicks aim at its windows; pick again inside one."
++        }
++        return nil
++    }
++
++    /// Posts one click at the chosen target without starting a run. "Sent" only when the event
++    /// really went out fully aimed; every skip says why.
+     func testClick() -> String {
+         guard BackgroundPoster.targetingSupported else { return directAppProblem ?? "Background clicks aren't supported here." }
++        guard permissions.ensureAccessibility() else {
++            return "Test click failed — Accessibility permission is off, so the click can't be posted."
++        }
+         guard let pid = BackgroundPoster.processID(forBundleID: settings.directAppBundleID) else {
+             return "Test click failed — the target app isn't running."
+         }
+-        guard let window = BackgroundPoster.resolveWindowLive(ofPID: pid) else {
++        let base = CGPoint(x: settings.directAppX, y: settings.directAppY)
++        guard let window = BackgroundPoster.resolveWindowLive(ofPID: pid, containing: base) else {
+             return "Test click failed — target window not found. Bring it on-screen at least once."
+         }
+-        let point = ClickGeometry.jitter(CGPoint(x: settings.directAppX, y: settings.directAppY),
+-                                         amount: settings.jitterEnabled ? settings.jitterPx : 0,
+-                                         u1: .random(in: 0...1), u2: .random(in: 0...1))
+-        BackgroundPoster.click(settings.button, screenPoint: point, holdFor: 0.05,
+-                               clickCount: max(1, settings.clickCountPerEvent.rawValue),
+-                               window: window, pid: pid,
+-                               appIsActive: BackgroundPoster.isActive(bundleID: settings.directAppBundleID))
++        let point = ClickGeometry.clamp(
++            ClickGeometry.jitter(base, amount: settings.jitterEnabled ? settings.jitterPx : 0,
++                                 u1: .random(in: 0...1), u2: .random(in: 0...1)),
++            to: window.bounds)
++        guard BackgroundPoster.click(settings.button, screenPoint: point, holdFor: 0.05,
++                                     clickCount: max(1, settings.clickCountPerEvent.rawValue),
++                                     window: window, pid: pid) else {
++            return "Test click failed — the click's event couldn't be built or aimed at the window."
++        }
+         return "Test click sent."
+     }
+ 
+@@ -468,7 +531,7 @@ final class AutoClicker {
+     /// cancelled by session.stop() and the new combo can never release a run it didn't start.
+     func hotkeyReassigned(for action: HotkeyAction) {
+         guard action == .toggleAutoClicker, session.phase.isActive, settings.holdToClick else { return }
+-        endRun()
++        session.stop()
+     }
+ 
+     // MARK: Point capture
+@@ -522,7 +585,15 @@ final class AutoClicker {
+             updated.directAppY = location.y.rounded()
+             updated.target = .directApp
+         }
++        // H4's pick-time check: warn the moment a direct-app spot is captured outside every
++        // window of the chosen app — the run itself still posts (occlusion/another Space is
++        // legitimate), but the user learns immediately instead of from missing clicks.
++        var pickWarning: String?
++        if mode == .directAppPoint {
++            pickWarning = directAppPickWarning(for: location)
++        }
+         settings = updated
++        runWarning = pickWarning
+         pickCountdown = nil
+         activePick = nil
+     }
+diff --git a/Sources/MacroMaker/Services/BackgroundPoster.swift b/Sources/MacroMaker/Services/BackgroundPoster.swift
+index 156326b..8672798 100644
+--- a/Sources/MacroMaker/Services/BackgroundPoster.swift
++++ b/Sources/MacroMaker/Services/BackgroundPoster.swift
+@@ -1,16 +1,18 @@
+ import AppKit
+ import CoreGraphics
+ import Foundation
++import os
+ 
+ /// Posts mouse and keyboard events straight into a chosen app's process (`CGEventPostToPid`),
+ /// so the target window can sit behind other apps or on another Space — and the cursor never moves.
+ ///
+ /// The click events follow the documented recipe for background delivery: screen-space CGEvents
+-/// built via `NSEvent.mouseEvent` (so the 12 auto-filled fields stay populated), whose private
+-/// window-target fields (91/92) name the window under the point, subtype 3, and — when the app
+-/// isn't active — the NX_COMMAND bit set so AppKit doesn't drop the click.
+-/// The window-local point is applied through the private `CGEventSetWindowLocation` symbol,
+-/// looked up at runtime and optional-chained: if it can't be resolved the UI says so loudly.
++/// built via `NSEvent.mouseEvent` (so the 12 auto-filled fields stay populated), seeded with the
++/// target window's number, whose private window-target fields (91/92) and subtype 3 name the
++/// window under the point. The window-local point is applied through the private
++/// `CGEventSetWindowLocation` symbol — resolved and round-trip validated once at launch, and
++/// re-applied after `setSource`. A missing symbol or failed aim fails the click loudly instead
++/// of posting a mis-aimed event; no fake modifiers ride a background click.
+ enum BackgroundPoster {
+ 
+     /// One of an app's usable windows, as plain data (the testable seam over the window server).
+@@ -48,22 +50,41 @@ enum BackgroundPoster {
+         return Window(id: CGWindowID(number), bounds: bounds)
+     }
+ 
+-    /// The app's front-most usable window over one window-server listing (front to back).
+-    /// `optionOnScreenOnly` first; a fully covered (occluded) window then falls back to
+-    /// `.optionAll`, still layer-0 filtered — an occluded app is no excuse to drop its clicks.
+-    static func primaryWindow(ofPID pid: pid_t, in list: [[String: Any]]) -> Window? {
+-        list.lazy.compactMap { window(fromInfo: $0, ownerPID: pid) }.first
++    /// The app's usable layer-0 windows over one window-server listing (front to back).
++    static func windows(ofPID pid: pid_t, in list: [[String: Any]]) -> [Window] {
++        list.compactMap { window(fromInfo: $0, ownerPID: pid) }
++    }
++
++    /// The window a click is aimed at (F6/H6): the app's window that CONTAINS the captured
++    /// point, falling back to the front-most one when the point lies in none of them (occluded,
++    /// another Space, or a window moved since capture) — an occluded app is no excuse to drop
++    /// its clicks.
++    static func window(ofPID pid: pid_t, in list: [[String: Any]], containing point: CGPoint?) -> Window? {
++        let windows = list.lazy.compactMap { window(fromInfo: $0, ownerPID: pid) }
++        if let point, let hit = windows.first(where: { $0.bounds.contains(point) }) { return hit }
++        return windows.first
+     }
+ 
+     /// Re-runs the window-server queries: on-screen first, `.optionAll` fallback for occlusion.
+-    static func resolveWindowLive(ofPID pid: pid_t) -> Window? {
++    static func resolveWindowLive(ofPID pid: pid_t, containing point: CGPoint? = nil) -> Window? {
+         for options in [CGWindowListOption.optionOnScreenOnly, .optionAll] {
+             guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else { continue }
+-            if let window = primaryWindow(ofPID: pid, in: list) { return window }
++            if let window = window(ofPID: pid, in: list, containing: point) { return window }
+         }
+         return nil
+     }
+ 
++    /// Every usable window of the app, live: the pick-time containment check (H4) needs all of
++    /// them, not just the front-most. Same on-screen-first, `.optionAll`-fallback rule.
++    static func resolveWindowsLive(ofPID pid: pid_t) -> [Window] {
++        for options in [CGWindowListOption.optionOnScreenOnly, .optionAll] {
++            guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else { continue }
++            let windows = windows(ofPID: pid, in: list)
++            if !windows.isEmpty { return windows }
++        }
++        return []
++    }
++
+     /// One run's reuse of window-server queries: both listings are cached for 300 ms — misses
+     /// included, so a hidden-window run can't re-query the window server once per click (a 1 ms
+     /// interval would otherwise mean ~300 listings/second for however long the window stays
+@@ -80,15 +101,17 @@ enum BackgroundPoster {
+ 
+         init() {}
+ 
+-        /// The worker's per-click window lookup. Cheap while fresh; on expiry (or after a
++        /// The worker's per-click window lookup, preferring the window that contains the click
++        /// point (F6). Cheap while fresh — the point is only a preference at resolve time, so the
++        /// cached window can outlive a jittered point's containment; on expiry (or after a
+         /// failure) both listings are re-pulled and the `.optionAll` fallback runs again.
+-        func window(ofPID pid: pid_t) -> Window? {
++        func window(ofPID pid: pid_t, containing point: CGPoint?) -> Window? {
+             lock.lock()
+             defer { lock.unlock() }
+             if let cacheDate, Date().timeIntervalSince(cacheDate) < Self.ttl, let window = lastWindow {
+                 return window
+             }
+-            let window = BackgroundPoster.resolveWindowLive(ofPID: pid)
++            let window = BackgroundPoster.resolveWindowLive(ofPID: pid, containing: point)
+             self.cacheDate = Date()
+             self.lastWindow = .some(window)
+             return window
+@@ -117,42 +140,92 @@ enum BackgroundPoster {
+             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+     }
+ 
+-    /// Which app is active right now (the ⌘-flag rule depends on it).
+-    @MainActor static func isActive(bundleID: String) -> Bool {
+-        NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundleID
+-    }
+-
+     // MARK: Window-location seam
+ 
+     /// Runtime seam for the private `CGEventSetWindowLocation` symbol — swapped for a fake in tests.
+     protocol WindowLocationResolver {
+         var isAvailable: Bool { get }
++        /// Signature validation (F14): true when a set→get round-trip stores the point. The
++        /// default vouches only for availability — the system resolver measures the round-trip.
++        func signatureRoundTrips() -> Bool
+         /// Applies a window-local point to the event. Returns false when the symbol is missing.
+         @discardableResult func setWindowLocation(of event: CGEvent, to point: CGPoint) -> Bool
+     }
+ 
+     struct SystemWindowLocationResolver: WindowLocationResolver {
+-        private typealias CFunction = @convention(c) (CGEvent, CGPoint) -> Void
+-        private let function: CFunction? = {
++        private typealias Setter = @convention(c) (CGEvent, CGPoint) -> Void
++        private typealias Getter = @convention(c) (CGEvent) -> CGPoint
++
++        /// Seam over dlsym so tests can force the missing-symbol path (F14) without touching
++        /// the dyld tables. Read once per resolver instance, at init.
++        nonisolated(unsafe) static var symbolLookup: (String) -> UnsafeMutableRawPointer? = { name in
+             // RTLD_DEFAULT is ((void *) -2) in dlfcn.h; the macro doesn't import into Swift.
+-            let rtldDefault = UnsafeMutableRawPointer(bitPattern: -2)
+-            guard let symbol = dlsym(rtldDefault, "CGEventSetWindowLocation") else { return nil }
+-            return unsafeBitCast(symbol, to: CFunction.self)
+-        }()
++            dlsym(UnsafeMutableRawPointer(bitPattern: -2), name)
++        }
+ 
+-        var isAvailable: Bool { function != nil }
++        private let setter: Setter?
++        private let getter: Getter?
++
++        init() {
++            setter = Self.symbolLookup("CGEventSetWindowLocation").map { unsafeBitCast($0, to: Setter.self) }
++            getter = Self.symbolLookup("CGEventGetWindowLocation").map { unsafeBitCast($0, to: Getter.self) }
++        }
++
++        var isAvailable: Bool { setter != nil }
++
++        /// The private API's C signature is assumed, not documented — a set→get round-trip on
++        /// a scratch event proves the call takes (event, point) and stores it, instead of every
++        /// posted click silently mis-aiming.
++        func signatureRoundTrips() -> Bool {
++            guard let setter, let getter,
++                  let scratch = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
++                                        mouseCursorPosition: .zero, mouseButton: .left)
++            else { return false }
++            let probe = CGPoint(x: 123, y: 456)
++            setter(scratch, probe)
++            return getter(scratch) == probe
++        }
+ 
+         @discardableResult func setWindowLocation(of event: CGEvent, to point: CGPoint) -> Bool {
+-            guard let function else { return false }
+-            function(event, point)
++            guard let setter else { return false }
++            setter(event, point)
+             return true
+         }
+     }
+ 
+     nonisolated(unsafe) static var windowLocationResolver: any WindowLocationResolver = SystemWindowLocationResolver()
+ 
++    private static let targetingLog = Logger(subsystem: "MacroMaker", category: "BackgroundPoster")
++
++    /// The launch-time verdict (F14): nil until validation fails. A set line disables
++    /// directApp targeting loudly — `targetingSupported` goes false and `directAppProblem`
++    /// says so — instead of posting mis-aimed events.
++    nonisolated(unsafe) static var windowTargetingProblem: String?
++
++    /// One-time startup validation: symbol presence plus signature round-trip. Called once
++    /// from AppModel.launch; takes the resolver so tests can drive each failure branch.
++    @discardableResult
++    static func validateWindowTargeting(resolver: (any WindowLocationResolver)? = nil) -> Bool {
++        let resolver = resolver ?? windowLocationResolver
++        guard resolver.isAvailable else {
++            windowTargetingProblem = "background window targeting not supported on this OS: CGEventSetWindowLocation is missing"
++            targetingLog.warning("directApp targeting disabled: \(windowTargetingProblem ?? "", privacy: .public)")
++            return false
++        }
++        guard resolver.signatureRoundTrips() else {
++            windowTargetingProblem = "background window targeting not supported on this OS: CGEventSetWindowLocation doesn't behave as (event, point)"
++            targetingLog.warning("directApp targeting disabled: \(windowTargetingProblem ?? "", privacy: .public)")
++            return false
++        }
++        windowTargetingProblem = nil
++        targetingLog.info("directApp targeting validated: window-location symbol present and round-trips")
++        return true
++    }
++
+     /// False triggers the loud UI failure: background clicks can't be aimed without the symbol.
+-    static var targetingSupported: Bool { windowLocationResolver.isAvailable }
++    static var targetingSupported: Bool {
++        windowLocationResolver.isAvailable && windowTargetingProblem == nil
++    }
+ 
+     // MARK: Coordinates & flags
+ 
+@@ -161,14 +234,6 @@ enum BackgroundPoster {
+         CGPoint(x: point.x - window.bounds.origin.x, y: point.y - window.bounds.origin.y)
+     }
+ 
+-    /// 0x00100000 is the NX_COMMAND device-independent bit. Background-posted clicks are dropped
+-    /// by AppKit unless the event pretends ⌘ is held when the target app isn't the active one.
+-    static let backgroundClickFlag = CGEventFlags(rawValue: 0x0010_0000)
+-
+-    static func clickFlags(appIsActive: Bool) -> CGEventFlags {
+-        appIsActive ? [] : backgroundClickFlag
+-    }
+-
+     // MARK: Posting
+ 
+     /// The CGEvent type NSEvent reports via the CGEventType property for one of our mouse events
+@@ -206,10 +271,11 @@ enum BackgroundPoster {
+     /// One mouse transition aimed at the window, ready to post to the owning process.
+     ///
+     /// Built through `NSEvent.mouseEvent(...).cgEvent` per the researched recipe: NSEvent fills the
+-    /// 12 protected field numbers (0,1,2,41,43,44,50,51,55,59,102,108), and only the recipe's own
+-    /// fields (3 button, 7 subtype, 91/92 window ids) plus the window-local point are written after.
+-    /// The ⌘-flag background trick is *not* baked in here — it is applied at post time, where the
+-    /// active-state snapshot lives.
++    /// 12 protected field numbers (0,1,2,41,43,44,50,51,55,59,102,108). The event is seeded with
++    /// the target window's NUMBER (F1: windowNumber 0 resolves to no window in the target's
++    /// AppKit — the classic silently-dropped click), plus button and click count. The window-target
++    /// payload itself (subtype, fields 91/92, the private window location) is applied at post
++    /// time, after `setSource` — see `post(_:window:screenPoint:pid:)`.
+     /// Top-left global (CG) Y → bottom-left global (AppKit) Y. NSEvent.mouseEvent takes AppKit
+     /// coordinates and flips Y into CG display space itself, so a screen-space (top-left) point
+     /// must be pre-flipped — otherwise it lands mirrored (1080 − y) in the posted event.
+@@ -227,46 +293,60 @@ enum BackgroundPoster {
+         (screenFrames.first?.maxY ?? 0) - y
+     }
+ 
++    /// The AppKit conversion the recipe builds on. A seam: `NSEvent.mouseEvent` is documented
++    /// to be able to return nil, and tests force that path to prove the failure surfaces
++    /// instead of swallowing the click.
++    nonisolated(unsafe) static var nsMouseEventBuilder:
++        (_ type: NSEvent.EventType, _ location: CGPoint, _ clickCount: Int,
++         _ windowNumber: Int, _ pressure: Float) -> CGEvent? = { type, location, clickCount, windowNumber, pressure in
++            NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
++                               timestamp: ProcessInfo.processInfo.systemUptime,
++                               windowNumber: windowNumber, context: nil, eventNumber: 0,
++                               clickCount: clickCount, pressure: pressure)?.cgEvent
++        }
++
+     static func mouseEvent(_ type: CGEventType, button: MouseButton, clickCount: Int,
+                            screenPoint: CGPoint, window: Window) -> CGEvent? {
+         let appKitPoint = CGPoint(x: screenPoint.x,
+                                   y: appKitY(fromScreenY: screenPoint.y, screenFrames: NSScreen.screens.map(\.frame)))
+         guard let nsType = nsEventType(type),
+-              let event = NSEvent.mouseEvent(with: nsType, location: appKitPoint, modifierFlags: [],
+-                                             timestamp: ProcessInfo.processInfo.systemUptime,
+-                                             windowNumber: 0, context: nil, eventNumber: 0,
+-                                             clickCount: clickCount, pressure: button == .left ? 1 : 0)?.cgEvent
++              let event = nsMouseEventBuilder(nsType, appKitPoint, clickCount, Int(window.id),
++                                              button == .left ? 1 : 0)
+         else { return nil }
+         event.type = type  // NSEvent.dragged flattens to mouseMoved on some paths; restore the recipe's type.
+         event.setIntegerValueField(.mouseEventButtonNumber, value: Int64(button.cgButton.rawValue))
+         event.setIntegerValueField(.mouseEventClickState, value: Int64(clickCount))
+-        event.setIntegerValueField(.mouseEventSubtype, value: 3)
+-        event.setIntegerValueField(windowField, value: Int64(window.id))
+-        event.setIntegerValueField(handlerWindowField, value: Int64(window.id))
+-        windowLocationResolver.setWindowLocation(of: event, to: windowPoint(fromScreenPoint: screenPoint, window: window))
+         return event
+     }
+ 
+-    /// A complete click delivered to the process: down, hold, up.
++    /// A complete click delivered to the process: down, hold, up. False = undelivered: nothing
++    /// went out (the AppKit conversion returned nil, or the window aim was refused), so the
++    /// caller must not count the click — F5's silent swallow ends here.
++    @discardableResult
+     static func click(_ button: MouseButton, screenPoint: CGPoint, holdFor duration: TimeInterval,
+-                      clickCount: Int, window: Window, pid: pid_t, appIsActive: Bool) {
+-        post(mouseEvent(button.downEventType, button: button, clickCount: clickCount,
+-                        screenPoint: screenPoint, window: window),
+-             appIsActive: appIsActive, pid: pid)
++                      clickCount: Int, window: Window, pid: pid_t) -> Bool {
++        guard post(mouseEvent(button.downEventType, button: button, clickCount: clickCount,
++                              screenPoint: screenPoint, window: window),
++                   window: window, screenPoint: screenPoint, pid: pid) else { return false }
+         if duration > 0 { Thread.sleep(forTimeInterval: duration) }
+-        post(mouseEvent(button.upEventType, button: button, clickCount: clickCount,
+-                        screenPoint: screenPoint, window: window),
+-             appIsActive: appIsActive, pid: pid)
++        return post(mouseEvent(button.upEventType, button: button, clickCount: clickCount,
++                               screenPoint: screenPoint, window: window),
++                    window: window, screenPoint: screenPoint, pid: pid)
+     }
+ 
+     /// Delivery seam: swapped in tests so `click` can be asserted without hitting real processes.
+     nonisolated(unsafe) static var eventPoster: (CGEvent, pid_t) -> Void = { $0.postToPid($1) }
+ 
+-    private static func post(_ event: CGEvent?, appIsActive: Bool, pid: pid_t) {
+-        guard let event else { return }
+-        // Same contract as the HID path: explicit flags (never the user's held keys) and the
+-        // self-tag so the recorder ignores Macro Maker's own output.
+-        event.flags = clickFlags(appIsActive: appIsActive).union(.maskNonCoalesced)
++    private static func post(_ event: CGEvent?, window: Window, screenPoint: CGPoint, pid: pid_t) -> Bool {
++        guard let event else {
++            // F5: NSEvent.mouseEvent is documented to be able to return nil. That used to
++            // vanish silently — nothing posted, and the caller still counted a delivery.
++            targetingLog.warning("background click lost: the AppKit event conversion returned nil")
++            return false
++        }
++        // Same contract as the HID path: explicit flags only (never the user's held keys —
++        // and no fake ⌘; background clicks stopped pretending modifiers are held).
++        event.flags = .maskNonCoalesced
+         // Re-home the event onto a fresh private source before posting. NSEvent's .cgEvent is
+         // shared-sourced (stateID 0), and posting through that source at click rates wedges its
+         // cumulative modifier/button state — ⌘ then reads as physically held to the window
+@@ -276,12 +356,24 @@ enum BackgroundPoster {
+         let fresh = CGEventSource(stateID: .hidSystemState)
+         fresh?.localEventsSuppressionInterval = 0
+         event.setSource(fresh)
+-        // The self-tag goes on AFTER setSource, never before: setSource resets
+-        // .eventSourceUserData to the new source's own user data. Measured: the tag read back as
+-        // 0 when written first, so every background-posted event went out untagged and
+-        // pause-on-real-input would treat the clicker's own clicks as the user taking over.
++        // The window-target recipe goes on AFTER setSource, never before: setSource resets
++        // source-owned per-event data — measured directly, .eventSourceUserData read back as
++        // 0 when written first, and one proven wipe is enough to put everything delivery
++        // depends on (subtype, fields 91/92, the private window location, the self-tag) on
++        // the safe side of the call.
++        event.setIntegerValueField(.mouseEventSubtype, value: 3)
++        event.setIntegerValueField(windowField, value: Int64(window.id))
++        event.setIntegerValueField(handlerWindowField, value: Int64(window.id))
++        guard windowLocationResolver.setWindowLocation(
++            of: event, to: windowPoint(fromScreenPoint: screenPoint, window: window)) else {
++            // Fail loud, not mis-aimed: a click the resolver can't aim never leaves the app.
++            targetingLog.warning("background click lost: the window aim was refused — nothing posted")
++            return false
++        }
++        // The self-tag rides the same after-setSource rule (see above).
+         event.setIntegerValueField(.eventSourceUserData, value: EventSynthesizer.eventTag)
+         eventPoster(event, pid)
++        return true
+     }
+ 
+     // MARK: Keyboard
+@@ -314,3 +406,9 @@ enum BackgroundPoster {
+         eventPoster(event, pid)
+     }
+ }
++
++extension BackgroundPoster.WindowLocationResolver {
++    /// Default signature validation: vouches only for availability — the system resolver
++    /// measures the actual set→get round-trip.
++    func signatureRoundTrips() -> Bool { isAvailable }
++}
+diff --git a/Sources/MacroMaker/Services/EventSynthesizer.swift b/Sources/MacroMaker/Services/EventSynthesizer.swift
+index af5e1fe..efb1be3 100644
+--- a/Sources/MacroMaker/Services/EventSynthesizer.swift
++++ b/Sources/MacroMaker/Services/EventSynthesizer.swift
+@@ -17,6 +17,10 @@ enum EventSynthesizer {
+         CGEvent(source: nil)?.location ?? .zero
+     }
+ 
++    /// Where synthesized events go. The default posts to the HID tap (the real cursor, the
++    /// frontmost app); tests capture instead, so playback never touches the user's machine.
++    nonisolated(unsafe) static var eventPoster: (CGEvent) -> Void = { $0.post(tap: .cghidEventTap) }
++
+     /// One event source reused for a whole run: `CGEventSource(stateID:)` is a real allocation,
+     /// and making one per posted event costs a round-trip at click rates. The suppression
+     /// interval is written on it at checkout, keeping `localEventsSuppressionInterval = 0`
+@@ -136,6 +140,6 @@ enum EventSynthesizer {
+         // hotkey that started the clicker) leak in and turn a click into a Control-click.
+         event.flags = flags.union(.maskNonCoalesced)
+         event.setIntegerValueField(.eventSourceUserData, value: eventTag)
+-        event.post(tap: .cghidEventTap)
++        eventPoster(event)
+     }
+ }
+diff --git a/Sources/MacroMaker/Services/HotkeyService.swift b/Sources/MacroMaker/Services/HotkeyService.swift
+index a4d5f27..d729881 100644
+--- a/Sources/MacroMaker/Services/HotkeyService.swift
++++ b/Sources/MacroMaker/Services/HotkeyService.swift
+@@ -46,7 +46,9 @@ final class HotkeyService {
+     private static weak var active: HotkeyService?
+ 
+     init() {
+-        let saved = Persistence.load([HotkeyAction: KeyCombo?].self, key: Self.storageKey) ?? [:]
++        // Per-entry tolerant decode: one unreadable hotkey resets only itself, never every
++        // custom shortcut (which is what `?? [:]` did to a whole-dictionary decode).
++        let saved = UserDefaults.standard.data(forKey: Self.storageKey).map(HotkeyAction.storedCombos(from:)) ?? [:]
+         var combos: [HotkeyAction: KeyCombo] = [:]
+         for action in BuiltinHotkeyAction.allCases {
+             let key = HotkeyAction.builtin(action)
+diff --git a/Sources/MacroMaker/Services/MacroFiles.swift b/Sources/MacroMaker/Services/MacroFiles.swift
+index f238baf..52123ec 100644
+--- a/Sources/MacroMaker/Services/MacroFiles.swift
++++ b/Sources/MacroMaker/Services/MacroFiles.swift
+@@ -1,4 +1,5 @@
+ import AppKit
++import os
+ import UniformTypeIdentifiers
+ 
+ /// Saving, opening and autosaving `.macromaker` files.
+@@ -6,8 +7,12 @@ import UniformTypeIdentifiers
+ enum MacroFiles {
+     static let contentType = UTType(exportedAs: "com.kheshav.macromaker", conformingTo: .json)
+ 
++    /// Test seam: where the autosave is written (tests point it at a temp path).
++    static var autosaveDestination: URL?
++
+     /// The last recording survives quitting the app.
+     private static var autosaveURL: URL? {
++        if let autosaveDestination { return autosaveDestination }
+         guard let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+         return support.appending(path: "Macro Maker/Last Recording.\(Macro.fileExtension)")
+     }
+@@ -17,14 +22,25 @@ enum MacroFiles {
+         return try? Macro(jsonData: data)
+     }
+ 
+-    static func autosave(_ macro: Macro?) {
+-        guard let url = autosaveURL else { return }
++    /// Returns a user-visible warning when the autosave could NOT be written; nil on success.
++    /// Both writes were a silent `try?`, so a full or slow disk discarded the last recording
++    /// at the exact moment the app was about to quit — indistinguishable from success.
++    @discardableResult
++    static func autosave(_ macro: Macro?) -> String? {
++        guard let url = autosaveURL else { return nil }
+         guard let macro else {
+             try? FileManager.default.removeItem(at: url)
+-            return
++            return nil
++        }
++        do {
++            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
++            try macro.jsonData().write(to: url, options: .atomic)
++            return nil
++        } catch {
++            let log = Logger(subsystem: "MacroMaker", category: "MacroFiles")
++            log.fault("Couldn't write the autosave: \(error.localizedDescription, privacy: .public)")
++            return "Couldn't save the last recording: \(error.localizedDescription)"
+         }
+-        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+-        try? macro.jsonData().write(to: url, options: .atomic)
+     }
+ 
+     static func read(from url: URL) throws -> Macro {
+diff --git a/Sources/MacroMaker/Services/MacroLibrary.swift b/Sources/MacroMaker/Services/MacroLibrary.swift
+index 94b6065..05adafa 100644
+--- a/Sources/MacroMaker/Services/MacroLibrary.swift
++++ b/Sources/MacroMaker/Services/MacroLibrary.swift
+@@ -31,12 +31,19 @@ final class MacroLibrary {
+ 
+     var lastError: String?
+ 
++    /// Test seam: when set, the library lives here instead of app support.
++    static var folderOverride: URL?
++
+     static var folder: URL? {
+-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
++        if let folderOverride { return folderOverride }
++        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+             .appending(path: "Macro Maker/Macros", directoryHint: .isDirectory)
+     }
+ 
+-    private func persist() {
++    /// Returns whether the write landed. A failed index write was a silent `try?` —
++    /// indistinguishable from success.
++    @discardableResult
++    private func persist() -> Bool {
+         var records = records
+         // Mark entries whose file vanished so the UI can show and clean them.
+         if let folder = Self.folder {
+@@ -45,7 +52,11 @@ final class MacroLibrary {
+             }
+         }
+         self.records = records
+-        Persistence.save(records, key: Self.indexKey)
++        guard Persistence.save(records, key: Self.indexKey) else {
++            lastError = "Couldn't save the library index — this change wasn't stored."
++            return false
++        }
++        return true
+     }
+ 
+     /// A record is an orphan when its file is missing — or its name can't be trusted (it would
+@@ -79,7 +90,7 @@ final class MacroLibrary {
+             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+             try stored.jsonData().write(to: url, options: .atomic)
+             records.insert(record, at: 0)
+-            persist()
++            guard persist() else { return nil }
+             lastError = nil
+             return record
+         } catch {
+@@ -105,16 +116,25 @@ final class MacroLibrary {
+     func rename(_ record: MacroRecord, to proposed: String) {
+         guard let index = records.firstIndex(where: { $0.id == record.id }) else { return }
+         let oldName = records[index].fileName
+-        records[index].name = ProfileRules.cleanedName(proposed)
+         if let folder = Self.folder {
+             let newFileName = MacroLibraryRules.uniqueFileName(
+                 for: proposed, taken: diskFileNames().filter { $0 != oldName } + records.map(\.fileName).filter { $0 != oldName })
+             let oldURL = folder.appending(path: oldName)
+             let newURL = folder.appending(path: newFileName)
+-            // The file name carries the display name for the Finder too.
+-            try? FileManager.default.moveItem(at: oldURL, to: newURL)
++            do {
++                // The file name carries the display name for the Finder too.
++                try FileManager.default.moveItem(at: oldURL, to: newURL)
++            } catch {
++                // Rewriting the index after a failed move pointed it at a file that never
++                // existed while the real one sat on disk unindexed. The record keeps both its
++                // names, and the user sees why — exactly on the orphan path, where renaming
++                // is how users try to fix things.
++                lastError = "Couldn't rename “\(records[index].name)”: \(error.localizedDescription)"
++                return
++            }
+             records[index].fileName = newURL.lastPathComponent
+         }
++        records[index].name = ProfileRules.cleanedName(proposed)
+         persist()
+     }
+ 
+diff --git a/Sources/MacroMaker/Services/MacroPlayer.swift b/Sources/MacroMaker/Services/MacroPlayer.swift
+index 30657dd..23da24a 100644
+--- a/Sources/MacroMaker/Services/MacroPlayer.swift
++++ b/Sources/MacroMaker/Services/MacroPlayer.swift
+@@ -24,7 +24,7 @@ final class MacroPlayer {
+         self.permissions = permissions
+     }
+ 
+-    private struct Plan: Sendable {
++    struct Plan: Sendable {
+         let events: [MacroEvent]
+         /// nil = loop until stopped.
+         let repeats: Int?
+@@ -65,8 +65,8 @@ final class MacroPlayer {
+         }
+     }
+ 
+-    nonisolated private static func play(_ plan: Plan, worker: WorkerThread,
+-                                         report: @Sendable (Progress, Bool) -> Void) {
++    nonisolated static func play(_ plan: Plan, worker: WorkerThread,
++                                 report: @Sendable (Progress, Bool) -> Void) {
+         var progress = Progress()
+         var lastReport: UInt64 = 0
+         var humanizer = Humanizer(plan.humanizer)
+@@ -76,6 +76,7 @@ final class MacroPlayer {
+         let source = EventSynthesizer.EventSource()
+         var jitteredTimes = [Double](repeating: 0, count: plan.events.count)
+ 
++        var cancelled = false
+         playback: while plan.repeats.map({ progress.iteration < $0 }) ?? true {
+             var heldKeys = Set<CGKeyCode>()
+             var heldButtons: [MouseButton: CGPoint] = [:]
+@@ -91,7 +92,10 @@ final class MacroPlayer {
+             for (index, event) in plan.events.enumerated() {
+                 let eventTime = plan.humanizer.enabled ? jitteredTimes[index] : event.time
+                 let due = start + Self.dueOffsetNanos(seconds: eventTime, speed: plan.speed)
+-                guard worker.sleep(untilUptime: due) else { break playback }
++                guard worker.sleep(untilUptime: due) else {
++                    cancelled = true
++                    break playback
++                }
+                 post(event, heldKeys: &heldKeys, heldButtons: &heldButtons, source: source)
+ 
+                 progress.eventIndex = index + 1
+@@ -103,9 +107,14 @@ final class MacroPlayer {
+             }
+             progress.iteration += 1
+             // A brief breather between passes, so a zero-length macro can't spin the CPU.
+-            guard worker.sleep(seconds: 0.01) else { break }
++            guard worker.sleep(seconds: 0.01) else {
++                cancelled = true
++                break
++            }
+         }
+-        report(progress, true)
++        // A cancelled run is not a finished one: Stop already ended the session, and claiming
++        // natural completion is the same reporting lie AutoClicker had to patch (review finding 7).
++        report(progress, !cancelled)
+     }
+ 
+     nonisolated private static func post(_ event: MacroEvent, heldKeys: inout Set<CGKeyCode>,
+@@ -120,10 +129,9 @@ final class MacroPlayer {
+                                        flags: flags, source: source)
+             heldButtons[button] = point
+         case let .mouseUp(button, point, clickCount):
+-            if let downPoint = heldButtons[button], downPoint != point {
+-                // The button moved while down: a drag. Tell apps before releasing.
+-                EventSynthesizer.postMouse(button.dragEventType, button: button, at: point, flags: flags, source: source)
+-            }
++            // No fabricated drag transition (review finding 6): a recording carries only what
++            // was recorded, and replay posts exactly that — a synthetic dragged event at the
++            // release point reads to apps as a jump-click, not the drag the user made.
+             EventSynthesizer.postMouse(button.upEventType, button: button, at: point, clickCount: clickCount,
+                                        flags: flags, source: source)
+             heldButtons[button] = nil
+diff --git a/Sources/MacroMaker/Services/MacroRecorder.swift b/Sources/MacroMaker/Services/MacroRecorder.swift
+index 1940aa3..27d6062 100644
+--- a/Sources/MacroMaker/Services/MacroRecorder.swift
++++ b/Sources/MacroMaker/Services/MacroRecorder.swift
+@@ -16,6 +16,13 @@ final class MacroRecorder {
+     /// Buttons pressed on Macro Maker's own windows; their releases are ignored too.
+     @ObservationIgnored private var ignoredButtons = Set<MouseButton>()
+ 
++    /// Builds the listen-only tap. The real one needs an Input Monitoring grant the test
++    /// runner doesn't have, so tests swap in an inert mach port and drive `handle(_:)` directly.
++    nonisolated(unsafe) static var tapBuilder: (CGEventMask, UnsafeMutableRawPointer?) -> CFMachPort? = { mask, userInfo in
++        CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .listenOnly,
++                          eventsOfInterest: mask, callback: recorderTapCallback, userInfo: userInfo)
++    }
++
+     /// Starts recording. Returns false (and sets `errorMessage`) if macOS refuses the event tap.
+     @discardableResult
+     func start() -> Bool {
+@@ -24,9 +31,7 @@ final class MacroRecorder {
+                                     .otherMouseDown, .otherMouseUp, .keyDown, .keyUp, .flagsChanged]
+         let mask = types.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << CGEventMask($1.rawValue)) }
+ 
+-        guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .listenOnly,
+-                                          eventsOfInterest: mask, callback: recorderTapCallback,
+-                                          userInfo: Unmanaged.passUnretained(self).toOpaque())
++        guard let tap = Self.tapBuilder(mask, Unmanaged.passUnretained(self).toOpaque())
+         else {
+             CGRequestListenEventAccess()
+             errorMessage = "macOS blocked recording. Allow Macro Maker in System Settings ▸ Privacy & Security ▸ Input Monitoring, then try again."
+@@ -66,7 +71,7 @@ final class MacroRecorder {
+         return events
+     }
+ 
+-    fileprivate func handle(_ event: TapEvent) {
++    func handle(_ event: TapEvent) {
+         if event.type == .tapDisabledByTimeout || event.type == .tapDisabledByUserInput {
+             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+             return
+@@ -98,7 +103,14 @@ final class MacroRecorder {
+         default:
+             return
+         }
+-        let time = Double(DispatchTime.now().uptimeNanoseconds - startUptime) / 1_000_000_000
++        // The window server stamps the event when the input actually happened; this callback runs
++        // on the main run loop, which is periodically busy repainting the live-event table, so
++        // arrival time silently inflates fast sequences (review finding 1). An unstamped event
++        // (timestamp 0) falls back to arrival; a stamp older than the start clamps to 0.
++        let stamp = event.timestampNanos
++        let time = stamp > 0
++            ? Double(stamp - min(stamp, startUptime)) / 1_000_000_000
++            : Double(DispatchTime.now().uptimeNanoseconds - startUptime) / 1_000_000_000
+         liveEvents.append(MacroEvent(time: time, action: action, flags: event.flags))
+     }
+ 
+@@ -113,7 +125,7 @@ final class MacroRecorder {
+ }
+ 
+ /// The parts of a CGEvent the recorder needs, extracted on the tap's thread.
+-private struct TapEvent: Sendable {
++struct TapEvent: Sendable {
+     let type: CGEventType
+     let location: CGPoint
+     let keyCode: CGKeyCode
+@@ -122,6 +134,9 @@ private struct TapEvent: Sendable {
+     let buttonNumber: Int64
+     let isAutorepeat: Bool
+     let isOwnEvent: Bool
++    /// The window server's own clock for the input, in nanoseconds since startup (zero when
++    /// unstamped) — the accurate moment the event happened, not when main got around to it.
++    let timestampNanos: UInt64
+ 
+     init(type: CGEventType, event: CGEvent) {
+         self.type = type
+@@ -132,6 +147,7 @@ private struct TapEvent: Sendable {
+         buttonNumber = event.getIntegerValueField(.mouseEventButtonNumber)
+         isAutorepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+         isOwnEvent = event.getIntegerValueField(.eventSourceUserData) == EventSynthesizer.eventTag
++        timestampNanos = event.timestamp
+     }
+ }
+ 
+diff --git a/Sources/MacroMaker/Services/PermissionService.swift b/Sources/MacroMaker/Services/PermissionService.swift
+index d569f77..acaab1b 100644
+--- a/Sources/MacroMaker/Services/PermissionService.swift
++++ b/Sources/MacroMaker/Services/PermissionService.swift
+@@ -26,6 +26,10 @@ final class PermissionService {
+     /// Whether the system's "grant Accessibility?" dialog was already shown this launch.
+     /// It only fires once — after that the in-app banner is the only repeated UI.
+     @ObservationIgnored private(set) var didPromptForAccessibility = false
++    /// Test seam: run-lifecycle tests execute in a process the user never granted
++    /// Accessibility to — and must never trip the real system prompt. When set,
++    /// `ensureAccessibility` says yes without touching (or prompting) the real state.
++    @ObservationIgnored var forceAccessibilityTrusted = false
+ 
+     init() {
+         // macOS doesn't notify apps when permissions change, so poll (cheap).
+@@ -43,6 +47,7 @@ final class PermissionService {
+ 
+     /// Returns `true` if Accessibility is granted; otherwise shows the system prompt and returns `false`.
+     func ensureAccessibility() -> Bool {
++        if forceAccessibilityTrusted { return true }
+         refresh()
+         guard !isAccessibilityTrusted else { return true }
+         requestAccessibility()
+diff --git a/Sources/MacroMaker/Services/ProfileService.swift b/Sources/MacroMaker/Services/ProfileService.swift
+index 3184022..4c1c9c5 100644
+--- a/Sources/MacroMaker/Services/ProfileService.swift
++++ b/Sources/MacroMaker/Services/ProfileService.swift
+@@ -1,4 +1,5 @@
+ import AppKit
++import os
+ import UniformTypeIdentifiers
+ 
+ /// The saved-profiles list: stored as a JSON array in UserDefaults, exported/imported as
+@@ -11,7 +12,26 @@ final class ProfileService {
+     private(set) var entries: [ProfileEntry]
+ 
+     init(load: Bool = true) {
+-        entries = load ? (Persistence.load([ProfileEntry].self, key: Self.storageKey) ?? []) : []
++        entries = load ? (UserDefaults.standard.data(forKey: Self.storageKey).map(Self.entries(fromStored:)) ?? []) : []
++    }
++
++    /// The stored profiles list, decoded one entry at a time: whatever made one entry
++    /// unreadable — a type mismatch, an unknown enum value, a hand-edited defaults plist —
++    /// it must cost that entry, not the whole list. Decoding the array in one go meant one
++    /// bad entry threw, `try?` turned the whole result into nil and `?? []` presented an
++    /// empty list; the next save/delete/rename then persisted `[]` over the blob, so the
++    /// loss was permanent and silent.
++    nonisolated static func entries(fromStored data: Data) -> [ProfileEntry] {
++        struct Tolerant: Decodable {
++            let entry: ProfileEntry?
++            init(from decoder: Decoder) throws { entry = try? ProfileEntry(from: decoder) }
++        }
++        let log = Logger(subsystem: "MacroMaker", category: "ProfileService")
++        let decoded = (try? JSONDecoder().decode([Tolerant].self, from: data)) ?? []
++        for (index, wrapper) in decoded.enumerated() where wrapper.entry == nil {
++            log.fault("Saved-profile entry at position \(index) was unreadable and skipped.")
++        }
++        return decoded.compactMap(\.entry)
+     }
+ 
+     var lastError: String?
+@@ -25,7 +45,11 @@ final class ProfileService {
+         // the update branch was unreachable from the UI, and re-saving a name just accumulated
+         // duplicates.
+         let existing = entries.firstIndex { $0.id == entry.id }
+-            ?? entries.firstIndex { $0.name.localizedCaseInsensitiveCompare(entry.name) == .orderedSame }
++            // An EXACT name match is the same profile being re-saved. Matching
++            // case-insensitively here made saving "My Profile" silently REPLACE the different
++            // profile "my profile" (unrecoverable) — a case variant now saves as its own,
++            // distinctly-named profile instead.
++            ?? entries.firstIndex { $0.name == entry.name }
+         if let existing {
+             // `ProfileEntry.init(profile:)` defaults isFavorite to false (Profile has no such
+             // field), so replacing wholesale would un-star a favourite on every re-save.
+@@ -33,6 +57,11 @@ final class ProfileService {
+             entry.id = entries[existing].id
+             entries[existing] = entry
+         } else {
++            if let clash = entries.firstIndex(where: { $0.name.localizedCaseInsensitiveCompare(entry.name) == .orderedSame }) {
++                let clashingName = entries[clash].name
++                entry.name = ProfileRules.uniqueDisplayName(for: entry.name, taken: entries.map(\.name))
++                lastError = "A profile named “\(clashingName)” already exists — saved this one as “\(entry.name)”."
++            }
+             entries.insert(entry, at: 0)
+         }
+         persist()
+@@ -78,8 +107,15 @@ final class ProfileService {
+         }
+     }
+ 
+-    private func persist() {
+-        Persistence.save(entries, key: Self.storageKey)
++    /// Returns whether the write landed. A failed save was a silent `try?` —
++    /// indistinguishable from success exactly when the user's profiles are at stake.
++    @discardableResult
++    private func persist() -> Bool {
++        guard Persistence.save(entries, key: Self.storageKey) else {
++            lastError = "Couldn't save your profiles — this change wasn't stored."
++            return false
++        }
++        return true
+     }
+ 
+     // MARK: Files
+@@ -123,12 +159,19 @@ final class ProfileService {
+             }
+             var profile = try Profile.from(jsonData: Data(contentsOf: url))
+             // A file someone else wrote must not collide with a profile already in the list:
+-            // always mint a new id on import, keep the name.
++            // always mint a new id on import — and keep display names distinct too, so two
++            // "Login" entries can't make a later same-name save ambiguous.
++            var clashWarning: String?
++            let unique = ProfileRules.uniqueDisplayName(for: profile.name, taken: entries.map(\.name))
++            if unique != profile.name {
++                clashWarning = "A profile named “\(profile.name)” already exists — imported this one as “\(unique)”."
++                profile.name = unique
++            }
+             profile.id = UUID()
+             let entry = ProfileEntry(profile: profile)
+             entries.insert(entry, at: 0)
+-            persist()
+-            lastError = nil
++            // A failed write keeps its error; a landed one reports the rename, if there was one.
++            if persist() { lastError = clashWarning }
+             return entry
+         } catch {
+             lastError = "Couldn't import “\(url.lastPathComponent)”: it isn't a valid Macro Maker profile."
+diff --git a/Sources/MacroMaker/Services/RealInputMonitor.swift b/Sources/MacroMaker/Services/RealInputMonitor.swift
+index 65d695e..f83fde3 100644
+--- a/Sources/MacroMaker/Services/RealInputMonitor.swift
++++ b/Sources/MacroMaker/Services/RealInputMonitor.swift
+@@ -10,16 +10,17 @@ import Foundation
+ /// passive `.keyDown` mask on the global monitor is enough to spot real key presses without
+ /// that entitlement. Mouse buttons are always visible there.
+ ///
+-/// **Single-subscriber** (asserted in debug): it exists for pause-on-real-input, which only the
+-/// AutoClicker uses; a second subscriber would silently eat the first one's callback.
++/// **Single-subscriber**: it exists for pause-on-real-input, which only the AutoClicker uses,
++/// and a re-start while the watcher is live swaps the callback rather than counting a second
++/// subscriber (begin and resume of one run both land in `start`).
+ @MainActor
+ final class RealInputMonitor {
+     static let shared = RealInputMonitor()
+ 
+     private var monitors: [Any] = []
+-    /// Reentrant *stop* bookkeeping is deliberate: start asserts single-subscriber in debug, but
+-    /// a stop imbalance still leaves the tap up while any subscriber is registered.
+-    private var subscribers = 0
++    /// Whether the one watcher is registered (0 or 1). Observable for tests: 0 means the
++    /// monitors are genuinely removed.
++    private(set) var subscribers = 0
+     private var onRealInput: () -> Void = {}
+     /// Set when no monitor could be installed (global denied *and* local returned nil) so the
+     /// feature can say "pause-on-real-input can't work" instead of silently never firing.
+@@ -32,13 +33,14 @@ final class RealInputMonitor {
+     static let watchedTypes: [NSEvent.EventTypeMask] = [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]
+ 
+     /// Starts watching. `onRealInput` fires on every real key/mouse press until `stop`.
++    /// Idempotent: the single watcher re-starts on every begin *and* resume of the same run,
++    /// so a start while already watching swaps the callback instead of counting a second
++    /// subscriber — the old debug assert trapped on the first pause→resume, and the double
++    /// count left the monitors installed for the rest of the process.
+     /// Returns false (and records `lastFailure`) when no monitor could be installed.
+     @discardableResult
+     func start(onRealInput: @escaping () -> Void) -> Bool {
+-        assert(subscribers == 0,
+-               "RealInputMonitor is single-subscriber; a second start replaces the first callback.")
+         self.onRealInput = onRealInput
+-        subscribers += 1
+         guard monitors.isEmpty else { return true }
+         let mask = Self.watchedTypes.reduce(NSEvent.EventTypeMask()) { $0.union($1) }
+         if let global = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: { [weak self] event in
+@@ -47,6 +49,7 @@ final class RealInputMonitor {
+         }) {
+             monitors.append(global)
+             lastFailure = nil
++            subscribers = 1
+             return true
+         }
+         // Global monitors need nothing for these passive types on macOS 14+, but an EventKit-style
+@@ -57,15 +60,18 @@ final class RealInputMonitor {
+         }) {
+             monitors.append(local)
+             lastFailure = nil
++            subscribers = 1
+             return true
+         }
+         lastFailure = "Pause-on-real-input isn't available: macOS refused both input monitors."
+         return false
+     }
+ 
++    /// Idempotent: a stop without a live watcher (double stop, or a start that couldn't
++    /// install anything) removes nothing and can't underflow the count.
+     func stop() {
+-        subscribers = max(0, subscribers - 1)
+-        guard subscribers == 0 else { return }
++        subscribers = 0
++        guard !monitors.isEmpty else { return }
+         monitors.forEach(NSEvent.removeMonitor)
+         monitors = []
+     }
+diff --git a/Sources/MacroMaker/Services/RunSession.swift b/Sources/MacroMaker/Services/RunSession.swift
+index c3c02cf..414488b 100644
+--- a/Sources/MacroMaker/Services/RunSession.swift
++++ b/Sources/MacroMaker/Services/RunSession.swift
+@@ -10,6 +10,11 @@ final class RunSession {
+ 
+     @ObservationIgnored private var countdownTask: Task<Void, Never>?
+     @ObservationIgnored private var cancelWork: (() -> Void)?
++    /// The feature's teardown, run on every stop of an *active* session. Stops come from
++    /// outside the feature too ("Stop Everything", hold-release, profile apply, shutdown)
++    /// and those callers can't know about the feature's own watchers — the pause-on-input
++    /// monitor and its 1 Hz resume timer used to leak on exactly those paths.
++    @ObservationIgnored var onStop: (() -> Void)?
+     /// Bumped on every start and stop, so late callbacks from an old run are ignored.
+     @ObservationIgnored private var generation = 0
+ 
+@@ -39,6 +44,7 @@ final class RunSession {
+     }
+ 
+     func stop() {
++        let wasActive = phase != .idle
+         generation += 1
+         countdownTask?.cancel()
+         countdownTask = nil
+@@ -47,6 +53,8 @@ final class RunSession {
+         cancel?()
+         startedAt = nil
+         if phase != .idle { phase = .idle }
++        // After the work is cancelled, so teardown sees the session in its final state.
++        if wasActive { onStop?() }
+     }
+ 
+     /// Called by the work when it ends on its own (limit reached, macro finished, error).
+diff --git a/Sources/MacroMaker/Utilities/ClickGeometry.swift b/Sources/MacroMaker/Utilities/ClickGeometry.swift
+index e83ff7f..5a0613f 100644
+--- a/Sources/MacroMaker/Utilities/ClickGeometry.swift
++++ b/Sources/MacroMaker/Utilities/ClickGeometry.swift
+@@ -17,6 +17,14 @@ enum ClickGeometry {
+                        y: point.y + CGFloat(2 * clamp01(u2) - 1) * CGFloat(amount))
+     }
+ 
++    /// Pulls a point back inside a rect (H5: jitter must not push a click outside the window
++    /// it is aimed at). An empty rect returns the point unchanged.
++    static func clamp(_ point: CGPoint, to rect: CGRect) -> CGPoint {
++        guard !rect.isEmpty else { return point }
++        return CGPoint(x: min(max(point.x, rect.minX), rect.maxX),
++                       y: min(max(point.y, rect.minY), rect.maxY))
++    }
++
+     private static func clamp01(_ value: Double) -> Double {
+         min(1, max(0, value))
+     }
+diff --git a/Sources/MacroMaker/Utilities/Persistence.swift b/Sources/MacroMaker/Utilities/Persistence.swift
+index 94dab63..c91522e 100644
+--- a/Sources/MacroMaker/Utilities/Persistence.swift
++++ b/Sources/MacroMaker/Utilities/Persistence.swift
+@@ -1,14 +1,35 @@
+ import Foundation
++import os
+ 
+ /// Tiny Codable wrapper around UserDefaults for settings structs.
+ enum Persistence {
++    private static let log = Logger(subsystem: "MacroMaker", category: "Persistence")
++
++    /// Where saves land. A seam for tests: install a failing writer to exercise the failure
++    /// paths callers must surface — production writes to UserDefaults, which reports no
++    /// failure of its own.
++    nonisolated(unsafe) static var writer: @Sendable (_ data: Data, _ key: String) -> Bool = { data, key in
++        UserDefaults.standard.set(data, forKey: key)
++        return true
++    }
++
+     static func load<Value: Decodable>(_ type: Value.Type, key: String) -> Value? {
+         guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
+         return try? JSONDecoder().decode(type, from: data)
+     }
+ 
+-    static func save<Value: Encodable>(_ value: Value, key: String) {
+-        guard let data = try? JSONEncoder().encode(value) else { return }
+-        UserDefaults.standard.set(data, forKey: key)
++    /// Returns whether the write landed. A silent `try?` here made a failed save
++    /// indistinguishable from success — the caller must be able to warn the user.
++    @discardableResult
++    static func save<Value: Encodable>(_ value: Value, key: String) -> Bool {
++        guard let data = try? JSONEncoder().encode(value) else {
++            log.fault("Couldn't encode the value for key “\(key, privacy: .public)” — the save was dropped.")
++            return false
++        }
++        let landed = writer(data, key)
++        if !landed {
++            log.fault("The write for key “\(key, privacy: .public)” failed — the save was dropped.")
++        }
++        return landed
+     }
+ }
+diff --git a/Sources/MacroMaker/Utilities/RecordingCleaner.swift b/Sources/MacroMaker/Utilities/RecordingCleaner.swift
+index 3978bdd..fd838ca 100644
+--- a/Sources/MacroMaker/Utilities/RecordingCleaner.swift
++++ b/Sources/MacroMaker/Utilities/RecordingCleaner.swift
+@@ -4,8 +4,9 @@ import CoreGraphics
+ enum RecordingCleaner {
+     /// - Drops key/mouse "ups" whose "down" happened before recording began
+     ///   (e.g. releasing the ⌃⌥R that started the recording).
+-    /// - Drops the trailing run of keys still held when recording stopped
+-    ///   (e.g. pressing the ⌃⌥R that stopped it) — replaying those would leave keys stuck down.
++    /// - Drops the trailing run of keys *and buttons* still held when recording stopped
++    ///   (e.g. pressing the ⌃⌥R that stopped it, or a button still down at the stop) — replaying
++    ///   those would leave inputs stuck down.
+     /// - Shifts time so the first event happens at 0 (no dead wait at the start of playback).
+     static func clean(_ events: [MacroEvent]) -> [MacroEvent] {
+         var heldKeys = Set<CGKeyCode>()
+@@ -27,7 +28,14 @@ enum RecordingCleaner {
+             }
+         }
+ 
+-        while let last = kept.last, case let .keyDown(code, _) = last.action, heldKeys.contains(code) {
++        while let last = kept.last {
++            let stillHeld: Bool
++            switch last.action {
++            case let .keyDown(code, _): stillHeld = heldKeys.contains(code)
++            case let .mouseDown(button, _, _): stillHeld = heldButtons.contains(button)
++            default: stillHeld = false
++            }
++            guard stillHeld else { break }
+             kept.removeLast()
+         }
+ 
+diff --git a/Sources/MacroMaker/Utilities/WorkerThread.swift b/Sources/MacroMaker/Utilities/WorkerThread.swift
+index 2d92fd1..e2536f3 100644
+--- a/Sources/MacroMaker/Utilities/WorkerThread.swift
++++ b/Sources/MacroMaker/Utilities/WorkerThread.swift
+@@ -35,12 +35,30 @@ final class WorkerThread: Sendable {
+         if wasRunning { wakeUp.signal() }
+     }
+ 
++    private static let log = Logger(subsystem: "MacroMaker", category: "WorkerThread")
++
+     /// Cancels, then blocks until the body has returned. The body never waits on the main thread,
+     /// so calling this from the main thread can't deadlock.
++    ///
++    /// A missed deadline is no longer silent: the wait is retried once on a background queue
++    /// (Stop never blocks the main thread beyond its single budget — a wedged window-server
++    /// call holds the worker past any timeout), the overrun is logged, and if the retry also
++    /// misses, `onOverrun` reports it on the main actor. The old callers dropped the result
++    /// and declared the run stopped while the worker could still be posting.
+     @discardableResult
+-    func cancelAndWait(timeout: TimeInterval = 1) -> Bool {
++    func cancelAndWait(timeout: TimeInterval = 1,
++                       onOverrun: (@MainActor @Sendable () -> Void)? = nil) -> Bool {
+         cancel()
+-        return finished.wait(timeout: .now() + timeout) == .success
++        if finished.wait(timeout: .now() + timeout) == .success { return true }
++        Self.log.error("Worker overran Stop's \(timeout, privacy: .public)-second budget; retrying the wait off the main thread")
++        DispatchQueue.global(qos: .userInitiated).async {
++            let settled = self.finished.wait(timeout: .now() + timeout) == .success
++            if !settled {
++                Self.log.error("Worker still live after Stop — it may still be clicking or typing")
++                if let onOverrun { performOnMain { onOverrun() } }
++            }
++        }
++        return false
+     }
+ 
+     /// Sleeps until `deadline` (in `DispatchTime` uptime nanoseconds).
+diff --git a/Sources/MacroMaker/Views/AutoClickerView.swift b/Sources/MacroMaker/Views/AutoClickerView.swift
+index 51c47ea..d1015c4 100644
+--- a/Sources/MacroMaker/Views/AutoClickerView.swift
++++ b/Sources/MacroMaker/Views/AutoClickerView.swift
+@@ -115,7 +115,7 @@ struct AutoClickerView: View {
+                 // finished: true, and the same main-actor hop then sets the phase to .idle — so
+                 // requiring a non-idle phase meant SwiftUI never observed a state where it was
+                 // visible, and background clicking stopped with no explanation at all. Both
+-                // toggle() and endRun() clear runWarning when a run starts, so nothing goes stale.
++                // toggle() and the session's stop hook clear runWarning when a run ends, so nothing goes stale.
+                 StatusMessage(kind: .warning, text: warning)
+                     .padding(.horizontal, 16)
+                     .padding(.top, 8)
+diff --git a/Tests/MacroMakerTests/BackgroundPosterTests.swift b/Tests/MacroMakerTests/BackgroundPosterTests.swift
+index cb4c446..10afe6a 100644
+--- a/Tests/MacroMakerTests/BackgroundPosterTests.swift
++++ b/Tests/MacroMakerTests/BackgroundPosterTests.swift
+@@ -1,3 +1,4 @@
++import AppKit
+ import CoreGraphics
+ import Foundation
+ import Testing
+@@ -54,11 +55,155 @@ struct BackgroundPosterTests {
+                 == CGPoint(x: -50, y: -50))
+     }
+ 
+-    @Test func clickFlagsSetTheCommandBitOnlyForBackgroundApps() {
+-        #expect(BackgroundPoster.clickFlags(appIsActive: true) == [])
+-        #expect(BackgroundPoster.clickFlags(appIsActive: false) == CGEventFlags(rawValue: 0x0010_0000))
++    // MARK: Wave 2 — directApp delivery (docs/review/mm-review-20260918)
++
++    /// F1: a mouse event whose windowNumber is 0 names NO window to the target app's AppKit —
++    /// `sendEvent:` then has nothing to route the click to, the classic silently-dropped case.
++    /// The built event must carry the target window's number.
++    @Test func mouseEventsNameTheTargetWindowNumber() {
++        let window = BackgroundPoster.Window(id: 4242, bounds: CGRect(x: 100, y: 200, width: 800, height: 600))
++        guard let event = BackgroundPoster.mouseEvent(.leftMouseDown, button: .left, clickCount: 1,
++                                                      screenPoint: CGPoint(x: 350, y: 500), window: window) else {
++            Issue.record("CGEvent creation failed")
++            return
++        }
++        #expect(NSEvent(cgEvent: event)?.windowNumber == 4242,
++                "the posted event must name the window it is aimed at, not window 0")
++    }
++
++    /// F4: the fake-⌘ trick is gone. The old NX_COMMANDMASK bit made every delivered background
++    /// click a ⌘-click — selection toggles, open-in-new-tab, canvas deselects — mis-delivering
++    /// the wrong gesture wherever delivery worked at all.
++    @Test func backgroundPostedClicksCarryNoModifierFlags() {
++        let box = PostedEventBox()
++        let prior = BackgroundPoster.eventPoster
++        defer { BackgroundPoster.eventPoster = prior }
++        BackgroundPoster.eventPoster = { event, _ in box.events.append(event) }
++
++        BackgroundPoster.click(.left, screenPoint: CGPoint(x: 50, y: 50), holdFor: 0,
++                               clickCount: 1,
++                               window: BackgroundPoster.Window(id: 7, bounds: CGRect(x: 0, y: 0, width: 100, height: 100)),
++                               pid: 1)
++
++        #expect(box.events.count == 2, "a click is a down and an up, got \(box.events.count)")
++        for event in box.events {
++            #expect(event.flags == .maskNonCoalesced,
++                    "background clicks must not pretend modifiers are held: \(event.flags)")
++        }
++    }
++
++    /// F2's missing gate: everything delivery depends on must be on the event at post time —
++    /// PAST the `setSource` call this codebase measured to reset source-owned data (userData
++    /// read back 0 when written first). The aim probe records the event's source state at aim
++    /// time: 0 means the aim rode the shared source (pre-setSource); a private state id means
++    /// the aim was applied after re-homing. The fields are then read off the event again at
++    /// the poster seam, past `setSource`.
++    @Test func windowTargetingIsAppliedAfterSetSourceAndSurvivesToPost() {
++        final class AimBox: @unchecked Sendable { var stateIDs: [Int64] = [] }
++        struct AimProbe: BackgroundPoster.WindowLocationResolver {
++            let box: AimBox
++            var isAvailable: Bool { true }
++            @discardableResult func setWindowLocation(of event: CGEvent, to point: CGPoint) -> Bool {
++                box.stateIDs.append(event.getIntegerValueField(.eventSourceStateID))
++                return true
++            }
++        }
++        let aimBox = AimBox()
++        let aim = AimProbe(box: aimBox)
++        let box = PostedEventBox()
++        let priorResolver = BackgroundPoster.windowLocationResolver
++        let priorPoster = BackgroundPoster.eventPoster
++        defer {
++            BackgroundPoster.windowLocationResolver = priorResolver
++            BackgroundPoster.eventPoster = priorPoster
++        }
++        BackgroundPoster.windowLocationResolver = aim
++        BackgroundPoster.eventPoster = { event, _ in box.events.append(event) }
++
++        BackgroundPoster.click(.left, screenPoint: CGPoint(x: 350, y: 500), holdFor: 0,
++                               clickCount: 2,
++                               window: BackgroundPoster.Window(id: 4242, bounds: CGRect(x: 100, y: 200, width: 800, height: 600)),
++                               pid: 1234)
++
++        #expect(box.events.count == 2)
++        #expect(aimBox.stateIDs.allSatisfy { $0 != 0 },
++                "the window aim must be applied after setSource (private source state), saw \(aimBox.stateIDs)")
++        for event in box.events {
++            #expect(event.getIntegerValueField(CGEventField(rawValue: 91)!) == 4242)
++            #expect(event.getIntegerValueField(CGEventField(rawValue: 92)!) == 4242)
++            #expect(event.getIntegerValueField(.mouseEventSubtype) == 3)
++            #expect(event.getIntegerValueField(.eventSourceUserData) == EventSynthesizer.eventTag)
++        }
++    }
++
++    /// F6/H6: with more than one window of the target app, the click must aim at the window
++    /// that CONTAINS the captured point — the front-most window is only the fallback.
++    @Test func windowChoicePrefersTheWindowContainingThePoint() {
++        let pid: Int32 = 1234
++        let front = Self.info(pid: pid, number: 42, bounds: ["X": 100, "Y": 200, "Width": 800, "Height": 600])
++        let side = Self.info(pid: pid, number: 43, bounds: ["X": 900, "Y": 200, "Width": 800, "Height": 600])
++        let list = [front, side]
++        #expect(BackgroundPoster.window(ofPID: pid, in: list, containing: CGPoint(x: 350, y: 500))?.id == 42)
++        // Inside only the second window: must pick THAT one, not the front-most one.
++        #expect(BackgroundPoster.window(ofPID: pid, in: list, containing: CGPoint(x: 1000, y: 500))?.id == 43)
++        // In neither (occluded, another Space, moved since capture): fall back to the front-most.
++        #expect(BackgroundPoster.window(ofPID: pid, in: list, containing: CGPoint(x: 50, y: 50))?.id == 42)
++    }
++
++    /// F14: the private symbol is validated once — a missing symbol must disable directApp
++    /// targeting with an explicit "not supported" warning, not post mis-aimed events.
++    @Test func missingSymbolDisablesTargetingWithAWarning() {
++        let priorLookup = BackgroundPoster.SystemWindowLocationResolver.symbolLookup
++        let priorProblem = BackgroundPoster.windowTargetingProblem
++        defer {
++            BackgroundPoster.SystemWindowLocationResolver.symbolLookup = priorLookup
++            BackgroundPoster.windowTargetingProblem = priorProblem
++        }
++        BackgroundPoster.SystemWindowLocationResolver.symbolLookup = { _ in nil }
++        let resolver = BackgroundPoster.SystemWindowLocationResolver()
++        #expect(resolver.isAvailable == false, "a nil dlsym must read as unavailable")
++        #expect(BackgroundPoster.validateWindowTargeting(resolver: resolver) == false)
++        #expect(BackgroundPoster.windowTargetingProblem?.contains("not supported") == true,
++                "the warning must say targeting is not supported, got: \(BackgroundPoster.windowTargetingProblem ?? "nil")")
++    }
++
++    /// F14's fail-closed half: a symbol that exists but doesn't behave as (event, point) is
++    /// just as unusable as a missing one.
++    @Test func aSymbolThatFailsItsSignatureRoundTripDisablesTargeting() {
++        struct BogusResolver: BackgroundPoster.WindowLocationResolver {
++            var isAvailable: Bool { true }
++            func signatureRoundTrips() -> Bool { false }
++            @discardableResult func setWindowLocation(of event: CGEvent, to point: CGPoint) -> Bool { true }
++        }
++        let priorProblem = BackgroundPoster.windowTargetingProblem
++        defer { BackgroundPoster.windowTargetingProblem = priorProblem }
++        #expect(BackgroundPoster.validateWindowTargeting(resolver: BogusResolver()) == false)
++        #expect(BackgroundPoster.windowTargetingProblem != nil,
++                "a failed signature round-trip must leave an explicit problem line")
++    }
++
++    @Test func aValidatedResolverClearsTheProblemAndSupportsTargeting() {
++        struct GoodResolver: BackgroundPoster.WindowLocationResolver {
++            var isAvailable: Bool { true }
++            func signatureRoundTrips() -> Bool { true }
++            @discardableResult func setWindowLocation(of event: CGEvent, to point: CGPoint) -> Bool { true }
++        }
++        let priorProblem = BackgroundPoster.windowTargetingProblem
++        let priorResolver = BackgroundPoster.windowLocationResolver
++        defer {
++            BackgroundPoster.windowTargetingProblem = priorProblem
++            BackgroundPoster.windowLocationResolver = priorResolver
++        }
++        #expect(BackgroundPoster.validateWindowTargeting(resolver: GoodResolver()) == true)
++        #expect(BackgroundPoster.windowTargetingProblem == nil)
++        BackgroundPoster.windowLocationResolver = GoodResolver()
++        #expect(BackgroundPoster.targetingSupported == true)
+     }
+ 
++    /// The base event mouseEvent builds: AppKit-seeded (12 protected fields), window NUMBER,
++    /// button and click count. The window-target payload (91/92, subtype, window location,
++    /// self-tag) is applied at post time — after setSource — and is asserted by
++    /// `windowTargetingIsAppliedAfterSetSourceAndSurvivesToPost`.
+     @Test func mouseEventCarriesTheRecipeFields() {
+         let window = BackgroundPoster.Window(id: 4242, bounds: CGRect(x: 100, y: 200, width: 800, height: 600))
+         let screenPoint = CGPoint(x: 350, y: 500)
+@@ -69,13 +214,56 @@ struct BackgroundPosterTests {
+         }
+         #expect(event.getIntegerValueField(.mouseEventButtonNumber) == CGMouseButton.left.rawValue)
+         #expect(event.getIntegerValueField(.mouseEventClickState) == 2)
+-        #expect(event.getIntegerValueField(.mouseEventSubtype) == 3)
+-        #expect(event.getIntegerValueField(CGEventField(rawValue: 91)!) == 4242)
+-        #expect(event.getIntegerValueField(CGEventField(rawValue: 92)!) == 4242)
+         #expect(event.location == screenPoint) // screen-space at CGEvent level
++        #expect(NSEvent(cgEvent: event)?.windowNumber == 4242)
+         // The protected field numbers from the research summary are populated by CGEvent itself
+         // (event type, source…); the recipe only demands we never overwrite them, which the
+-        // mouseEvent code honors by touching exactly the five fields asserted above.
++        // mouseEvent code honors by touching exactly the fields asserted above.
++    }
++
++    /// F5: a click whose AppKit conversion dies must be reported undelivered — nothing posted.
++    @Test func aFailedNSEventConversionFailsTheClickWithoutPosting() {
++        let priorBuilder = BackgroundPoster.nsMouseEventBuilder
++        let priorPoster = BackgroundPoster.eventPoster
++        defer {
++            BackgroundPoster.nsMouseEventBuilder = priorBuilder
++            BackgroundPoster.eventPoster = priorPoster
++        }
++        let box = PostedEventBox()
++        BackgroundPoster.eventPoster = { event, _ in box.events.append(event) }
++        BackgroundPoster.nsMouseEventBuilder = { _, _, _, _, _ in nil }
++
++        let delivered = BackgroundPoster.click(.left, screenPoint: CGPoint(x: 50, y: 50), holdFor: 0,
++                                               clickCount: 1,
++                                               window: BackgroundPoster.Window(id: 7, bounds: CGRect(x: 0, y: 0, width: 100, height: 100)),
++                                               pid: 1)
++        #expect(delivered == false, "a click whose event never materialized must report undelivered")
++        #expect(box.events.isEmpty, "nothing may be posted when the event is nil")
++    }
++
++    /// The aim half of fail-loud delivery: a resolver that refuses must fail the click, not
++    /// post a mis-aimed event.
++    @Test func aRefusedWindowAimFailsTheClickWithoutPosting() {
++        struct RefusingResolver: BackgroundPoster.WindowLocationResolver {
++            var isAvailable: Bool { true }
++            @discardableResult func setWindowLocation(of event: CGEvent, to point: CGPoint) -> Bool { false }
++        }
++        let priorResolver = BackgroundPoster.windowLocationResolver
++        let priorPoster = BackgroundPoster.eventPoster
++        defer {
++            BackgroundPoster.windowLocationResolver = priorResolver
++            BackgroundPoster.eventPoster = priorPoster
++        }
++        let box = PostedEventBox()
++        BackgroundPoster.windowLocationResolver = RefusingResolver()
++        BackgroundPoster.eventPoster = { event, _ in box.events.append(event) }
++
++        let delivered = BackgroundPoster.click(.left, screenPoint: CGPoint(x: 50, y: 50), holdFor: 0,
++                                               clickCount: 1,
++                                               window: BackgroundPoster.Window(id: 7, bounds: CGRect(x: 0, y: 0, width: 100, height: 100)),
++                                               pid: 1)
++        #expect(delivered == false)
++        #expect(box.events.isEmpty, "an unaimed click must never reach the poster")
+     }
+ 
+     @Test func windowLocationResolverSeamDrivesTheSupportFlagAndCallsThrough() {
+@@ -90,8 +278,12 @@ struct BackgroundPosterTests {
+         }
+         let box = Box()
+ 
+-        let prior = BackgroundPoster.windowLocationResolver
+-        defer { BackgroundPoster.windowLocationResolver = prior }
++        let priorResolver = BackgroundPoster.windowLocationResolver
++        let priorPoster = BackgroundPoster.eventPoster
++        defer {
++            BackgroundPoster.windowLocationResolver = priorResolver
++            BackgroundPoster.eventPoster = priorPoster
++        }
+ 
+         BackgroundPoster.windowLocationResolver = FakeResolver(isAvailable: false, box: box)
+         #expect(BackgroundPoster.targetingSupported == false)
+@@ -99,11 +291,13 @@ struct BackgroundPosterTests {
+         BackgroundPoster.windowLocationResolver = FakeResolver(isAvailable: true, box: box)
+         #expect(BackgroundPoster.targetingSupported == true)
+ 
++        // The aim now happens at post time (after setSource), so the seam is driven by a click.
++        BackgroundPoster.eventPoster = { _, _ in }
+         let window = BackgroundPoster.Window(id: 1, bounds: CGRect(x: 10, y: 20, width: 100, height: 80))
+-        let event = BackgroundPoster.mouseEvent(.leftMouseDown, button: .left, clickCount: 1,
+-                                                screenPoint: CGPoint(x: 110, y: 120), window: window)
+-        #expect(event != nil)
+-        #expect(box.recorded == [CGPoint(x: 100, y: 100)]) // window-local point passed through
++        BackgroundPoster.click(.left, screenPoint: CGPoint(x: 110, y: 120), holdFor: 0,
++                               clickCount: 1, window: window, pid: 1)
++        #expect(box.recorded == [CGPoint(x: 100, y: 100), CGPoint(x: 100, y: 100)],
++                "each transition's window-local point, passed through: \(box.recorded)")
+     }
+ 
+     @Test func postedClicksCarryNoSharedSourceState() {
+@@ -118,7 +312,7 @@ struct BackgroundPosterTests {
+         BackgroundPoster.eventPoster = { event, _ in box.events.append(event) }
+ 
+         BackgroundPoster.click(.left, screenPoint: CGPoint(x: 50, y: 50), holdFor: 0,
+-                               clickCount: 1, window: window, pid: 1, appIsActive: false)
++                               clickCount: 1, window: window, pid: 1)
+ 
+         #expect(box.events.count == 2)  // down + up
+         for event in box.events {
+@@ -173,7 +367,7 @@ struct BackgroundPosterTests {
+         BackgroundPoster.click(.left, screenPoint: CGPoint(x: 300, y: 400), holdFor: 0,
+                                clickCount: 1,
+                                window: BackgroundPoster.Window(id: 7, bounds: CGRect(x: 0, y: 0, width: 800, height: 600)),
+-                               pid: 1234, appIsActive: false)
++                               pid: 1234)
+         #expect(tags.count == 2, "a click is a down and an up, got \(tags.count)")
+         #expect(tags.allSatisfy { $0 == EventSynthesizer.eventTag },
+                 "posted clicks lost the self-tag: \(tags) != \(EventSynthesizer.eventTag)")
+diff --git a/Tests/MacroMakerTests/ClickerParityTests.swift b/Tests/MacroMakerTests/ClickerParityTests.swift
+index 9e8b674..cb617e0 100644
+--- a/Tests/MacroMakerTests/ClickerParityTests.swift
++++ b/Tests/MacroMakerTests/ClickerParityTests.swift
+@@ -66,6 +66,17 @@ import Testing
+         #expect(ClickGeometry.jitter(point, amount: 0, u1: 0, u2: 1) == point)
+         #expect(ClickGeometry.jitter(point, amount: 5, u1: 1, u2: 0) == CGPoint(x: 505, y: 495))
+     }
++
++    /// H5: jitter can push a direct-app click point outside the window it must land in — the
++    /// delivery point is clamped back inside the window's bounds.
++    @Test func clampPullsAPointBackInsideTheRect() {
++        let rect = CGRect(x: 100, y: 200, width: 300, height: 150)
++        #expect(ClickGeometry.clamp(CGPoint(x: 50, y: 150), to: rect) == CGPoint(x: 100, y: 200))
++        #expect(ClickGeometry.clamp(CGPoint(x: 900, y: 900), to: rect) == CGPoint(x: 400, y: 350))
++        #expect(ClickGeometry.clamp(CGPoint(x: 250, y: 275), to: rect) == CGPoint(x: 250, y: 275))
++        // An empty rect has nothing to clamp into — the point passes through unchanged.
++        #expect(ClickGeometry.clamp(CGPoint(x: 250, y: 275), to: CGRect.null) == CGPoint(x: 250, y: 275))
++    }
+ }
+ 
+ @Suite struct RunRulesTests {
+diff --git a/Tests/MacroMakerTests/HotkeyStorageTests.swift b/Tests/MacroMakerTests/HotkeyStorageTests.swift
+new file mode 100644
+index 0000000..5daeeb9
+--- /dev/null
++++ b/Tests/MacroMakerTests/HotkeyStorageTests.swift
+@@ -0,0 +1,44 @@
++import Foundation
++import Testing
++@testable import MacroMaker
++
++/// The hotkey wipe (review models F11): the stored `[HotkeyAction: KeyCombo?]` dictionary
++/// decoded strictly, so ONE unknown action name (a deleted builtin case, a malformed
++/// `macro:` uuid, a hand-edited plist) made the whole decode throw — `try?` turned it
++/// into nil and every custom shortcut silently reset to its default on next launch.
++@Suite("Hotkey storage")
++struct HotkeyStorageTests {
++
++    @Test func oneUnreadableEntryDoesNotResetEveryCustomHotkey() {
++        let json = """
++        {"toggleAutoClicker":{"keyCode":8,"modifiers":3},
++         "toggleKeyPresser":{"keyCode":1e40,"modifiers":3},
++         "stopAll":null,
++         "notAnAction":{"keyCode":8,"modifiers":3}}
++        """
++        let combos = HotkeyAction.storedCombos(from: Data(json.utf8))
++        // The readable builtin survived with its combo…
++        #expect(combos[.toggleAutoClicker].flatMap { $0 }?.keyCode == 8)
++        // …a cleared hotkey stays cleared (stored null, not dropped)…
++        #expect(combos[.stopAll] != nil)
++        // …and the two bad entries cost only themselves.
++        #expect(combos[.toggleKeyPresser] == nil)
++        #expect(combos.count == 2)
++    }
++
++    @Test func anUnreadableBlobYieldsNoCombos() {
++        #expect(HotkeyAction.storedCombos(from: Data("not json".utf8)) == [:] as [HotkeyAction: KeyCombo?])
++        #expect(HotkeyAction.storedCombos(from: Data("[]".utf8)) == [:])
++    }
++
++    @Test func aWellFormedBlobDecodesWhole() throws {
++        let stored: [HotkeyAction: KeyCombo?] = [
++            .toggleAutoClicker: KeyCombo(keyCode: 8, modifiers: [.control, .option]),
++            .stopAll: nil,
++        ]
++        let decoded = HotkeyAction.storedCombos(from: try JSONEncoder().encode(stored))
++        #expect(decoded[.toggleAutoClicker].flatMap { $0 } == KeyCombo(keyCode: 8, modifiers: [.control, .option]))
++        #expect(decoded[.stopAll] != nil)
++        #expect(decoded.count == 2)
++    }
++}
+\ No newline at end of file
+diff --git a/Tests/MacroMakerTests/MacroFileTests.swift b/Tests/MacroMakerTests/MacroFileTests.swift
+index d4421bf..0953dc4 100644
+--- a/Tests/MacroMakerTests/MacroFileTests.swift
++++ b/Tests/MacroMakerTests/MacroFileTests.swift
+@@ -48,3 +48,46 @@ import Testing
+         }
+     }
+ }
++
++/// The silent autosave (review models F8): every write was `try?`, so a full or slow disk
++/// discarded the last recording at the exact moment the app was quitting — with no error
++/// channel anywhere. A failed autosave must say so.
++@Suite struct AutosaveFailureTests {
++
++    @MainActor private func tempAutosaveDirectory() throws -> URL {
++        let dir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
++            .appending(path: "mm-autosave-\(UUID().uuidString)", directoryHint: .isDirectory)
++        MacroFiles.autosaveDestination = dir.appending(path: "Last.\(Macro.fileExtension)")
++        return dir
++    }
++
++    @MainActor @Test func aFailedAutosaveSurfacesAWarning() throws {
++        // A plain FILE where the parent directory should be makes the directory create fail.
++        let blocker = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
++            .appending(path: "mm-autosave-\(UUID().uuidString)")
++        try Data().write(to: blocker)
++        MacroFiles.autosaveDestination = blocker.appending(path: "Last.\(Macro.fileExtension)")
++        defer {
++            MacroFiles.autosaveDestination = nil
++            try? FileManager.default.removeItem(at: blocker)
++        }
++        let warning = MacroFiles.autosave(Macro(name: "Recording", createdAt: Date(), events: []))
++        #expect(warning != nil, "a failed autosave must not be indistinguishable from success")
++    }
++
++    @MainActor @Test func aSuccessfulAutosaveStaysSilentAndClearsAStaleWarningPath() throws {
++        let dir = try tempAutosaveDirectory()
++        defer {
++            MacroFiles.autosaveDestination = nil
++            try? FileManager.default.removeItem(at: dir)
++        }
++        let macro = Macro(name: "Recording", createdAt: Date(timeIntervalSince1970: 1_000),
++                          events: [MacroEvent(time: 0, action: .keyUp(0), flags: 0)])
++        #expect(MacroFiles.autosave(macro) == nil)
++        #expect(FileManager.default.fileExists(atPath: dir.appending(path: "Last.\(Macro.fileExtension)").path))
++        #expect(MacroFiles.loadAutosave()?.events.count == 1)
++        // Clearing the macro removes the file — still silent, still nil.
++        #expect(MacroFiles.autosave(nil) == nil)
++        #expect(!FileManager.default.fileExists(atPath: dir.appending(path: "Last.\(Macro.fileExtension)").path))
++    }
++}
+diff --git a/Tests/MacroMakerTests/MacroLibraryTests.swift b/Tests/MacroMakerTests/MacroLibraryTests.swift
+index a59afc9..717f0f0 100644
+--- a/Tests/MacroMakerTests/MacroLibraryTests.swift
++++ b/Tests/MacroMakerTests/MacroLibraryTests.swift
+@@ -288,3 +288,76 @@ struct LibraryIndexIntegrityTests {
+         #expect(!records.contains { $0.fileName.contains("..") })
+     }
+ }
++
++/// The rename desync (review models F10) and the fail-open index write (models F8).
++///
++/// `rename` moved the file with `try?` and rewrote the index's `fileName` regardless, so a
++/// failed move (the realistic case: an orphan record being renamed) left the index pointing
++/// at a file that never existed while the real one sat on disk unindexed. And a failed
++/// index write was indistinguishable from success — no `lastError`, nothing.
++@Suite("Library write integrity")
++struct LibraryWriteIntegrityTests {
++
++    @MainActor @Test func renamingAnOrphanLeavesTheIndexIntactAndWarns() throws {
++        let folder = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
++            .appending(path: "mm-lib-\(UUID().uuidString)", directoryHint: .isDirectory)
++        MacroLibrary.folderOverride = folder
++        defer {
++            MacroLibrary.folderOverride = nil
++            UserDefaults.standard.removeObject(forKey: MacroLibrary.indexKey)
++            try? FileManager.default.removeItem(at: folder)
++        }
++        let library = MacroLibrary(load: false)
++        let macro = Macro(name: "Orphan", createdAt: Date(timeIntervalSince1970: 1_000), events: [
++            MacroEvent(time: 0, action: .keyDown(0, isRepeat: false), flags: 0)])
++        let record = try #require(library.add(macro, named: "Orphan"))
++        // The realistic move failure: the record's file is gone from disk.
++        try FileManager.default.removeItem(at: folder.appending(path: record.fileName))
++        library.rename(record, to: "Fixed")
++        #expect(library.records.first?.fileName == record.fileName,
++                "the index must not point at a file the failed move never created")
++        #expect(library.records.first?.name == "Orphan", "a failed rename must change nothing")
++        #expect(library.lastError != nil, "the failed rename must not look like success")
++    }
++
++    @MainActor @Test func aSuccessfulRenameStillFollowsTheFile() throws {
++        let folder = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
++            .appending(path: "mm-lib-\(UUID().uuidString)", directoryHint: .isDirectory)
++        MacroLibrary.folderOverride = folder
++        defer {
++            MacroLibrary.folderOverride = nil
++            UserDefaults.standard.removeObject(forKey: MacroLibrary.indexKey)
++            try? FileManager.default.removeItem(at: folder)
++        }
++        let library = MacroLibrary(load: false)
++        let macro = Macro(name: "Login", createdAt: Date(timeIntervalSince1970: 1_000), events: [
++            MacroEvent(time: 0, action: .keyDown(0, isRepeat: false), flags: 0)])
++        let record = try #require(library.add(macro, named: "Login"))
++        library.rename(record, to: "Fixed")
++        #expect(library.records.first?.name == "Fixed")
++        #expect(library.records.first?.fileName == "Fixed.macromaker")
++        #expect(FileManager.default.fileExists(atPath: folder.appending(path: "Fixed.macromaker").path),
++                "the file on disk follows the rename")
++    }
++
++    @MainActor @Test func aFailedIndexWriteSurfacesAWarning() throws {
++        let folder = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
++            .appending(path: "mm-lib-\(UUID().uuidString)", directoryHint: .isDirectory)
++        MacroLibrary.folderOverride = folder
++        defer {
++            MacroLibrary.folderOverride = nil
++            UserDefaults.standard.removeObject(forKey: MacroLibrary.indexKey)
++            try? FileManager.default.removeItem(at: folder)
++        }
++        let library = MacroLibrary(load: false)
++        let macro = Macro(name: "Login", createdAt: Date(timeIntervalSince1970: 1_000), events: [
++            MacroEvent(time: 0, action: .keyDown(0, isRepeat: false), flags: 0)])
++        let record = try #require(library.add(macro, named: "Login"))
++        let originalWriter = Persistence.writer
++        Persistence.writer = { _, _ in false }
++        defer { Persistence.writer = originalWriter }
++        library.setFavorite(record, true)
++        #expect(library.records.first?.isFavorite == true, "the change is still visible in memory")
++        #expect(library.lastError != nil, "a failed index write must not be indistinguishable from success")
++    }
++}
+diff --git a/Tests/MacroMakerTests/NonFiniteInputTests.swift b/Tests/MacroMakerTests/NonFiniteInputTests.swift
+index 3fea0bc..e29518f 100644
+--- a/Tests/MacroMakerTests/NonFiniteInputTests.swift
++++ b/Tests/MacroMakerTests/NonFiniteInputTests.swift
+@@ -91,4 +91,66 @@ struct NonFiniteInputTests {
+         #expect(macro.events.count == 2)
+         #expect(macro.events[1].time == 0.25)
+     }
++
++    // MARK: Hostile decoded settings (imported profile / defaults blob — models F2 + lifecycle F5)
++
++    /// The UI's NumberFields clamp, but the decode paths never did: an imported profile with
++    /// `intervalMs = 1e300` or `delayedStartSeconds = 1e20` survived decoding unchanged and
++    /// trapped at the next Start (`UInt64(delay * 1e9)` / `Int(seconds.rounded())` — exit 133).
++    /// JSON has no NaN literal and `1e400` is refused by the decoder itself, but every representable huge value (`1e300`, `1e20`) sails through decoding and traps at the conversions.
++    @Test func hostileDecodedDoublesAreClampedBeforeTheTrappingConversions() throws {
++        let json = """
++        {"format":"macromakerprofile","formatVersion":2,"name":"Hostile",
++         "autoClicker":{"intervalMs":1e300,"delayedStartSeconds":1e20,"randomOffsetMs":1e300,
++                        "maxDurationSeconds":1e20,"jitterPx":1e20,"autoResumeSeconds":1e20,
++                        "x":1e20,"y":1e20,"directAppX":1e20,"directAppY":1e20},
++         "keyPresser":{"intervalMs":1e300},
++         "playback":{"speed":1e300},
++         "webTarget":{"browser":"safari","urlMatch":"","locatorKind":"css","cssSelector":"","xpath":"",
++                      "x":1e20,"y":1e300,"intervalMs":1e300}}
++        """
++        let profile = try Profile.from(jsonData: Data(json.utf8))
++        let s = profile.autoClicker
++        #expect(s.intervalMs >= 1 && s.intervalMs <= IntervalUnit.maximumIntervalMs)
++        #expect(s.delayedStartSeconds >= 0 && s.delayedStartSeconds <= 600)
++        #expect(s.randomOffsetMs >= 0 && s.randomOffsetMs <= 60_000)
++        #expect(s.maxDurationSeconds >= 0.1 && s.maxDurationSeconds <= 86_400)
++        #expect(s.jitterPx >= 0 && s.jitterPx <= 200)
++        #expect(s.autoResumeSeconds >= 1 && s.autoResumeSeconds <= 600)
++        #expect(s.x <= 20_000 && s.y <= 20_000 && s.directAppX <= 20_000 && s.directAppY <= 20_000)
++        #expect(profile.keyPresser.intervalMs <= IntervalUnit.maximumIntervalMs)
++        #expect(profile.playback.speed <= 4)
++        #expect(profile.webTarget.intervalMs <= WebClicker.maximumIntervalMs)
++        #expect(profile.webTarget.x <= 100_000 && profile.webTarget.y <= 100_000)
++        // The exact conversions that trap (measured: exit 133) run on the clamped values.
++        _ = UInt64(max(TickSchedule.minimumDelay, s.intervalMs / 1000) * 1_000_000_000)
++        _ = Int(max(0, s.delayedStartSeconds).rounded())
++    }
++
++    /// Negative and zero-side hostile values clamp up, mirroring what the UI fields enforce.
++    @Test func hostileDecodedDoublesClampUpFromBelowToo() throws {
++        let json = """
++        {"format":"macromakerprofile","formatVersion":2,"name":"Negative",
++         "autoClicker":{"intervalMs":-5,"delayedStartSeconds":-3},
++         "keyPresser":{"intervalMs":0}}
++        """
++        let profile = try Profile.from(jsonData: Data(json.utf8))
++        #expect(profile.autoClicker.intervalMs == 1)
++        #expect(profile.autoClicker.delayedStartSeconds == 0)
++        #expect(profile.keyPresser.intervalMs == 1)
++    }
++
++    /// Ordinary values decode unchanged — the clamps must not rewrite honest settings.
++    @Test func ordinaryDecodedDoublesAreUntouched() throws {
++        var profile = Profile(name: "Honest")
++        profile.autoClicker.intervalMs = 250
++        profile.autoClicker.delayedStartSeconds = 10
++        profile.autoClicker.x = -350
++        profile.keyPresser.intervalMs = 100
++        profile.playback.speed = 0.25
++        profile.webTarget.intervalMs = 5_000
++        profile.webTarget.x = 1920
++        let decoded = try Profile.from(jsonData: try profile.jsonData())
++        #expect(decoded == profile)
++    }
+ }
+diff --git a/Tests/MacroMakerTests/ProfileTests.swift b/Tests/MacroMakerTests/ProfileTests.swift
+index 93309b4..53cbc9c 100644
+--- a/Tests/MacroMakerTests/ProfileTests.swift
++++ b/Tests/MacroMakerTests/ProfileTests.swift
+@@ -85,6 +85,89 @@ struct ProfileRulesTests {
+         // Case-insensitive like the Finder.
+         #expect(ProfileRules.uniqueName(forDuplicateOf: "farm", taken: ["farm copy"]) == "farm copy 2")
+     }
++
++    @Test func uniqueDisplayNameSuffixesOnlyOnACaseInsensitiveClash() {
++        #expect(ProfileRules.uniqueDisplayName(for: "Fresh", taken: []) == "Fresh")
++        #expect(ProfileRules.uniqueDisplayName(for: "Login", taken: ["other"]) == "Login")
++        #expect(ProfileRules.uniqueDisplayName(for: "My Profile", taken: ["my profile"]) == "My Profile 2")
++        #expect(ProfileRules.uniqueDisplayName(for: "My Profile", taken: ["my profile", "MY PROFILE 2"]) == "My Profile 3")
++    }
++}
++
++/// The profiles-list wipe and the silent case-variant replace (review models F1 + F12).
++///
++/// The list decoded as one array with `try?` + `?? []`, so a single unreadable entry made
++/// the WHOLE list present as empty — and the next save/delete/rename persisted `[]` over
++/// the blob, permanently. Meanwhile `save()` matched names case-insensitively, so saving
++/// "My Profile" silently REPLACED the different profile "my profile".
++@Suite("Profile list integrity")
++struct ProfileListIntegrityTests {
++
++    private func storedEntryJSON(named name: String) throws -> String {
++        String(decoding: try JSONEncoder().encode(ProfileEntry(profile: Profile(name: name))), as: UTF8.self)
++    }
++
++    /// Blast radius: whatever made one entry unreadable — a type mismatch, an unknown enum
++    /// value, a hand-edited defaults plist — it must cost one profile, not the list.
++    @Test func oneUndecodableStoredEntryCostsOnlyThatEntry() throws {
++        let first = try storedEntryJSON(named: "One")
++        let third = try storedEntryJSON(named: "Three")
++        let blob = Data("[\(first),{\"id\":123},\(third)]".utf8)
++        #expect(ProfileService.entries(fromStored: blob).map(\.name) == ["One", "Three"],
++                "the corrupt entry must be dropped, not the whole list")
++    }
++
++    @MainActor @Test func savingACaseVariantKeepsBothProfilesDistinct() {
++        let service = ProfileService(load: false)
++        defer { UserDefaults.standard.removeObject(forKey: ProfileService.storageKey) }
++        service.save(Profile(name: "my profile"))
++        service.save(Profile(name: "My Profile"))
++        #expect(service.entries.count == 2, "the case variant must not silently replace the original")
++        #expect(Set(service.entries.map { $0.name.lowercased() }).count == 2,
++                "display names must stay distinct, comparing case-insensitively")
++        #expect(service.lastError != nil, "the rename must be surfaced, not silent")
++    }
++
++    @MainActor @Test func reSavingTheExactSameNameStillUpdates() {
++        let service = ProfileService(load: false)
++        defer { UserDefaults.standard.removeObject(forKey: ProfileService.storageKey) }
++        var first = Profile(name: "Gaming")
++        first.autoClicker.intervalMs = 100
++        var second = Profile(name: "Gaming")
++        second.autoClicker.intervalMs = 250
++        service.save(first)
++        service.save(second)
++        #expect(service.entries.count == 1, "the exact same name is the same profile: update, don't accumulate")
++        #expect(service.entries.first?.autoClicker.intervalMs == 250)
++        #expect(service.entries.first?.id == first.id)
++    }
++
++    @MainActor @Test func importDoesNotCreateADuplicateDisplayName() throws {
++        let service = ProfileService(load: false)
++        defer { UserDefaults.standard.removeObject(forKey: ProfileService.storageKey) }
++        service.save(Profile(name: "login"))
++        let fileURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
++            .appending(path: "mm-import-\(UUID().uuidString).macromakerprofile")
++        defer { try? FileManager.default.removeItem(at: fileURL) }
++        try Profile(name: "Login").jsonData().write(to: fileURL)
++        let imported = try #require(service.importFile(at: fileURL))
++        #expect(imported.name.lowercased() != "login", "the import must not create a duplicate display name")
++        #expect(Set(service.entries.map { $0.name.lowercased() }).count == service.entries.count)
++        #expect(service.lastError != nil, "the rename must be surfaced, not silent")
++    }
++
++    @MainActor @Test func aFailedProfileWriteSurfacesAWarning() {
++        let service = ProfileService(load: false)
++        let originalWriter = Persistence.writer
++        Persistence.writer = { _, _ in false }
++        defer {
++            Persistence.writer = originalWriter
++            UserDefaults.standard.removeObject(forKey: ProfileService.storageKey)
++        }
++        service.save(Profile(name: "Unsaved"))
++        #expect(service.entries.first?.name == "Unsaved", "the change is still visible in memory")
++        #expect(service.lastError != nil, "a failed save must not be indistinguishable from success")
++    }
+ }
+ 
+ /// The profile importer accepted ANY top-level JSON object: `Profile.init(from:)` defaults every
+diff --git a/Tests/MacroMakerTests/RecorderPlayerTests.swift b/Tests/MacroMakerTests/RecorderPlayerTests.swift
+new file mode 100644
+index 0000000..c472033
+--- /dev/null
++++ b/Tests/MacroMakerTests/RecorderPlayerTests.swift
+@@ -0,0 +1,103 @@
++import AppKit
++import Carbon.HIToolbox
++import CoreGraphics
++import Foundation
++import Testing
++
++@testable import MacroMaker
++
++/// Wave 4 — recorder/player correctness (adversarial review 2026-09-18, findings #1, #6, #7).
++/// One serialized suite: these tests swap global seams (`MacroRecorder.tapBuilder`,
++/// `EventSynthesizer.eventPoster`) that no other suite must see mid-flight.
++@Suite("Recorder/player correctness", .serialized)
++struct RecorderPlayerTests {
++
++    // MARK: Finding 1 — recorded offsets follow the event's own timestamp
++
++    /// Two events stamped 0.5 s apart in *event* time, injected back-to-back: the recorded gap
++    /// must be the stamps' 0.5 s, not the (near-zero) main-run-loop arrival spacing. The old
++    /// code stamped `Date()`-style arrival on main, where the live-event table repaints.
++    @Test @MainActor func recordedOffsetsFollowEventStampsNotMainLoopArrival() throws {
++        _ = NSApplication.shared   // handle(_:) reads NSApp.isActive; an unactivated accessory
++        NSApp.setActivationPolicy(.accessory)   // app is never active, so key events are kept
++        let priorTap = MacroRecorder.tapBuilder
++        MacroRecorder.tapBuilder = { _, _ in CFMachPortCreate(nil, nil, nil, nil) }
++        defer { MacroRecorder.tapBuilder = priorTap }
++
++        let recorder = MacroRecorder()
++        #expect(recorder.start(), "start must succeed on the inert tap seam")
++        defer { _ = recorder.stop() }
++
++        let base = DispatchTime.now().uptimeNanoseconds
++        let stamps: [(keyCode: CGKeyCode, stamp: UInt64)] = [
++            (CGKeyCode(kVK_ANSI_A), base &+ 100_000_000),
++            (CGKeyCode(kVK_ANSI_S), base &+ 600_000_000),
++        ]
++        for entry in stamps {
++            let cgEvent = try #require(CGEvent(keyboardEventSource: nil, virtualKey: entry.keyCode, keyDown: true))
++            cgEvent.timestamp = entry.stamp   // the window server's own clock: ns since startup
++            recorder.handle(TapEvent(type: .keyDown, event: cgEvent))
++        }
++
++        let times = recorder.liveEvents.map(\.time)
++        #expect(times.count == 2, "both injected events must be recorded")
++        guard times.count == 2 else { return }
++        #expect(abs(times[0] - 0.1) < 0.05,
++                "the first offset must follow its stamp (0.1 s after start), got \(times[0])")
++        #expect(abs(times[1] - times[0] - 0.5) < 0.05,
++                "the gap must be the stamps' 0.5 s, not arrival spacing, got \(times[1] - times[0])")
++    }
++
++    // MARK: Finding 6 — a drag replays as recorded, with nothing fabricated
++
++    /// A recording of down…up with movement between (what a real drag records as — the tap
++    /// mask has no dragged events) must replay exactly its recorded transitions. The player
++    /// used to fabricate a single dragged event at the release point: a jump-click, not a drag.
++    @Test func replaysADownUpWithMovementWithoutFabricatingADrag() throws {
++        final class PostBox: @unchecked Sendable { var events: [CGEvent] = [] }
++        let box = PostBox()
++        let priorPoster = EventSynthesizer.eventPoster
++        EventSynthesizer.eventPoster = { box.events.append($0) }
++        defer { EventSynthesizer.eventPoster = priorPoster }
++
++        let downPoint = CGPoint(x: 100, y: 100)
++        let upPoint = CGPoint(x: 300, y: 220)
++        let plan = MacroPlayer.Plan(events: [
++            MacroEvent(time: 0, action: .mouseDown(.left, downPoint, clickCount: 1), flags: 0),
++            MacroEvent(time: 0.05, action: .mouseUp(.left, upPoint, clickCount: 1), flags: 0),
++        ], repeats: 1, speed: 1, humanizer: HumanizerSettings())
++
++        let done = DispatchSemaphore(value: 0)
++        _ = WorkerThread.start(name: "w4-faithful-drag") { worker in
++            MacroPlayer.play(plan, worker: worker) { _, _ in }
++            done.signal()
++        }
++        let settled = done.wait(timeout: .now() + 5) == .success
++        #expect(settled, "playback must finish on its own")
++        guard settled else { return }
++
++        let types = box.events.map(\.type)
++        #expect(types == [.mouseMoved, .leftMouseDown, .leftMouseUp],
++                "replay must post the aim-move, the recorded down, then the recorded up — nothing else, got \(types)")
++    }
++
++    // MARK: Finding 7 — a cancelled run is not a finished one
++
++    /// Every exit path used to fall through to `report(progress, true)`, so a cancelled run
++    /// claimed natural completion — the exact reporting lie AutoClicker had to patch (Wave 1).
++    @Test func aCancelledPlaybackReportsNotFinished() {
++        let plan = MacroPlayer.Plan(events: [
++            MacroEvent(time: 5, action: .keyDown(CGKeyCode(kVK_ANSI_A), isRepeat: false), flags: 0),
++        ], repeats: 1, speed: 1, humanizer: HumanizerSettings())
++
++        final class ReportBox: @unchecked Sendable { var finished: [Bool] = [] }
++        let box = ReportBox()
++        let worker = WorkerThread.start(name: "w4-cancel") { worker in
++            MacroPlayer.play(plan, worker: worker) { _, finished in box.finished.append(finished) }
++        }
++        worker.cancelAndWait()
++
++        #expect(box.finished.last == false,
++                "a cancelled run's final report must say finished: false, got \(box.finished)")
++    }
++}
+\ No newline at end of file
+diff --git a/Tests/MacroMakerTests/RecordingCleanerTests.swift b/Tests/MacroMakerTests/RecordingCleanerTests.swift
+index b9c6017..7f38862 100644
+--- a/Tests/MacroMakerTests/RecordingCleanerTests.swift
++++ b/Tests/MacroMakerTests/RecordingCleanerTests.swift
+@@ -47,6 +47,28 @@ import Testing
+         #expect(RecordingCleaner.clean(raw).map(\.action) == [.keyDown(keyA, isRepeat: false), .keyUp(keyA)])
+     }
+ 
++    @Test func dropsTrailingHeldMouseButton() {
++        // Stopped while the left button was still down (stop hotkey mid-press): a dangling
++        // down would replay as a phantom down…instant-up click on every pass.
++        let raw = [
++            event(1, .keyDown(keyA, isRepeat: false)), event(1.5, .keyUp(keyA)),
++            event(2, .mouseDown(.left, .zero, clickCount: 1)),
++        ]
++        #expect(RecordingCleaner.clean(raw).map(\.action) == [.keyDown(keyA, isRepeat: false), .keyUp(keyA)],
++                "a trailing held button must drop exactly like a trailing held key")
++    }
++
++    @Test func dropsAnInterleavedTrailingRunOfHeldKeysAndButtons() {
++        // Shift still held with the button down at stop: the whole trailing run goes.
++        let raw = [
++            event(1, .keyDown(keyA, isRepeat: false)), event(1.5, .keyUp(keyA)),
++            event(2, .keyDown(CGKeyCode(kVK_Shift), isRepeat: false)),
++            event(2.5, .mouseDown(.right, .zero, clickCount: 1)),
++        ]
++        #expect(RecordingCleaner.clean(raw).map(\.action) == [.keyDown(keyA, isRepeat: false), .keyUp(keyA)],
++                "the trailing held-run cleanup must cross input types, not stop at the first button")
++    }
++
+     @Test func emptyAndStopOnlyRecordingsBecomeEmpty() {
+         #expect(RecordingCleaner.clean([]).isEmpty)
+         #expect(RecordingCleaner.clean([event(1, .keyDown(control, isRepeat: false)), event(1.1, .keyDown(keyR, isRepeat: false))]).isEmpty)
+diff --git a/Tests/MacroMakerTests/ScheduleAndPauseTests.swift b/Tests/MacroMakerTests/ScheduleAndPauseTests.swift
+index 70629a8..b60a0d2 100644
+--- a/Tests/MacroMakerTests/ScheduleAndPauseTests.swift
++++ b/Tests/MacroMakerTests/ScheduleAndPauseTests.swift
+@@ -122,6 +122,20 @@ struct RunSessionPauseTests {
+         session.start(withCountdown: true) { _ in Issue.record("countdown begin shouldn't run"); return nil }
+         #expect(session.phase == .paused)
+     }
++
++    /// Stops that come from outside the feature ("Stop Everything", hold-release, profile
++    /// apply, shutdown) must trigger the feature's teardown too — the hook is how a
++    /// session stop reaches watchers the state machine can't know about.
++    @Test func stoppingAnActiveSessionRunsTheStopHookOnce() {
++        let session = RunSession()
++        var stops = 0
++        session.onStop = { stops += 1 }
++        session.start(withCountdown: false) { _ in { } }
++        session.stop()
++        #expect(stops == 1, "an active session's stop must fire the teardown hook")
++        session.stop()
++        #expect(stops == 1, "an idle session has nothing to tear down")
++    }
+ }
+ 
+ @Suite("Real-input rules")
+diff --git a/Tests/MacroMakerTests/StopLifecycleTests.swift b/Tests/MacroMakerTests/StopLifecycleTests.swift
+new file mode 100644
+index 0000000..6d07302
+--- /dev/null
++++ b/Tests/MacroMakerTests/StopLifecycleTests.swift
+@@ -0,0 +1,282 @@
++import AppKit
++import CoreGraphics
++import Foundation
++import Testing
++
++@testable import MacroMaker
++
++/// Wave 1 — the stop paths ("Stop Everything", hold-release, profile apply, shutdown) used to
++/// call `RunSession.stop()` directly, bypassing the feature's teardown: the real-input monitor
++/// stayed installed forever, the 1 Hz resume timer kept firing, and the next run start tripped
++/// the monitor's single-subscriber debug assert.
++///
++/// One serialized suite: these tests share the `RealInputMonitor` singleton and the
++/// `BackgroundPoster` event-poster seam.
++@Suite("Stop-path lifecycle", .serialized)
++@MainActor
++struct StopLifecycleTests {
++
++    // MARK: RealInputMonitor subscriber counting
++
++    /// A resume re-starts the same watcher (begin and resume both land in
++    /// `startPauseWatching`); the old debug assert trapped on that second start, and a
++    /// double count kept the monitors installed after `endRun` for the rest of the process.
++    @Test func aSecondStartOfTheSameWatcherDoesNotCrashOrDoubleCount() {
++        let monitor = RealInputMonitor.shared
++        defer { monitor.stop() }
++        monitor.start(onRealInput: {})
++        monitor.start(onRealInput: {})
++        #expect(monitor.subscribers == 1, "one watcher, re-started — not two")
++        monitor.stop()
++        #expect(monitor.subscribers == 0, "stop removes the watcher, so endRun's stop must land")
++        monitor.stop()
++        #expect(monitor.subscribers == 0, "stop is idempotent")
++    }
++
++    // MARK: Stop Everything tears the run down like the in-app Stop
++
++    /// The pause-on-input run scenario: start → Stop Everything → start again. Before the
++    /// fix, `stopAll` called the bare session stop, so the input monitor stayed installed
++    /// (subscribers never returned to 0), the 1 Hz resume timer kept firing, and the next
++    /// start tripped the monitor's single-subscriber debug assert.
++    @Test func stopEverythingRemovesThePauseWatcherAndTheNextRunStartsClean() {
++        let model = AppModel.shared
++        let clicker = model.autoClicker
++        let defaults = UserDefaults.standard
++        let savedSettingsBlob = defaults.data(forKey: AutoClicker.storageKey)
++        let savedSettings = clicker.settings
++        let savedPoster = BackgroundPoster.eventPoster
++        model.permissions.forceAccessibilityTrusted = true
++        // The run aims at an app that is always running (Finder); clicks go through the
++        // event-poster seam, so nothing is ever posted to the real window server.
++        BackgroundPoster.eventPoster = { _, _ in }
++        defer {
++            BackgroundPoster.eventPoster = savedPoster
++            model.permissions.forceAccessibilityTrusted = false
++            model.stopAll()
++            clicker.settings = savedSettings
++            // Byte-identical defaults restore: the re-assign above re-encoded the blob.
++            if let savedSettingsBlob { defaults.set(savedSettingsBlob, forKey: AutoClicker.storageKey) }
++            else { defaults.removeObject(forKey: AutoClicker.storageKey) }
++        }
++
++        var settings = clicker.settings
++        settings.pauseOnRealInput = true
++        settings.target = .directApp
++        settings.directAppBundleID = "com.apple.finder"
++        clicker.settings = settings
++
++        clicker.toggle(.hotkey)   // hotkey trigger: no countdown, running immediately
++        #expect(clicker.session.phase == .running)
++        #expect(RealInputMonitor.shared.subscribers == 1)
++
++        model.stopAll()
++        #expect(clicker.session.phase == .idle)
++        #expect(RealInputMonitor.shared.subscribers == 0,
++                "Stop Everything must remove the watcher, not just flip the phase")
++
++        clicker.toggle(.hotkey)   // the next start re-installs the watcher cleanly — no assert
++        #expect(clicker.session.phase == .running)
++        #expect(RealInputMonitor.shared.subscribers == 1)
++        model.stopAll()
++        #expect(RealInputMonitor.shared.subscribers == 0)
++    }
++
++    // MARK: Stop's cancel-and-wait must fail loud
++
++    /// Blocks the first click post until the test opens the gate — the wedge sits exactly
++    /// where a slow window-server call would, past any cancellation check.
++    private final class ClickGate: @unchecked Sendable {
++        private let entered = DispatchSemaphore(value: 0)
++        private let release = DispatchSemaphore(value: 0)
++        private let lock = NSLock()
++        private var opened = false
++
++        var poster: (CGEvent, pid_t) -> Void {
++            { [self] _, _ in
++                entered.signal()
++                lock.lock()
++                let open = opened
++                lock.unlock()
++                if !open { release.wait() }
++            }
++        }
++
++        func awaitEntry() throws {
++            guard entered.wait(timeout: .now() + 3) == .success else {
++                throw NSError(domain: "StopLifecycleTests", code: 1,
++                               userInfo: [NSLocalizedDescriptionKey: "the worker never reached the click post"])
++            }
++        }
++
++        func open() {
++            lock.lock()
++            opened = true
++            lock.unlock()
++            release.signal()
++        }
++    }
++
++    /// A worker that misses Stop's one-second budget used to be silently declared stopped:
++    /// `cancelAndWait` returned `false` and every caller dropped it, leaving a live worker
++    /// that could still post clicks. The overrun must fail loud.
++    @Test func aStopThatOutrunsItsBudgetSurfacesAWarning() async throws {
++        let model = AppModel.shared
++        let clicker = model.autoClicker
++        let defaults = UserDefaults.standard
++        let savedSettingsBlob = defaults.data(forKey: AutoClicker.storageKey)
++        let savedSettings = clicker.settings
++        let savedPoster = BackgroundPoster.eventPoster
++        let gate = ClickGate()
++        model.permissions.forceAccessibilityTrusted = true
++        BackgroundPoster.eventPoster = gate.poster
++        defer {
++            gate.open()
++            BackgroundPoster.eventPoster = savedPoster
++            model.permissions.forceAccessibilityTrusted = false
++            model.stopAll()
++            clicker.settings = savedSettings
++            if let savedSettingsBlob { defaults.set(savedSettingsBlob, forKey: AutoClicker.storageKey) }
++            else { defaults.removeObject(forKey: AutoClicker.storageKey) }
++        }
++
++        var settings = clicker.settings
++        settings.target = .directApp
++        settings.directAppBundleID = "com.apple.finder"
++        clicker.settings = settings
++
++        clicker.toggle(.hotkey)
++        try gate.awaitEntry()   // the worker is now wedged inside its click post
++
++        let stopStarted = Date()
++        clicker.toggle(.hotkey)       // Stop: waits the budget, then must give up loudly
++        #expect(Date().timeIntervalSince(stopStarted) < 1.5,
++                "Stop's main-thread cost stays within its single 1 s budget")
++        #expect(clicker.session.phase == .idle)
++
++        // The retry happens off the main thread; the warning lands when it also misses.
++        let deadline = Date().addingTimeInterval(5)
++        while clicker.runWarning == nil, Date() < deadline {
++            try await Task.sleep(for: .milliseconds(50))
++        }
++        #expect(clicker.runWarning != nil,
++                "a timed-out Stop must be visible, not silently declared done")
++    }
++
++    // MARK: Wave 2 — an undeliverable click must fail loud, not count
++
++    /// F5: a click whose NSEvent conversion returns nil used to vanish silently — nothing
++    /// posted, no warning, and `directClickOnce` still counted it as delivered. The failure
++    /// must surface through the runWarning channel and never tick the "clicks that reached
++    /// the target" counter.
++    @Test func anUndeliverableClickSurfacesAWarningInsteadOfCounting() async throws {
++        let model = AppModel.shared
++        let clicker = model.autoClicker
++        let defaults = UserDefaults.standard
++        let savedSettingsBlob = defaults.data(forKey: AutoClicker.storageKey)
++        let savedSettings = clicker.settings
++        let savedPoster = BackgroundPoster.eventPoster
++        let savedBuilder = BackgroundPoster.nsMouseEventBuilder
++        model.permissions.forceAccessibilityTrusted = true
++        BackgroundPoster.eventPoster = { _, _ in }
++        // Force F5's failure path: the AppKit conversion returns nil for every event.
++        BackgroundPoster.nsMouseEventBuilder = { _, _, _, _, _ in nil }
++        defer {
++            BackgroundPoster.eventPoster = savedPoster
++            BackgroundPoster.nsMouseEventBuilder = savedBuilder
++            model.permissions.forceAccessibilityTrusted = false
++            model.stopAll()
++            clicker.settings = savedSettings
++            if let savedSettingsBlob { defaults.set(savedSettingsBlob, forKey: AutoClicker.storageKey) }
++            else { defaults.removeObject(forKey: AutoClicker.storageKey) }
++        }
++
++        var settings = clicker.settings
++        settings.target = .directApp
++        settings.directAppBundleID = "com.apple.finder"
++        // Both limits: old code counted the undelivered clicks and would race the click limit;
++        // new code never counts them, so the duration limit is what ends the run.
++        settings.stopAfterClicks = true
++        settings.maxClicks = 5
++        settings.stopAfterDuration = true
++        settings.maxDurationSeconds = 0.3
++        clicker.settings = settings
++
++        clicker.toggle(.hotkey)
++        let deadline = Date().addingTimeInterval(5)
++        while clicker.session.phase != .idle, Date() < deadline {
++            try await Task.sleep(for: .milliseconds(20))
++        }
++        #expect(clicker.session.phase == .idle, "the duration limit must end the run")
++        #expect(clicker.clickCount == 0,
++                "a click that never became an event must never be counted as delivered")
++        #expect(clicker.runWarning != nil,
++                "the swallowed conversion failure must be visible in the UI, not silent")
++    }
++
++    /// Fix 6 (appkit-accept #2): testClick used to say "sent" merely because it called the
++    /// poster. Truth now: AX granted AND a fully-aimed event (window fields, self-tag, no fake
++    /// modifiers) actually went out the poster seam — a failed build says so instead of lying.
++    @Test func testClickReportsSentOnlyForADeliveredWellAimedEvent() async throws {
++        let model = AppModel.shared
++        let clicker = model.autoClicker
++        let defaults = UserDefaults.standard
++        let savedSettingsBlob = defaults.data(forKey: AutoClicker.storageKey)
++        let savedSettings = clicker.settings
++        let savedPoster = BackgroundPoster.eventPoster
++        let savedBuilder = BackgroundPoster.nsMouseEventBuilder
++        model.permissions.forceAccessibilityTrusted = true
++        final class EventBox: @unchecked Sendable { var events: [CGEvent] = [] }
++        let box = EventBox()
++        BackgroundPoster.eventPoster = { event, _ in box.events.append(event) }
++        defer {
++            BackgroundPoster.eventPoster = savedPoster
++            BackgroundPoster.nsMouseEventBuilder = savedBuilder
++            model.permissions.forceAccessibilityTrusted = false
++            model.stopAll()
++            clicker.settings = savedSettings
++            if let savedSettingsBlob { defaults.set(savedSettingsBlob, forKey: AutoClicker.storageKey) }
++            else { defaults.removeObject(forKey: AutoClicker.storageKey) }
++        }
++
++        var settings = clicker.settings
++        settings.target = .directApp
++        settings.directAppBundleID = "com.apple.finder"
++        clicker.settings = settings
++
++        let reply = clicker.testClick()
++        #expect(reply == "Test click sent.", "a healthy click must report sent, got: \(reply)")
++        #expect(box.events.count == 2, "a click is a down and an up, got \(box.events.count)")
++        for event in box.events {
++            #expect(NSEvent(cgEvent: event)?.windowNumber ?? 0 > 0,
++                    "the test event must name a real window of the target app")
++            #expect(event.getIntegerValueField(CGEventField(rawValue: 91)!) > 0)
++            #expect(event.getIntegerValueField(CGEventField(rawValue: 92)!) > 0)
++            #expect(event.flags == .maskNonCoalesced, "no fake modifiers on a test click")
++            #expect(event.getIntegerValueField(.eventSourceUserData) == EventSynthesizer.eventTag)
++        }
++
++        // The failure branch: the AppKit conversion dies, so "sent" would be a lie.
++        BackgroundPoster.nsMouseEventBuilder = { _, _, _, _, _ in nil }
++        box.events.removeAll()
++        let failed = clicker.testClick()
++        #expect(failed != "Test click sent.", "an undeliverable test click must not claim success")
++        #expect(failed.contains("failed"), "the failure must say so, got: \(failed)")
++        #expect(box.events.isEmpty, "nothing may be posted when the event can't be built")
++    }
++
++    // MARK: a stale natural-finish report cannot resurrect the warning
++
++    /// The worker finished naturally (limit reached) and queued its final report; the user
++    /// pressed Stop before main drained it. The report belongs to a run the user already
++    /// dismissed — it must set neither the warning banner nor the counters.
++    @Test func aFinishReportQueuedBeforeAStopResurrectsNothingAfterIt() {
++        let clicker = AppModel.shared.autoClicker
++        clicker.session.start(withCountdown: false) { _ in { } }
++        let stoppedRun = clicker.runID   // the id the (already finished) worker reports under
++        clicker.session.stop()
++        clicker.handleWorkerReport(run: stoppedRun, token: 0, count: 5, finished: true,
++                                   warning: "The target app quit or was replaced mid-run — the run stopped rather than click the wrong process.")
++        #expect(clicker.runWarning == nil, "a stopped run's late report must resurrect nothing")
++    }
++}
+\ No newline at end of file
