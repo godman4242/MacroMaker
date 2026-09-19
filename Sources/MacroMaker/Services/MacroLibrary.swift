@@ -31,12 +31,19 @@ final class MacroLibrary {
 
     var lastError: String?
 
+    /// Test seam: when set, the library lives here instead of app support.
+    static var folderOverride: URL?
+
     static var folder: URL? {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+        if let folderOverride { return folderOverride }
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
             .appending(path: "Macro Maker/Macros", directoryHint: .isDirectory)
     }
 
-    private func persist() {
+    /// Returns whether the write landed. A failed index write was a silent `try?` —
+    /// indistinguishable from success.
+    @discardableResult
+    private func persist() -> Bool {
         var records = records
         // Mark entries whose file vanished so the UI can show and clean them.
         if let folder = Self.folder {
@@ -45,7 +52,11 @@ final class MacroLibrary {
             }
         }
         self.records = records
-        Persistence.save(records, key: Self.indexKey)
+        guard Persistence.save(records, key: Self.indexKey) else {
+            lastError = "Couldn't save the library index — this change wasn't stored."
+            return false
+        }
+        return true
     }
 
     /// A record is an orphan when its file is missing — or its name can't be trusted (it would
@@ -79,7 +90,7 @@ final class MacroLibrary {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             try stored.jsonData().write(to: url, options: .atomic)
             records.insert(record, at: 0)
-            persist()
+            guard persist() else { return nil }
             lastError = nil
             return record
         } catch {
@@ -105,16 +116,25 @@ final class MacroLibrary {
     func rename(_ record: MacroRecord, to proposed: String) {
         guard let index = records.firstIndex(where: { $0.id == record.id }) else { return }
         let oldName = records[index].fileName
-        records[index].name = ProfileRules.cleanedName(proposed)
         if let folder = Self.folder {
             let newFileName = MacroLibraryRules.uniqueFileName(
                 for: proposed, taken: diskFileNames().filter { $0 != oldName } + records.map(\.fileName).filter { $0 != oldName })
             let oldURL = folder.appending(path: oldName)
             let newURL = folder.appending(path: newFileName)
-            // The file name carries the display name for the Finder too.
-            try? FileManager.default.moveItem(at: oldURL, to: newURL)
+            do {
+                // The file name carries the display name for the Finder too.
+                try FileManager.default.moveItem(at: oldURL, to: newURL)
+            } catch {
+                // Rewriting the index after a failed move pointed it at a file that never
+                // existed while the real one sat on disk unindexed. The record keeps both its
+                // names, and the user sees why — exactly on the orphan path, where renaming
+                // is how users try to fix things.
+                lastError = "Couldn't rename “\(records[index].name)”: \(error.localizedDescription)"
+                return
+            }
             records[index].fileName = newURL.lastPathComponent
         }
+        records[index].name = ProfileRules.cleanedName(proposed)
         persist()
     }
 

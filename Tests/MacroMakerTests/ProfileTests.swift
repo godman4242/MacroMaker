@@ -85,6 +85,89 @@ struct ProfileRulesTests {
         // Case-insensitive like the Finder.
         #expect(ProfileRules.uniqueName(forDuplicateOf: "farm", taken: ["farm copy"]) == "farm copy 2")
     }
+
+    @Test func uniqueDisplayNameSuffixesOnlyOnACaseInsensitiveClash() {
+        #expect(ProfileRules.uniqueDisplayName(for: "Fresh", taken: []) == "Fresh")
+        #expect(ProfileRules.uniqueDisplayName(for: "Login", taken: ["other"]) == "Login")
+        #expect(ProfileRules.uniqueDisplayName(for: "My Profile", taken: ["my profile"]) == "My Profile 2")
+        #expect(ProfileRules.uniqueDisplayName(for: "My Profile", taken: ["my profile", "MY PROFILE 2"]) == "My Profile 3")
+    }
+}
+
+/// The profiles-list wipe and the silent case-variant replace (review models F1 + F12).
+///
+/// The list decoded as one array with `try?` + `?? []`, so a single unreadable entry made
+/// the WHOLE list present as empty — and the next save/delete/rename persisted `[]` over
+/// the blob, permanently. Meanwhile `save()` matched names case-insensitively, so saving
+/// "My Profile" silently REPLACED the different profile "my profile".
+@Suite("Profile list integrity")
+struct ProfileListIntegrityTests {
+
+    private func storedEntryJSON(named name: String) throws -> String {
+        String(decoding: try JSONEncoder().encode(ProfileEntry(profile: Profile(name: name))), as: UTF8.self)
+    }
+
+    /// Blast radius: whatever made one entry unreadable — a type mismatch, an unknown enum
+    /// value, a hand-edited defaults plist — it must cost one profile, not the list.
+    @Test func oneUndecodableStoredEntryCostsOnlyThatEntry() throws {
+        let first = try storedEntryJSON(named: "One")
+        let third = try storedEntryJSON(named: "Three")
+        let blob = Data("[\(first),{\"id\":123},\(third)]".utf8)
+        #expect(ProfileService.entries(fromStored: blob).map(\.name) == ["One", "Three"],
+                "the corrupt entry must be dropped, not the whole list")
+    }
+
+    @MainActor @Test func savingACaseVariantKeepsBothProfilesDistinct() {
+        let service = ProfileService(load: false)
+        defer { UserDefaults.standard.removeObject(forKey: ProfileService.storageKey) }
+        service.save(Profile(name: "my profile"))
+        service.save(Profile(name: "My Profile"))
+        #expect(service.entries.count == 2, "the case variant must not silently replace the original")
+        #expect(Set(service.entries.map { $0.name.lowercased() }).count == 2,
+                "display names must stay distinct, comparing case-insensitively")
+        #expect(service.lastError != nil, "the rename must be surfaced, not silent")
+    }
+
+    @MainActor @Test func reSavingTheExactSameNameStillUpdates() {
+        let service = ProfileService(load: false)
+        defer { UserDefaults.standard.removeObject(forKey: ProfileService.storageKey) }
+        var first = Profile(name: "Gaming")
+        first.autoClicker.intervalMs = 100
+        var second = Profile(name: "Gaming")
+        second.autoClicker.intervalMs = 250
+        service.save(first)
+        service.save(second)
+        #expect(service.entries.count == 1, "the exact same name is the same profile: update, don't accumulate")
+        #expect(service.entries.first?.autoClicker.intervalMs == 250)
+        #expect(service.entries.first?.id == first.id)
+    }
+
+    @MainActor @Test func importDoesNotCreateADuplicateDisplayName() throws {
+        let service = ProfileService(load: false)
+        defer { UserDefaults.standard.removeObject(forKey: ProfileService.storageKey) }
+        service.save(Profile(name: "login"))
+        let fileURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appending(path: "mm-import-\(UUID().uuidString).macromakerprofile")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        try Profile(name: "Login").jsonData().write(to: fileURL)
+        let imported = try #require(service.importFile(at: fileURL))
+        #expect(imported.name.lowercased() != "login", "the import must not create a duplicate display name")
+        #expect(Set(service.entries.map { $0.name.lowercased() }).count == service.entries.count)
+        #expect(service.lastError != nil, "the rename must be surfaced, not silent")
+    }
+
+    @MainActor @Test func aFailedProfileWriteSurfacesAWarning() {
+        let service = ProfileService(load: false)
+        let originalWriter = Persistence.writer
+        Persistence.writer = { _, _ in false }
+        defer {
+            Persistence.writer = originalWriter
+            UserDefaults.standard.removeObject(forKey: ProfileService.storageKey)
+        }
+        service.save(Profile(name: "Unsaved"))
+        #expect(service.entries.first?.name == "Unsaved", "the change is still visible in memory")
+        #expect(service.lastError != nil, "a failed save must not be indistinguishable from success")
+    }
 }
 
 /// The profile importer accepted ANY top-level JSON object: `Profile.init(from:)` defaults every

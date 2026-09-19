@@ -1,4 +1,5 @@
 import AppKit
+import os
 import UniformTypeIdentifiers
 
 /// Saving, opening and autosaving `.macromaker` files.
@@ -6,8 +7,12 @@ import UniformTypeIdentifiers
 enum MacroFiles {
     static let contentType = UTType(exportedAs: "com.kheshav.macromaker", conformingTo: .json)
 
+    /// Test seam: where the autosave is written (tests point it at a temp path).
+    static var autosaveDestination: URL?
+
     /// The last recording survives quitting the app.
     private static var autosaveURL: URL? {
+        if let autosaveDestination { return autosaveDestination }
         guard let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
         return support.appending(path: "Macro Maker/Last Recording.\(Macro.fileExtension)")
     }
@@ -17,14 +22,25 @@ enum MacroFiles {
         return try? Macro(jsonData: data)
     }
 
-    static func autosave(_ macro: Macro?) {
-        guard let url = autosaveURL else { return }
+    /// Returns a user-visible warning when the autosave could NOT be written; nil on success.
+    /// Both writes were a silent `try?`, so a full or slow disk discarded the last recording
+    /// at the exact moment the app was about to quit — indistinguishable from success.
+    @discardableResult
+    static func autosave(_ macro: Macro?) -> String? {
+        guard let url = autosaveURL else { return nil }
         guard let macro else {
             try? FileManager.default.removeItem(at: url)
-            return
+            return nil
         }
-        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? macro.jsonData().write(to: url, options: .atomic)
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try macro.jsonData().write(to: url, options: .atomic)
+            return nil
+        } catch {
+            let log = Logger(subsystem: "MacroMaker", category: "MacroFiles")
+            log.fault("Couldn't write the autosave: \(error.localizedDescription, privacy: .public)")
+            return "Couldn't save the last recording: \(error.localizedDescription)"
+        }
     }
 
     static func read(from url: URL) throws -> Macro {

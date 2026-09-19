@@ -241,6 +241,7 @@ final class AppModel {
 
     func shutdown() {
         stopAll()
+        // Nothing is on screen to show a warning at quit; MacroFiles logs the failure.
         MacroFiles.autosave(macro)
     }
 
@@ -280,7 +281,7 @@ final class AppModel {
             // An empty recording (e.g. started and stopped by accident) keeps the previous macro.
             guard !events.isEmpty else { return }
             macro = Macro(name: "Recording \(Self.recordingNameFormatter.string(from: Date()))", events: events)
-            MacroFiles.autosave(macro)
+            if let warning = MacroFiles.autosave(macro) { fileError = warning }
         } else {
             guard !player.session.phase.isActive else {
                 NSSound.beep()
@@ -340,14 +341,14 @@ final class AppModel {
     /// Writes the current macro to the "Last Recording" autosave (called after step edits too,
     /// so quitting mid-edit doesn't lose them).
     func autosaveMacro() {
-        MacroFiles.autosave(macro)
+        if let warning = MacroFiles.autosave(macro) { fileError = warning }
     }
 
     private func load(_ opened: Macro) {
         player.session.stop()
         macro = opened
         fileError = nil
-        MacroFiles.autosave(opened)
+        if let warning = MacroFiles.autosave(opened) { fileError = warning }
     }
 
     private func applyActivationPolicy() {

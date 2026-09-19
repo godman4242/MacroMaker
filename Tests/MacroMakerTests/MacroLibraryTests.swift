@@ -288,3 +288,76 @@ struct LibraryIndexIntegrityTests {
         #expect(!records.contains { $0.fileName.contains("..") })
     }
 }
+
+/// The rename desync (review models F10) and the fail-open index write (models F8).
+///
+/// `rename` moved the file with `try?` and rewrote the index's `fileName` regardless, so a
+/// failed move (the realistic case: an orphan record being renamed) left the index pointing
+/// at a file that never existed while the real one sat on disk unindexed. And a failed
+/// index write was indistinguishable from success — no `lastError`, nothing.
+@Suite("Library write integrity")
+struct LibraryWriteIntegrityTests {
+
+    @MainActor @Test func renamingAnOrphanLeavesTheIndexIntactAndWarns() throws {
+        let folder = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appending(path: "mm-lib-\(UUID().uuidString)", directoryHint: .isDirectory)
+        MacroLibrary.folderOverride = folder
+        defer {
+            MacroLibrary.folderOverride = nil
+            UserDefaults.standard.removeObject(forKey: MacroLibrary.indexKey)
+            try? FileManager.default.removeItem(at: folder)
+        }
+        let library = MacroLibrary(load: false)
+        let macro = Macro(name: "Orphan", createdAt: Date(timeIntervalSince1970: 1_000), events: [
+            MacroEvent(time: 0, action: .keyDown(0, isRepeat: false), flags: 0)])
+        let record = try #require(library.add(macro, named: "Orphan"))
+        // The realistic move failure: the record's file is gone from disk.
+        try FileManager.default.removeItem(at: folder.appending(path: record.fileName))
+        library.rename(record, to: "Fixed")
+        #expect(library.records.first?.fileName == record.fileName,
+                "the index must not point at a file the failed move never created")
+        #expect(library.records.first?.name == "Orphan", "a failed rename must change nothing")
+        #expect(library.lastError != nil, "the failed rename must not look like success")
+    }
+
+    @MainActor @Test func aSuccessfulRenameStillFollowsTheFile() throws {
+        let folder = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appending(path: "mm-lib-\(UUID().uuidString)", directoryHint: .isDirectory)
+        MacroLibrary.folderOverride = folder
+        defer {
+            MacroLibrary.folderOverride = nil
+            UserDefaults.standard.removeObject(forKey: MacroLibrary.indexKey)
+            try? FileManager.default.removeItem(at: folder)
+        }
+        let library = MacroLibrary(load: false)
+        let macro = Macro(name: "Login", createdAt: Date(timeIntervalSince1970: 1_000), events: [
+            MacroEvent(time: 0, action: .keyDown(0, isRepeat: false), flags: 0)])
+        let record = try #require(library.add(macro, named: "Login"))
+        library.rename(record, to: "Fixed")
+        #expect(library.records.first?.name == "Fixed")
+        #expect(library.records.first?.fileName == "Fixed.macromaker")
+        #expect(FileManager.default.fileExists(atPath: folder.appending(path: "Fixed.macromaker").path),
+                "the file on disk follows the rename")
+    }
+
+    @MainActor @Test func aFailedIndexWriteSurfacesAWarning() throws {
+        let folder = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appending(path: "mm-lib-\(UUID().uuidString)", directoryHint: .isDirectory)
+        MacroLibrary.folderOverride = folder
+        defer {
+            MacroLibrary.folderOverride = nil
+            UserDefaults.standard.removeObject(forKey: MacroLibrary.indexKey)
+            try? FileManager.default.removeItem(at: folder)
+        }
+        let library = MacroLibrary(load: false)
+        let macro = Macro(name: "Login", createdAt: Date(timeIntervalSince1970: 1_000), events: [
+            MacroEvent(time: 0, action: .keyDown(0, isRepeat: false), flags: 0)])
+        let record = try #require(library.add(macro, named: "Login"))
+        let originalWriter = Persistence.writer
+        Persistence.writer = { _, _ in false }
+        defer { Persistence.writer = originalWriter }
+        library.setFavorite(record, true)
+        #expect(library.records.first?.isFavorite == true, "the change is still visible in memory")
+        #expect(library.lastError != nil, "a failed index write must not be indistinguishable from success")
+    }
+}

@@ -1,4 +1,5 @@
 import Carbon.HIToolbox
+import os
 
 /// A global keyboard shortcut: a key plus at least one modifier (or a function key on its own).
 struct KeyCombo: Codable, Hashable, Sendable {
@@ -153,6 +154,94 @@ extension HotkeyAction: RawRepresentable {
         } else {
             return nil
         }
+    }
+}
+
+extension HotkeyAction {
+    /// One stored entry: the action's name, its combo (nil = deliberately cleared), and whether
+    /// the combo READ — that flag is what separates a stored null from a corrupt value.
+    private struct StoredEntry {
+        let name: String?
+        let combo: KeyCombo?
+        let readable: Bool
+    }
+
+    /// The stored `[HotkeyAction: KeyCombo?]` blob, decoded one entry at a time: one unknown
+    /// action name (a deleted builtin case, a malformed `macro:` uuid, a hand-edited plist)
+    /// or one unreadable combo costs that entry alone — never every custom shortcut, which
+    /// is what a whole-dictionary decode wiped out when a single entry made it throw.
+    ///
+    /// `JSONEncoder` writes a dictionary whose keys aren't String/Int as an UNKEYED ARRAY of
+    /// alternating name/value elements — that is the v1 on-disk format. A hand-edited plist
+    /// may instead hold a keyed object; both shapes are read, entry by entry.
+    nonisolated static func storedCombos(from data: Data) -> [HotkeyAction: KeyCombo?] {
+        // The v1 shape: ["toggleAutoClicker", {"keyCode":8,"modifiers":3}, "stopAll", null, ...]
+        struct TolerantArray: Decodable {
+            let entries: [StoredEntry]
+            init(from decoder: Decoder) throws {
+                var u = try decoder.unkeyedContainer()
+                var entries: [StoredEntry] = []
+                while !u.isAtEnd {
+                    let name = try? u.decode(String.self)
+                    var combo: KeyCombo?
+                    var readable = false
+                    if !u.isAtEnd {
+                        // do/catch, not `try?`: SE-0230 flattens `try?` over an optional-typed
+                        // expression, erasing the line between a stored null (a deliberately
+                        // cleared hotkey) and a value that failed to decode.
+                        do {
+                            combo = try u.decode(KeyCombo?.self)
+                            readable = true
+                        } catch { }
+                    }
+                    entries.append(StoredEntry(name: name, combo: combo, readable: readable))
+                }
+                self.entries = entries
+            }
+        }
+        // Keyed-object variant of the same blob, for hand-edited plists.
+        struct TolerantValue: Decodable {
+            let combo: KeyCombo?
+            let readable: Bool
+            init(from decoder: Decoder) throws {
+                let value = try decoder.singleValueContainer()
+                var combo: KeyCombo?
+                var readable = false
+                do {
+                    combo = try value.decode(KeyCombo?.self)
+                    readable = true
+                } catch { }
+                self.combo = combo
+                self.readable = readable
+            }
+        }
+        let log = Logger(subsystem: "MacroMaker", category: "HotkeyAction")
+        let entries: [StoredEntry]
+        if let array = try? JSONDecoder().decode(TolerantArray.self, from: data) {
+            entries = array.entries
+        } else if let object = try? JSONDecoder().decode([String: TolerantValue].self, from: data) {
+            entries = object.map { StoredEntry(name: $0.key, combo: $0.value.combo, readable: $0.value.readable) }
+        } else {
+            log.fault("The stored hotkey blob was unreadable; every custom shortcut was reset.")
+            return [:]
+        }
+        var combos: [HotkeyAction: KeyCombo?] = [:]
+        for entry in entries {
+            guard let name = entry.name else {
+                log.fault("A stored hotkey entry had an unreadable name and was skipped.")
+                continue
+            }
+            guard let action = HotkeyAction(rawValue: name) else {
+                log.fault("Stored hotkey “\(name, privacy: .public)” names an unknown action and was skipped.")
+                continue
+            }
+            guard entry.readable else {
+                log.fault("The stored shortcut for “\(name, privacy: .public)” was unreadable and was reset.")
+                continue
+            }
+            combos[action] = entry.combo
+        }
+        return combos
     }
 }
 

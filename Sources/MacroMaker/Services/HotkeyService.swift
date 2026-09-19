@@ -46,7 +46,9 @@ final class HotkeyService {
     private static weak var active: HotkeyService?
 
     init() {
-        let saved = Persistence.load([HotkeyAction: KeyCombo?].self, key: Self.storageKey) ?? [:]
+        // Per-entry tolerant decode: one unreadable hotkey resets only itself, never every
+        // custom shortcut (which is what `?? [:]` did to a whole-dictionary decode).
+        let saved = UserDefaults.standard.data(forKey: Self.storageKey).map(HotkeyAction.storedCombos(from:)) ?? [:]
         var combos: [HotkeyAction: KeyCombo] = [:]
         for action in BuiltinHotkeyAction.allCases {
             let key = HotkeyAction.builtin(action)

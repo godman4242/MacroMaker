@@ -123,4 +123,14 @@ enum ProfileRules {
         while taken.contains("\(base) \(index)".lowercased()) { index += 1 }
         return "\(base) \(index)"
     }
+
+    /// A display name distinct from every taken one, comparing case-insensitively:
+    /// "X" → "X 2" → "X 3"… (an unused name is returned unchanged).
+    static func uniqueDisplayName(for name: String, taken: [String]) -> String {
+        let taken = Set(taken.map { $0.lowercased() })
+        if !taken.contains(name.lowercased()) { return name }
+        var index = 2
+        while taken.contains("\(name) \(index)".lowercased()) { index += 1 }
+        return "\(name) \(index)"
+    }
 }

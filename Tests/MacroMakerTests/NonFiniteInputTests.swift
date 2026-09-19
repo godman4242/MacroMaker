@@ -91,4 +91,66 @@ struct NonFiniteInputTests {
         #expect(macro.events.count == 2)
         #expect(macro.events[1].time == 0.25)
     }
+
+    // MARK: Hostile decoded settings (imported profile / defaults blob — models F2 + lifecycle F5)
+
+    /// The UI's NumberFields clamp, but the decode paths never did: an imported profile with
+    /// `intervalMs = 1e300` or `delayedStartSeconds = 1e20` survived decoding unchanged and
+    /// trapped at the next Start (`UInt64(delay * 1e9)` / `Int(seconds.rounded())` — exit 133).
+    /// JSON has no NaN literal and `1e400` is refused by the decoder itself, but every representable huge value (`1e300`, `1e20`) sails through decoding and traps at the conversions.
+    @Test func hostileDecodedDoublesAreClampedBeforeTheTrappingConversions() throws {
+        let json = """
+        {"format":"macromakerprofile","formatVersion":2,"name":"Hostile",
+         "autoClicker":{"intervalMs":1e300,"delayedStartSeconds":1e20,"randomOffsetMs":1e300,
+                        "maxDurationSeconds":1e20,"jitterPx":1e20,"autoResumeSeconds":1e20,
+                        "x":1e20,"y":1e20,"directAppX":1e20,"directAppY":1e20},
+         "keyPresser":{"intervalMs":1e300},
+         "playback":{"speed":1e300},
+         "webTarget":{"browser":"safari","urlMatch":"","locatorKind":"css","cssSelector":"","xpath":"",
+                      "x":1e20,"y":1e300,"intervalMs":1e300}}
+        """
+        let profile = try Profile.from(jsonData: Data(json.utf8))
+        let s = profile.autoClicker
+        #expect(s.intervalMs >= 1 && s.intervalMs <= IntervalUnit.maximumIntervalMs)
+        #expect(s.delayedStartSeconds >= 0 && s.delayedStartSeconds <= 600)
+        #expect(s.randomOffsetMs >= 0 && s.randomOffsetMs <= 60_000)
+        #expect(s.maxDurationSeconds >= 0.1 && s.maxDurationSeconds <= 86_400)
+        #expect(s.jitterPx >= 0 && s.jitterPx <= 200)
+        #expect(s.autoResumeSeconds >= 1 && s.autoResumeSeconds <= 600)
+        #expect(s.x <= 20_000 && s.y <= 20_000 && s.directAppX <= 20_000 && s.directAppY <= 20_000)
+        #expect(profile.keyPresser.intervalMs <= IntervalUnit.maximumIntervalMs)
+        #expect(profile.playback.speed <= 4)
+        #expect(profile.webTarget.intervalMs <= WebClicker.maximumIntervalMs)
+        #expect(profile.webTarget.x <= 100_000 && profile.webTarget.y <= 100_000)
+        // The exact conversions that trap (measured: exit 133) run on the clamped values.
+        _ = UInt64(max(TickSchedule.minimumDelay, s.intervalMs / 1000) * 1_000_000_000)
+        _ = Int(max(0, s.delayedStartSeconds).rounded())
+    }
+
+    /// Negative and zero-side hostile values clamp up, mirroring what the UI fields enforce.
+    @Test func hostileDecodedDoublesClampUpFromBelowToo() throws {
+        let json = """
+        {"format":"macromakerprofile","formatVersion":2,"name":"Negative",
+         "autoClicker":{"intervalMs":-5,"delayedStartSeconds":-3},
+         "keyPresser":{"intervalMs":0}}
+        """
+        let profile = try Profile.from(jsonData: Data(json.utf8))
+        #expect(profile.autoClicker.intervalMs == 1)
+        #expect(profile.autoClicker.delayedStartSeconds == 0)
+        #expect(profile.keyPresser.intervalMs == 1)
+    }
+
+    /// Ordinary values decode unchanged — the clamps must not rewrite honest settings.
+    @Test func ordinaryDecodedDoublesAreUntouched() throws {
+        var profile = Profile(name: "Honest")
+        profile.autoClicker.intervalMs = 250
+        profile.autoClicker.delayedStartSeconds = 10
+        profile.autoClicker.x = -350
+        profile.keyPresser.intervalMs = 100
+        profile.playback.speed = 0.25
+        profile.webTarget.intervalMs = 5_000
+        profile.webTarget.x = 1920
+        let decoded = try Profile.from(jsonData: try profile.jsonData())
+        #expect(decoded == profile)
+    }
 }

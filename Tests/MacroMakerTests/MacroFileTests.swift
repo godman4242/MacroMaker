@@ -48,3 +48,46 @@ import Testing
         }
     }
 }
+
+/// The silent autosave (review models F8): every write was `try?`, so a full or slow disk
+/// discarded the last recording at the exact moment the app was quitting — with no error
+/// channel anywhere. A failed autosave must say so.
+@Suite struct AutosaveFailureTests {
+
+    @MainActor private func tempAutosaveDirectory() throws -> URL {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appending(path: "mm-autosave-\(UUID().uuidString)", directoryHint: .isDirectory)
+        MacroFiles.autosaveDestination = dir.appending(path: "Last.\(Macro.fileExtension)")
+        return dir
+    }
+
+    @MainActor @Test func aFailedAutosaveSurfacesAWarning() throws {
+        // A plain FILE where the parent directory should be makes the directory create fail.
+        let blocker = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appending(path: "mm-autosave-\(UUID().uuidString)")
+        try Data().write(to: blocker)
+        MacroFiles.autosaveDestination = blocker.appending(path: "Last.\(Macro.fileExtension)")
+        defer {
+            MacroFiles.autosaveDestination = nil
+            try? FileManager.default.removeItem(at: blocker)
+        }
+        let warning = MacroFiles.autosave(Macro(name: "Recording", createdAt: Date(), events: []))
+        #expect(warning != nil, "a failed autosave must not be indistinguishable from success")
+    }
+
+    @MainActor @Test func aSuccessfulAutosaveStaysSilentAndClearsAStaleWarningPath() throws {
+        let dir = try tempAutosaveDirectory()
+        defer {
+            MacroFiles.autosaveDestination = nil
+            try? FileManager.default.removeItem(at: dir)
+        }
+        let macro = Macro(name: "Recording", createdAt: Date(timeIntervalSince1970: 1_000),
+                          events: [MacroEvent(time: 0, action: .keyUp(0), flags: 0)])
+        #expect(MacroFiles.autosave(macro) == nil)
+        #expect(FileManager.default.fileExists(atPath: dir.appending(path: "Last.\(Macro.fileExtension)").path))
+        #expect(MacroFiles.loadAutosave()?.events.count == 1)
+        // Clearing the macro removes the file — still silent, still nil.
+        #expect(MacroFiles.autosave(nil) == nil)
+        #expect(!FileManager.default.fileExists(atPath: dir.appending(path: "Last.\(Macro.fileExtension)").path))
+    }
+}

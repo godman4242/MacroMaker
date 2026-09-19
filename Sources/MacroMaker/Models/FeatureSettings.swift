@@ -1,5 +1,16 @@
 import Foundation
 
+/// Bounds a decoded Double. Decoded settings are untrusted — a defaults blob or an imported
+/// profile can carry values the UI's NumberFields would never let through, and the run paths
+/// convert them straight into `Int`/`UInt64`, which trap on out-of-range input (measured:
+/// exit 133). The ranges mirror the UI fields exactly, so honest settings are untouched.
+/// Swift's min/max propagate NaN, so a non-finite value falls back to the field's default
+/// rather than a bound.
+private func clamped(_ raw: Double?, fallback: Double, in range: ClosedRange<Double>) -> Double {
+    guard let raw, raw.isFinite else { return fallback }
+    return min(max(raw, range.lowerBound), range.upperBound)
+}
+
 struct AutoClickerSettings: Codable, Equatable, Sendable {
     enum Target: String, Codable, CaseIterable, Sendable {
         case cursor, fixedPoint, region
@@ -51,35 +62,44 @@ struct AutoClickerSettings: Codable, Equatable, Sendable {
     init() {}
 
     /// Tolerant decoding: v2 fields default when missing, so a v1 settings blob still loads.
+    /// Every decoded Double is bounded (`clamped`) so a hostile or corrupt value can never
+    /// reach the `Int`/`UInt64` conversions in the run paths.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         button = try c.decodeIfPresent(MouseButton.self, forKey: .button) ?? .left
-        intervalMs = try c.decodeIfPresent(Double.self, forKey: .intervalMs) ?? 100
+        intervalMs = clamped(try c.decodeIfPresent(Double.self, forKey: .intervalMs), fallback: 100,
+                             in: 1...IntervalUnit.maximumIntervalMs)
         randomizeInterval = try c.decodeIfPresent(Bool.self, forKey: .randomizeInterval) ?? false
-        randomOffsetMs = try c.decodeIfPresent(Double.self, forKey: .randomOffsetMs) ?? 20
+        randomOffsetMs = clamped(try c.decodeIfPresent(Double.self, forKey: .randomOffsetMs), fallback: 20,
+                                 in: 0...60_000)
         target = try c.decodeIfPresent(Target.self, forKey: .target) ?? .cursor
-        x = try c.decodeIfPresent(Double.self, forKey: .x) ?? 500
-        y = try c.decodeIfPresent(Double.self, forKey: .y) ?? 500
+        x = clamped(try c.decodeIfPresent(Double.self, forKey: .x), fallback: 500, in: -20_000...20_000)
+        y = clamped(try c.decodeIfPresent(Double.self, forKey: .y), fallback: 500, in: -20_000...20_000)
         stopAfterClicks = try c.decodeIfPresent(Bool.self, forKey: .stopAfterClicks) ?? false
         maxClicks = try c.decodeIfPresent(Int.self, forKey: .maxClicks) ?? 100
         stopAfterDuration = try c.decodeIfPresent(Bool.self, forKey: .stopAfterDuration) ?? false
-        maxDurationSeconds = try c.decodeIfPresent(Double.self, forKey: .maxDurationSeconds) ?? 60
+        maxDurationSeconds = clamped(try c.decodeIfPresent(Double.self, forKey: .maxDurationSeconds), fallback: 60,
+                                     in: 0.1...86_400)
         intervalUnit = try c.decodeIfPresent(IntervalUnit.self, forKey: .intervalUnit) ?? .milliseconds
         burstSize = try c.decodeIfPresent(Int.self, forKey: .burstSize) ?? 1
         clickCountPerEvent = try c.decodeIfPresent(ClickCount.self, forKey: .clickCountPerEvent) ?? .single
         region = try c.decodeIfPresent(ClickRegion.self, forKey: .region) ?? ClickRegion()
         jitterEnabled = try c.decodeIfPresent(Bool.self, forKey: .jitterEnabled) ?? false
-        jitterPx = try c.decodeIfPresent(Double.self, forKey: .jitterPx) ?? 5
+        jitterPx = clamped(try c.decodeIfPresent(Double.self, forKey: .jitterPx), fallback: 5, in: 0...200)
         stopOnFrontmostChange = try c.decodeIfPresent(Bool.self, forKey: .stopOnFrontmostChange) ?? false
         holdToClick = try c.decodeIfPresent(Bool.self, forKey: .holdToClick) ?? false
-        delayedStartSeconds = try c.decodeIfPresent(Double.self, forKey: .delayedStartSeconds) ?? 0
+        delayedStartSeconds = clamped(try c.decodeIfPresent(Double.self, forKey: .delayedStartSeconds), fallback: 0,
+                                       in: 0...600)
         restoreCursor = try c.decodeIfPresent(Bool.self, forKey: .restoreCursor) ?? false
         humanizer = try c.decodeIfPresent(HumanizerSettings.self, forKey: .humanizer) ?? HumanizerSettings()
         directAppBundleID = try c.decodeIfPresent(String.self, forKey: .directAppBundleID) ?? ""
-        directAppX = try c.decodeIfPresent(Double.self, forKey: .directAppX) ?? 400
-        directAppY = try c.decodeIfPresent(Double.self, forKey: .directAppY) ?? 300
+        directAppX = clamped(try c.decodeIfPresent(Double.self, forKey: .directAppX), fallback: 400,
+                             in: -20_000...20_000)
+        directAppY = clamped(try c.decodeIfPresent(Double.self, forKey: .directAppY), fallback: 300,
+                             in: -20_000...20_000)
         pauseOnRealInput = try c.decodeIfPresent(Bool.self, forKey: .pauseOnRealInput) ?? false
-        autoResumeSeconds = try c.decodeIfPresent(Double.self, forKey: .autoResumeSeconds) ?? 5
+        autoResumeSeconds = clamped(try c.decodeIfPresent(Double.self, forKey: .autoResumeSeconds), fallback: 5,
+                                    in: 1...600)
     }
 }
 
@@ -101,7 +121,8 @@ struct KeyPresserSettings: Codable, Equatable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         keyText = try c.decodeIfPresent(String.self, forKey: .keyText) ?? "space"
         mode = try c.decodeIfPresent(Mode.self, forKey: .mode) ?? .autoPress
-        intervalMs = try c.decodeIfPresent(Double.self, forKey: .intervalMs) ?? 100
+        intervalMs = clamped(try c.decodeIfPresent(Double.self, forKey: .intervalMs), fallback: 100,
+                             in: 1...IntervalUnit.maximumIntervalMs)
         humanizer = try c.decodeIfPresent(HumanizerSettings.self, forKey: .humanizer) ?? HumanizerSettings()
         sendToBundleID = try c.decodeIfPresent(String.self, forKey: .sendToBundleID) ?? ""
     }
@@ -164,6 +185,23 @@ struct WebTargetSettings: Codable, Equatable, Sendable {
         case .coordinates: .point(x: x, y: y)
         }
     }
+
+    init() {}
+
+    /// Tolerant decoding: absent or unreadable fields default, and the Doubles are bounded like
+    /// every other decoded setting (the UI NumberFields enforce these ranges on the way in).
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        browser = try c.decodeIfPresent(Browser.self, forKey: .browser) ?? .safari
+        urlMatch = try c.decodeIfPresent(String.self, forKey: .urlMatch) ?? ""
+        locatorKind = try c.decodeIfPresent(LocatorKind.self, forKey: .locatorKind) ?? .css
+        cssSelector = try c.decodeIfPresent(String.self, forKey: .cssSelector) ?? ""
+        xpath = try c.decodeIfPresent(String.self, forKey: .xpath) ?? ""
+        x = clamped(try c.decodeIfPresent(Double.self, forKey: .x), fallback: 100, in: 0...100_000)
+        y = clamped(try c.decodeIfPresent(Double.self, forKey: .y), fallback: 100, in: 0...100_000)
+        intervalMs = clamped(try c.decodeIfPresent(Double.self, forKey: .intervalMs), fallback: 1000,
+                             in: Double(WebClicker.minimumIntervalMs)...IntervalUnit.maximumIntervalMs)
+    }
 }
 
 struct PlaybackSettings: Codable, Equatable, Sendable {
@@ -178,7 +216,7 @@ struct PlaybackSettings: Codable, Equatable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         repeatCount = try c.decodeIfPresent(Int.self, forKey: .repeatCount) ?? 1
         loopForever = try c.decodeIfPresent(Bool.self, forKey: .loopForever) ?? false
-        speed = try c.decodeIfPresent(Double.self, forKey: .speed) ?? 1
+        speed = clamped(try c.decodeIfPresent(Double.self, forKey: .speed), fallback: 1, in: 0.25...4)
         humanizer = try c.decodeIfPresent(HumanizerSettings.self, forKey: .humanizer) ?? HumanizerSettings()
     }
 }

@@ -1,4 +1,5 @@
 import AppKit
+import os
 import UniformTypeIdentifiers
 
 /// The saved-profiles list: stored as a JSON array in UserDefaults, exported/imported as
@@ -11,7 +12,26 @@ final class ProfileService {
     private(set) var entries: [ProfileEntry]
 
     init(load: Bool = true) {
-        entries = load ? (Persistence.load([ProfileEntry].self, key: Self.storageKey) ?? []) : []
+        entries = load ? (UserDefaults.standard.data(forKey: Self.storageKey).map(Self.entries(fromStored:)) ?? []) : []
+    }
+
+    /// The stored profiles list, decoded one entry at a time: whatever made one entry
+    /// unreadable — a type mismatch, an unknown enum value, a hand-edited defaults plist —
+    /// it must cost that entry, not the whole list. Decoding the array in one go meant one
+    /// bad entry threw, `try?` turned the whole result into nil and `?? []` presented an
+    /// empty list; the next save/delete/rename then persisted `[]` over the blob, so the
+    /// loss was permanent and silent.
+    nonisolated static func entries(fromStored data: Data) -> [ProfileEntry] {
+        struct Tolerant: Decodable {
+            let entry: ProfileEntry?
+            init(from decoder: Decoder) throws { entry = try? ProfileEntry(from: decoder) }
+        }
+        let log = Logger(subsystem: "MacroMaker", category: "ProfileService")
+        let decoded = (try? JSONDecoder().decode([Tolerant].self, from: data)) ?? []
+        for (index, wrapper) in decoded.enumerated() where wrapper.entry == nil {
+            log.fault("Saved-profile entry at position \(index) was unreadable and skipped.")
+        }
+        return decoded.compactMap(\.entry)
     }
 
     var lastError: String?
@@ -25,7 +45,11 @@ final class ProfileService {
         // the update branch was unreachable from the UI, and re-saving a name just accumulated
         // duplicates.
         let existing = entries.firstIndex { $0.id == entry.id }
-            ?? entries.firstIndex { $0.name.localizedCaseInsensitiveCompare(entry.name) == .orderedSame }
+            // An EXACT name match is the same profile being re-saved. Matching
+            // case-insensitively here made saving "My Profile" silently REPLACE the different
+            // profile "my profile" (unrecoverable) — a case variant now saves as its own,
+            // distinctly-named profile instead.
+            ?? entries.firstIndex { $0.name == entry.name }
         if let existing {
             // `ProfileEntry.init(profile:)` defaults isFavorite to false (Profile has no such
             // field), so replacing wholesale would un-star a favourite on every re-save.
@@ -33,6 +57,11 @@ final class ProfileService {
             entry.id = entries[existing].id
             entries[existing] = entry
         } else {
+            if let clash = entries.firstIndex(where: { $0.name.localizedCaseInsensitiveCompare(entry.name) == .orderedSame }) {
+                let clashingName = entries[clash].name
+                entry.name = ProfileRules.uniqueDisplayName(for: entry.name, taken: entries.map(\.name))
+                lastError = "A profile named “\(clashingName)” already exists — saved this one as “\(entry.name)”."
+            }
             entries.insert(entry, at: 0)
         }
         persist()
@@ -78,8 +107,15 @@ final class ProfileService {
         }
     }
 
-    private func persist() {
-        Persistence.save(entries, key: Self.storageKey)
+    /// Returns whether the write landed. A failed save was a silent `try?` —
+    /// indistinguishable from success exactly when the user's profiles are at stake.
+    @discardableResult
+    private func persist() -> Bool {
+        guard Persistence.save(entries, key: Self.storageKey) else {
+            lastError = "Couldn't save your profiles — this change wasn't stored."
+            return false
+        }
+        return true
     }
 
     // MARK: Files
@@ -123,12 +159,19 @@ final class ProfileService {
             }
             var profile = try Profile.from(jsonData: Data(contentsOf: url))
             // A file someone else wrote must not collide with a profile already in the list:
-            // always mint a new id on import, keep the name.
+            // always mint a new id on import — and keep display names distinct too, so two
+            // "Login" entries can't make a later same-name save ambiguous.
+            var clashWarning: String?
+            let unique = ProfileRules.uniqueDisplayName(for: profile.name, taken: entries.map(\.name))
+            if unique != profile.name {
+                clashWarning = "A profile named “\(profile.name)” already exists — imported this one as “\(unique)”."
+                profile.name = unique
+            }
             profile.id = UUID()
             let entry = ProfileEntry(profile: profile)
             entries.insert(entry, at: 0)
-            persist()
-            lastError = nil
+            // A failed write keeps its error; a landed one reports the rename, if there was one.
+            if persist() { lastError = clashWarning }
             return entry
         } catch {
             lastError = "Couldn't import “\(url.lastPathComponent)”: it isn't a valid Macro Maker profile."
