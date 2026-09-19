@@ -81,3 +81,28 @@ func performOnMain(_ body: @escaping @MainActor @Sendable () -> Void) {
         MainActor.assumeIsolated(body)
     }
 }
+
+// MARK: - Shared stop closure (review N1)
+
+extension WorkerThread {
+    /// The loud-failure surface for services without a warning banner of their own (Key Presser,
+    /// Macro Player): an os_log fault naming the service. A seam — tests swap it to assert a
+    /// wedged worker surfaces instead of being silently declared stopped, without scraping logs.
+    nonisolated(unsafe) static var overrunSurface: @Sendable (_ service: String) -> Void = { service in
+        log.fault("The \(service, privacy: .public) worker is still live after Stop — it may still be typing or clicking")
+    }
+
+    /// The stop closure every service returns from `RunSession.start` — one shared path so no
+    /// call site can regress to discarding the wait (review N1): cancel, wait within Stop's
+    /// single one-second budget, retry the wait once off the main thread, and when even the
+    /// retry misses, fail loud — through `onOverrun` where the service surfaces warnings in
+    /// its own UI, otherwise through the shared os_log fault. Key Presser and Macro Player used
+    /// to return `{ worker.cancelAndWait() }`, declaring the run stopped while a wedged worker
+    /// could still be typing or clicking.
+    func stopClosure(named service: String,
+                     onOverrun: (@MainActor @Sendable () -> Void)? = nil) -> () -> Void {
+        { self.cancelAndWait(onOverrun: onOverrun ?? { @MainActor @Sendable in
+            Self.overrunSurface(service)
+        }) }
+    }
+}

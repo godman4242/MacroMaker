@@ -179,11 +179,9 @@ final class AutoClicker {
                 }
             }
         }
-        return { [weak self] in
-            worker.cancelAndWait(onOverrun: { [weak self] in
-                guard let self, self.session.phase == .idle else { return }
-                self.runWarning = "Stop didn't finish within its 1-second budget — the run may still be completing in the background."
-            })
+        return worker.stopClosure(named: "Auto Clicker") { [weak self] in
+            guard let self, self.session.phase == .idle else { return }
+            self.runWarning = "Stop didn't finish within its 1-second budget — the run may still be completing in the background."
         }
     }
 

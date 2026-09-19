@@ -117,6 +117,113 @@ struct StopLifecycleTests {
         }
     }
 
+    /// Records what reached the shared loud-failure seam, swapped in by the per-service
+    /// overrun tests (the services have no warning banner of their own — os_log is their
+    /// surface, and this seam is how a test observes it).
+    private final class OverrunBox: @unchecked Sendable {
+        var services: [String] = []
+    }
+
+    /// N1: the same fail-loud contract as the AutoClicker test above, for the Key Presser —
+    /// its stop closure used to return `{ worker.cancelAndWait() }`, discarding the result
+    /// and declaring the run stopped while a wedged worker could still be typing into the
+    /// target app. The overrun must reach the shared loud-failure surface.
+    @Test func keyPresserStopThatOutrunsItsBudgetSurfacesTheOverrun() async throws {
+        let model = AppModel.shared
+        let presser = model.keyPresser
+        let defaults = UserDefaults.standard
+        let savedSettingsBlob = defaults.data(forKey: "keyPresser")
+        let savedSettings = presser.settings
+        let savedPoster = BackgroundPoster.eventPoster
+        let savedSurface = WorkerThread.overrunSurface
+        let gate = ClickGate()
+        let box = OverrunBox()
+        model.permissions.forceAccessibilityTrusted = true
+        BackgroundPoster.eventPoster = gate.poster
+        WorkerThread.overrunSurface = { box.services.append($0) }
+        defer {
+            gate.open()
+            BackgroundPoster.eventPoster = savedPoster
+            WorkerThread.overrunSurface = savedSurface
+            model.permissions.forceAccessibilityTrusted = false
+            model.stopAll()
+            presser.settings = savedSettings
+            if let savedSettingsBlob { defaults.set(savedSettingsBlob, forKey: "keyPresser") }
+            else { defaults.removeObject(forKey: "keyPresser") }
+        }
+
+        var settings = presser.settings
+        settings.keyText = "space"
+        settings.mode = .autoPress
+        // Direct-app delivery: the press posts through the (gated) BackgroundPoster seam.
+        settings.sendToBundleID = "com.apple.finder"
+        presser.settings = settings
+
+        presser.toggle(.hotkey)
+        #expect(presser.session.phase == .running)
+        try gate.awaitEntry()   // the worker is now wedged inside its key post
+
+        let stopStarted = Date()
+        presser.toggle(.hotkey)  // Stop: waits the budget, then must give up loudly
+        #expect(Date().timeIntervalSince(stopStarted) < 1.5,
+                "Stop's main-thread cost stays within its single 1 s budget")
+        #expect(presser.session.phase == .idle)
+
+        let deadline = Date().addingTimeInterval(5)
+        while box.services.isEmpty, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(box.services.contains("Key Presser"),
+                "a key-presser worker that outlives Stop must surface, not be silently declared stopped")
+    }
+
+    /// N1 for the Macro Player: identical contract, wedged through the playback post seam.
+    /// The old stop closure discarded the wait result, so a wedged replay could keep
+    /// clicking and typing behind the user's back with nothing anywhere saying so.
+    @Test func playbackStopThatOutrunsItsBudgetSurfacesTheOverrun() async throws {
+        let model = AppModel.shared
+        let player = model.player
+        let defaults = UserDefaults.standard
+        let savedSettingsBlob = defaults.data(forKey: "playback")
+        let savedSettings = player.settings
+        let savedPoster = EventSynthesizer.eventPoster
+        let savedSurface = WorkerThread.overrunSurface
+        let gate = ClickGate()
+        let box = OverrunBox()
+        model.permissions.forceAccessibilityTrusted = true
+        EventSynthesizer.eventPoster = { gate.poster($0, 0) }
+        WorkerThread.overrunSurface = { box.services.append($0) }
+        defer {
+            gate.open()
+            EventSynthesizer.eventPoster = savedPoster
+            WorkerThread.overrunSurface = savedSurface
+            model.permissions.forceAccessibilityTrusted = false
+            model.stopAll()
+            player.settings = savedSettings
+            if let savedSettingsBlob { defaults.set(savedSettingsBlob, forKey: "playback") }
+            else { defaults.removeObject(forKey: "playback") }
+        }
+
+        // One key-down due immediately: the worker's very first post wedges on the gate.
+        let macro = Macro(name: "wedge", events: [MacroEvent(time: 0, action: .keyDown(49, isRepeat: false), flags: 0)])
+        player.toggle(macro, trigger: .hotkey)
+        #expect(player.session.phase == .running)
+        try gate.awaitEntry()
+
+        let stopStarted = Date()
+        player.toggle(macro, trigger: .hotkey)
+        #expect(Date().timeIntervalSince(stopStarted) < 1.5,
+                "Stop's main-thread cost stays within its single 1 s budget")
+        #expect(player.session.phase == .idle)
+
+        let deadline = Date().addingTimeInterval(5)
+        while box.services.isEmpty, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(box.services.contains("Macro Player"),
+                "a playback worker that outlives Stop must surface, not be silently declared stopped")
+    }
+
     /// A worker that misses Stop's one-second budget used to be silently declared stopped:
     /// `cancelAndWait` returned `false` and every caller dropped it, leaving a live worker
     /// that could still post clicks. The overrun must fail loud.

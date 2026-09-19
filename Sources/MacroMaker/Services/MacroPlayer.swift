@@ -61,7 +61,7 @@ final class MacroPlayer {
                     }
                 }
             }
-            return { worker.cancelAndWait() }
+            return worker.stopClosure(named: "Macro Player")
         }
     }
 

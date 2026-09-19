@@ -99,12 +99,19 @@ struct BackgroundPosterTests {
     /// the aim was applied after re-homing. The fields are then read off the event again at
     /// the poster seam, past `setSource`.
     @Test func windowTargetingIsAppliedAfterSetSourceAndSurvivesToPost() {
-        final class AimBox: @unchecked Sendable { var stateIDs: [Int64] = [] }
+        final class AimBox: @unchecked Sendable { var stateIDs: [Int64] = []; var flagsAtAim: [CGEventFlags] = [] }
         struct AimProbe: BackgroundPoster.WindowLocationResolver {
             let box: AimBox
             var isAvailable: Bool { true }
             @discardableResult func setWindowLocation(of event: CGEvent, to point: CGPoint) -> Bool {
                 box.stateIDs.append(event.getIntegerValueField(.eventSourceStateID))
+                // N3: the aim runs strictly after setSource, so the flags read here are the
+                // ones the event carries on the after-setSource side. Measured in this
+                // process: setSource does NOT rewrite flags when no modifiers are held —
+                // so this pin can't distinguish write order, only the surviving invariant
+                // (explicit no-modifier flags reach delivery). The order itself follows the
+                // file's rule: one proven wipe class is enough to keep flags after the call.
+                box.flagsAtAim.append(event.flags)
                 return true
             }
         }
@@ -128,6 +135,8 @@ struct BackgroundPosterTests {
         #expect(box.events.count == 2)
         #expect(aimBox.stateIDs.allSatisfy { $0 != 0 },
                 "the window aim must be applied after setSource (private source state), saw \(aimBox.stateIDs)")
+        #expect(aimBox.flagsAtAim.allSatisfy { $0 == .maskNonCoalesced },
+                "flags must already be the explicit no-modifier set on the after-setSource side: \(aimBox.flagsAtAim)")
         for event in box.events {
             #expect(event.getIntegerValueField(CGEventField(rawValue: 91)!) == 4242)
             #expect(event.getIntegerValueField(CGEventField(rawValue: 92)!) == 4242)
@@ -137,17 +146,48 @@ struct BackgroundPosterTests {
     }
 
     /// F6/H6: with more than one window of the target app, the click must aim at the window
-    /// that CONTAINS the captured point — the front-most window is only the fallback.
+    /// that CONTAINS the captured point — the front-most window is only the fallback. Driven
+    /// through the seeded listing seam (`resolveWindowLive` is the live entry point).
     @Test func windowChoicePrefersTheWindowContainingThePoint() {
         let pid: Int32 = 1234
         let front = Self.info(pid: pid, number: 42, bounds: ["X": 100, "Y": 200, "Width": 800, "Height": 600])
         let side = Self.info(pid: pid, number: 43, bounds: ["X": 900, "Y": 200, "Width": 800, "Height": 600])
-        let list = [front, side]
-        #expect(BackgroundPoster.window(ofPID: pid, in: list, containing: CGPoint(x: 350, y: 500))?.id == 42)
+        let priorLister = BackgroundPoster.windowListCopy
+        defer { BackgroundPoster.windowListCopy = priorLister }
+        BackgroundPoster.windowListCopy = { _ in [front, side] }
+        #expect(BackgroundPoster.resolveWindowLive(ofPID: pid, containing: CGPoint(x: 350, y: 500))?.id == 42)
         // Inside only the second window: must pick THAT one, not the front-most one.
-        #expect(BackgroundPoster.window(ofPID: pid, in: list, containing: CGPoint(x: 1000, y: 500))?.id == 43)
+        #expect(BackgroundPoster.resolveWindowLive(ofPID: pid, containing: CGPoint(x: 1000, y: 500))?.id == 43)
         // In neither (occluded, another Space, moved since capture): fall back to the front-most.
-        #expect(BackgroundPoster.window(ofPID: pid, in: list, containing: CGPoint(x: 50, y: 50))?.id == 42)
+        #expect(BackgroundPoster.resolveWindowLive(ofPID: pid, containing: CGPoint(x: 50, y: 50))?.id == 42)
+    }
+
+    /// N2: with a captured point, containment must be settled across BOTH listings before any
+    /// window is accepted. The picked window can be minimized or on another Space — visible
+    /// only to `.optionAll` — while the app's other window is front-most in the on-screen
+    /// listing. Accepting that one aimed the click at (and the W2 clamp kept it inside) a
+    /// window the user never picked — the worst failure mode for a clicker, because it looks
+    /// like success.
+    @Test func anOffScreenPickedWindowWinsOverAnOnScreenSibling() {
+        let pid: Int32 = 1234
+        // The app has two windows; the picked one (43) is on another Space. The on-screen
+        // listing sees only the sibling (42); the all-windows listing carries both.
+        let onScreen = [Self.info(pid: pid, number: 42, bounds: ["X": 0, "Y": 0, "Width": 800, "Height": 600])]
+        let all = onScreen + [Self.info(pid: pid, number: 43, bounds: ["X": 1000, "Y": 0, "Width": 800, "Height": 600])]
+        let priorLister = BackgroundPoster.windowListCopy
+        defer { BackgroundPoster.windowListCopy = priorLister }
+        BackgroundPoster.windowListCopy = { options in
+            options == .optionOnScreenOnly ? onScreen : all
+        }
+        // The captured point lies inside window 43, the one only `.optionAll` can see.
+        #expect(BackgroundPoster.resolveWindowLive(ofPID: pid, containing: CGPoint(x: 1200, y: 300))?.id == 43,
+                "the window containing the point must win — not the first one the on-screen listing yields")
+        // Nothing contains the point anywhere (occluded, moved since capture): the front-most
+        // on-screen fallback still applies, unchanged.
+        #expect(BackgroundPoster.resolveWindowLive(ofPID: pid, containing: CGPoint(x: -50, y: -50))?.id == 42,
+                "with no containment hit in either listing, the front-most on-screen fallback wins")
+        // No point supplied: front-most of the first listing that yields windows, unchanged.
+        #expect(BackgroundPoster.resolveWindowLive(ofPID: pid)?.id == 42)
     }
 
     /// F14: the private symbol is validated once — a missing symbol must disable directApp
@@ -375,16 +415,22 @@ struct BackgroundPosterTests {
 
     /// The keyboard path has the identical ordering bug, and it was not even reachable from a
     /// test until `postKey` was routed through the same delivery seam as the mouse path.
+    /// The flags pin mirrors the mouse path's: the write must survive to the post seam as
+    /// the explicit no-modifier set, never the user's held keys.
     @Test func backgroundPostedKeysStillCarryTheSelfTag() {
         let previous = BackgroundPoster.eventPoster
         defer { BackgroundPoster.eventPoster = previous }
         nonisolated(unsafe) var tags: [Int64] = []
+        nonisolated(unsafe) var flags: [CGEventFlags] = []
         BackgroundPoster.eventPoster = { event, _ in
             tags.append(event.getIntegerValueField(.eventSourceUserData))
+            flags.append(event.flags)
         }
         BackgroundPoster.keyEvent(0, down: true, flags: [], pid: 1234)
         #expect(tags == [EventSynthesizer.eventTag],
                 "posted keys lost the self-tag: \(tags) != [\(EventSynthesizer.eventTag)]")
+        #expect(flags == [.maskNonCoalesced],
+                "posted keys must carry explicit flags only, saw \(flags)")
     }
 }
 

@@ -55,30 +55,41 @@ enum BackgroundPoster {
         list.compactMap { window(fromInfo: $0, ownerPID: pid) }
     }
 
-    /// The window a click is aimed at (F6/H6): the app's window that CONTAINS the captured
-    /// point, falling back to the front-most one when the point lies in none of them (occluded,
-    /// another Space, or a window moved since capture) — an occluded app is no excuse to drop
-    /// its clicks.
-    static func window(ofPID pid: pid_t, in list: [[String: Any]], containing point: CGPoint?) -> Window? {
-        let windows = list.lazy.compactMap { window(fromInfo: $0, ownerPID: pid) }
-        if let point, let hit = windows.first(where: { $0.bounds.contains(point) }) { return hit }
-        return windows.first
+    /// The window-server listing, as a seam (see `nsMouseEventBuilder`): tests seed the two
+    /// listings the resolvers ask for — on-screen first, `.optionAll` for occlusion — without
+    /// querying the real window server.
+    nonisolated(unsafe) static var windowListCopy: (CGWindowListOption) -> [[String: Any]]? = { options in
+        CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]]
     }
 
     /// Re-runs the window-server queries: on-screen first, `.optionAll` fallback for occlusion.
+    ///
+    /// With a captured point, containment must be settled across BOTH listings before any
+    /// window is accepted (review N2): the picked window can be minimized or on another
+    /// Space — visible only to `.optionAll` — while the app's other window is front-most in
+    /// the on-screen listing. Accepting that one aimed the click at (and the clamp kept it
+    /// inside) a window the user never picked. Only when no listing contains the point does
+    /// the front-most fallback win, front-most of the first listing that has any window.
     static func resolveWindowLive(ofPID pid: pid_t, containing point: CGPoint? = nil) -> Window? {
+        var frontMost: Window?
         for options in [CGWindowListOption.optionOnScreenOnly, .optionAll] {
-            guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else { continue }
-            if let window = window(ofPID: pid, in: list, containing: point) { return window }
+            guard let list = windowListCopy(options) else { continue }
+            let windows = windows(ofPID: pid, in: list)
+            if let point {
+                if let hit = windows.first(where: { $0.bounds.contains(point) }) { return hit }
+            } else if let front = windows.first {
+                return front
+            }
+            if frontMost == nil { frontMost = windows.first }
         }
-        return nil
+        return frontMost
     }
 
     /// Every usable window of the app, live: the pick-time containment check (H4) needs all of
     /// them, not just the front-most. Same on-screen-first, `.optionAll`-fallback rule.
     static func resolveWindowsLive(ofPID pid: pid_t) -> [Window] {
         for options in [CGWindowListOption.optionOnScreenOnly, .optionAll] {
-            guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else { continue }
+            guard let list = windowListCopy(options) else { continue }
             let windows = windows(ofPID: pid, in: list)
             if !windows.isEmpty { return windows }
         }
@@ -344,9 +355,6 @@ enum BackgroundPoster {
             targetingLog.warning("background click lost: the AppKit event conversion returned nil")
             return false
         }
-        // Same contract as the HID path: explicit flags only (never the user's held keys —
-        // and no fake ⌘; background clicks stopped pretending modifiers are held).
-        event.flags = .maskNonCoalesced
         // Re-home the event onto a fresh private source before posting. NSEvent's .cgEvent is
         // shared-sourced (stateID 0), and posting through that source at click rates wedges its
         // cumulative modifier/button state — ⌘ then reads as physically held to the window
@@ -356,11 +364,16 @@ enum BackgroundPoster {
         let fresh = CGEventSource(stateID: .hidSystemState)
         fresh?.localEventsSuppressionInterval = 0
         event.setSource(fresh)
-        // The window-target recipe goes on AFTER setSource, never before: setSource resets
+        // Everything delivery-visible goes on AFTER setSource, never before: setSource resets
         // source-owned per-event data — measured directly, .eventSourceUserData read back as
         // 0 when written first, and one proven wipe is enough to put everything delivery
-        // depends on (subtype, fields 91/92, the private window location, the self-tag) on
-        // the safe side of the call.
+        // depends on (flags, subtype, fields 91/92, the private window location, the self-tag)
+        // on the safe side of the call. (Measured with no modifiers held, setSource happens
+        // not to rewrite flags — the same ordering posture applies regardless: the source's
+        // state is live the moment a user is holding keys.)
+        // Same contract as the HID path: explicit flags only (never the user's held keys —
+        // and no fake ⌘; background clicks stopped pretending modifiers are held).
+        event.flags = .maskNonCoalesced
         event.setIntegerValueField(.mouseEventSubtype, value: 3)
         event.setIntegerValueField(windowField, value: Int64(window.id))
         event.setIntegerValueField(handlerWindowField, value: Int64(window.id))
@@ -396,12 +409,12 @@ enum BackgroundPoster {
     }
 
     private static func postKey(_ event: CGEvent, flags: CGEventFlags, pid: pid_t) {
-        event.flags = flags.union(.maskNonCoalesced)
         // Same fresh-source rule as the mouse path: these events are built with a nil source.
         let fresh = CGEventSource(stateID: .hidSystemState)
         fresh?.localEventsSuppressionInterval = 0
         event.setSource(fresh)
-        // Tag after setSource — see post(_:appIsActive:pid:).
+        // Everything delivery-visible after setSource, same as the mouse path — flags included.
+        event.flags = flags.union(.maskNonCoalesced)
         event.setIntegerValueField(.eventSourceUserData, value: EventSynthesizer.eventTag)
         eventPoster(event, pid)
     }

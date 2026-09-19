@@ -83,7 +83,7 @@ final class KeyPresser {
                                   directPID: directPID, worker: worker, report: report)
                 }
             }
-            return { worker.cancelAndWait() }
+            return worker.stopClosure(named: "Key Presser")
         }
     }
 
