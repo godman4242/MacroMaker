@@ -361,8 +361,87 @@ struct BackgroundPosterTests {
         }
     }
 
+    // MARK: SkyLight delivery (background clicking that Chromium-class targets accept)
+
+    /// The default poster tries SLEventPostToPid first; when the symbol is absent it falls
+    /// back to the public postToPid. Both must see a fully-stamped event.
+    /// Records which delivery route the mock SkyLight/postToPid posters took.
+    private final class DeliveryBox: @unchecked Sendable { var route = ""; var events: [CGEvent] = [] }
+
+    @Test func deliveryTriesSkyLightThenFallsBackToPostToPid() {
+        let box = DeliveryBox()
+        Self.activeDeliveryBox = box
+        let priorResolver = BackgroundPoster.skylightPostResolver
+        let priorPoster = BackgroundPoster.eventPoster
+        defer {
+            Self.activeDeliveryBox = nil
+            BackgroundPoster.skylightPostResolver = priorResolver
+            BackgroundPoster.eventPoster = priorPoster
+        }
+
+        // Route 1: the SkyLight symbol resolves — the event goes through it, postToPid never runs.
+        // A @convention(c) closure cannot capture Swift context, so the mock posts through a
+        // global trampoline that forwards into the test's box (installed just below, cleared
+        // in the defer above).
+        BackgroundPoster.skylightPostResolver = { Self.skyLightTrampoline }
+        BackgroundPoster.eventPoster = { event, pid in
+            if BackgroundPoster.skylightPostToPid(pid, event) { return }
+            event.postToPid(pid)
+        }
+        let window = BackgroundPoster.Window(id: 7, bounds: CGRect(x: 0, y: 0, width: 100, height: 100))
+        BackgroundPoster.click(.left, screenPoint: CGPoint(x: 50, y: 50), holdFor: 0,
+                               clickCount: 1, window: window, pid: 4242)
+        #expect(box.route == "skylight(pid:4242)", "delivery must prefer the SkyLight route, got \(box.route)")
+        #expect(box.events.count == 2, "down and up both via SkyLight, got \(box.events.count)")
+
+        // Route 2: the symbol is absent — the public postToPid fallback runs.
+        box.route = ""
+        box.events.removeAll()
+        BackgroundPoster.skylightPostResolver = { nil }
+        BackgroundPoster.eventPoster = { event, pid in
+            if BackgroundPoster.skylightPostToPid(pid, event) { return }
+            box.route = "postToPid"
+            box.events.append(event)
+        }
+        BackgroundPoster.click(.left, screenPoint: CGPoint(x: 50, y: 50), holdFor: 0,
+                               clickCount: 1, window: window, pid: 4242)
+        #expect(box.route == "postToPid", "an absent SkyLight symbol must fall back to postToPid, got \(box.route)")
+        #expect(box.events.count == 2)
+    }
+
+    /// Chromium's renderer filter reads the target pid (f40) off the event; the click must
+    /// carry it beside the existing 91/92 pair. (The bridge window number, f51, is left to
+    /// NSEvent.mouseEvent — it is on `protectedFields` and already set via windowNumber:.)
+    @Test func chromiumFilteredClicksCarryTheTargetPidField() {
+        let box = PostedEventBox()
+        let prior = BackgroundPoster.eventPoster
+        defer { BackgroundPoster.eventPoster = prior }
+        BackgroundPoster.eventPoster = { event, _ in box.events.append(event) }
+
+        BackgroundPoster.click(.left, screenPoint: CGPoint(x: 50, y: 50), holdFor: 0,
+                               clickCount: 1,
+                               window: BackgroundPoster.Window(id: 77, bounds: CGRect(x: 0, y: 0, width: 100, height: 100)),
+                               pid: 9182)
+        #expect(box.events.count == 2)
+        for event in box.events {
+            #expect(event.getIntegerValueField(CGEventField(rawValue: 40)!) == 9182,
+                    "the target pid must ride field 40 (Chromium's synthetic-event filter)")
+            #expect(event.getIntegerValueField(CGEventField(rawValue: 51)!) == 77,
+                    "NSEvent's own window number (field 51) is untouched")
+        }
+    }
+
     /// Captures events instead of delivering them (see BackgroundPoster.eventPoster).
     private final class PostedEventBox: @unchecked Sendable { var events: [CGEvent] = [] }
+
+    /// C-compatible trampoline for mocking `SLEventPostToPid` in tests: a @convention(c)
+    /// closure cannot capture context, so the current test's DeliveryBox is parked in this
+    /// global and the C function forwards into it. Cleared by the test's defer.
+    private nonisolated(unsafe) static var activeDeliveryBox: DeliveryBox?
+    private nonisolated static let skyLightTrampoline: @convention(c) (pid_t, CGEvent) -> Void = { pid, event in
+        activeDeliveryBox?.route = "skylight(pid:\(pid))"
+        activeDeliveryBox?.events.append(event)
+    }
 
     // MARK: Delivery defects found in the v2.0.5 sweep
     //

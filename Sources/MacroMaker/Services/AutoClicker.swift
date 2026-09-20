@@ -469,7 +469,8 @@ final class AutoClicker {
         let whereItLands = window.bounds.contains(point)
             ? "inside it"
             : "outside it — clicks fall back to the app's front-most window"
-        return "Window \(Int(window.bounds.width))×\(Int(window.bounds.height)) — captured spot is (\(Int(local.x)), \(Int(local.y))) \(whereItLands)."
+        func shown(_ v: CGFloat) -> Int { v.isFinite ? Int(min(max(v, -100_000), 100_000)) : 0 }
+        return "Window \(shown(window.bounds.width))×\(shown(window.bounds.height)) — captured spot is (\(shown(local.x)), \(shown(local.y))) \(whereItLands)."
     }
 
     /// The pick-time half of H4: a direct-app point captured outside every window of the chosen

@@ -37,6 +37,12 @@ enum BackgroundPoster {
     private static let windowField = CGEventField(rawValue: 91)!
     /// kCGMouseEventWindowUnderMousePointerThatCanHandleThisEvent.
     private static let handlerWindowField = CGEventField(rawValue: 92)!
+    /// Chromium's synthetic-event filter reads the target pid here (cua-driver recipe f40).
+    /// Field 51 (the NSEvent-bridge window number, also in the recipe) is NOT stamped here:
+    /// `NSEvent.mouseEvent(with: windowNumber:)` already populated it — field 51 is on the
+    /// `protectedFields` list of values this code must never overwrite, and re-stamping the
+    /// same window number would be that, with nothing gained.
+    private static let targetPidField = CGEventField(rawValue: 40)!
 
     /// Pure filter over one raw CGWindowInfo dictionary: the app's layer-0 windows only.
     static func window(fromInfo info: [String: Any], ownerPID: pid_t) -> Window? {
@@ -352,7 +358,35 @@ enum BackgroundPoster {
     }
 
     /// Delivery seam: swapped in tests so `click` can be asserted without hitting real processes.
-    nonisolated(unsafe) static var eventPoster: (CGEvent, pid_t) -> Void = { $0.postToPid($1) }
+    ///
+    /// The default tries the private SkyLight `SLEventPostToPid` FIRST and falls back to the
+    /// public `CGEventPostToPid`. Both deliver to one process without raising it, but they
+    /// travel different routes: `CGEventPostToPid` skips the window-server activity tickle, and
+    /// Chromium/Electron-class renderers (plus macOS 26 WebKit content processes) filter
+    /// session-targeted events that lack the WindowServer trust envelope — the click reached
+    /// the app's outer process and silently vanished (verified against cua-driver's SkyLight
+    /// bridge and the safari-mcp #29 report, both 2026). `SLEventPostToPid` is that envelope;
+    /// when its symbol is absent (older macOS, or Apple removes it) the public call is the
+    /// best available delivery and still works for AppKit targets.
+    nonisolated(unsafe) static var eventPoster: (CGEvent, pid_t) -> Void = { event, pid in
+        if skylightPostToPid(pid, event) { return }
+        event.postToPid(pid)
+    }
+
+    /// Runtime seam over the private `SLEventPostToPid` (SkyLight.framework) — resolved once
+    /// per launch, like `CGEventSetWindowLocation` above. `nil` = the symbol is unavailable.
+    nonisolated(unsafe) static var skylightPostResolver: @Sendable () -> (@convention(c) (pid_t, CGEvent) -> Void)? = {
+        // RTLD_DEFAULT is ((void *) -2) in dlfcn.h; the macro doesn't import into Swift.
+        dlsym(UnsafeMutableRawPointer(bitPattern: -2), "SLEventPostToPid")
+            .map { unsafeBitCast($0, to: (@convention(c) (pid_t, CGEvent) -> Void).self) }
+    }
+
+    /// Posts via SkyLight; false = symbol unavailable (the caller falls back to postToPid).
+    nonisolated static func skylightPostToPid(_ pid: pid_t, _ event: CGEvent) -> Bool {
+        guard let post = skylightPostResolver() else { return false }
+        post(pid, event)
+        return true
+    }
 
     private static func post(_ event: CGEvent?, window: Window, screenPoint: CGPoint, pid: pid_t) -> Bool {
         guard let event else {
@@ -383,6 +417,9 @@ enum BackgroundPoster {
         event.setIntegerValueField(.mouseEventSubtype, value: 3)
         event.setIntegerValueField(windowField, value: Int64(window.id))
         event.setIntegerValueField(handlerWindowField, value: Int64(window.id))
+        // The Chromium synthetic-event filter (cua-driver recipe): the target pid rides
+        // field 40, beside the 91/92 pair above.
+        event.setIntegerValueField(targetPidField, value: Int64(pid))
         guard windowLocationResolver.setWindowLocation(
             of: event, to: windowPoint(fromScreenPoint: screenPoint, window: window)) else {
             // Fail loud, not mis-aimed: a click the resolver can't aim never leaves the app.
