@@ -8,6 +8,7 @@ Written in Swift and SwiftUI. Needs macOS 14 (Sonoma) or later, and runs nativel
 ## What's new in 2.0
 
 - **Direct-app targeting:** clicks and keystrokes can go to one chosen app in the background — your cursor never moves and the app can be behind other windows.
+- **Game route (v2.1):** for targets that ignore background clicks (games), one toggle switches delivery to real clicks — the cursor moves to the captured point, the game comes to the front, and the click lands there. See the table below.
 
 ### What background clicking can and cannot reach (measured 2026-09-20, macOS 26.5.2)
 
@@ -16,14 +17,30 @@ Written in Swift and SwiftUI. Needs macOS 14 (Sonoma) or later, and runs nativel
 | Normal Mac apps (AppKit) | ✅ Works |
 | Chrome / Brave / Edge / Electron apps (Discord, Slack, VS Code) | ✅ Works — needs the activation + primer sequence below |
 | A background **browser tab** | ✅ Use **Web Target**: it runs JavaScript inside the tab, so no focus at all is needed |
-| **Games** — Roblox, Unity, SDL, Metal/OpenGL surfaces | ❌ **Impossible.** Not a bug, and not anti-cheat |
+| **Games** — Roblox, Unity, SDL, Metal/OpenGL surfaces | ❌ In the background: **impossible** (not a bug, not anti-cheat). ✅ With the game frontmost: switch on **"It's a game"** and every click is real |
 
-Games read the mouse from the hardware input layer and only act on it while their app is
-frontmost. A click posted to a backgrounded game is discarded with no error: measured against
-Roblox, screenshots before and after were pixel-identical. The identical click lands the moment
-the game is frontmost. Every open-source project that does background input excludes games for
-the same reason. For a game the only options are to let it hold the foreground, or to run it in a
-separate macOS login session or VM.
+Games read a click's position from the system cursor and only act on input while their app is
+frontmost — both measured. A click posted to a backgrounded game is discarded with no error:
+measured against Roblox, screenshots before and after were pixel-identical, and a posted run's
+clicks landed wherever the live cursor happened to be. Every open-source project that does
+background input excludes games for the same reason.
+
+So games take the **real-input route**: with "It's a game — send real clicks that move the
+cursor" on, the run brings the game to the front, then every click is posted at the HID tap like
+hardware input — the cursor jumps to the captured point, the click happens there, and (with
+"Move the cursor back after each click" on) the cursor jumps back. Each press holds for 15 ms —
+games swallow faster ones — so delivery tops out at about 60 clicks per second no matter what
+interval you set. The route is honest about focus, too: the game is raised once when the run
+starts, and if it loses the frontmost spot mid-run the clicks are refused with a warning instead
+of landing in whatever took its place — the run resumes counting when the game is frontmost
+again, it never steals focus back. The captured spot must be
+visible: a real click goes to whatever is topmost at the point, so covered spots are refused with
+a warning instead of clicked blind. Keep your hands off the mouse while it runs, or switch on
+"Pause when I use the mouse or keyboard".
+
+⚠️ Auto-clicking can be against a game's rules. Roblox's enforcement on macOS is unknown in
+2026 — there is no evidence of Byfron-style anti-cheat on this platform, but using this route in
+a game is your own risk.
 
 Chromium-class apps need two extra things, both measured — without either, the click is dropped
 silently while the app is in the background:

@@ -60,10 +60,11 @@ struct StopLifecycleTests {
             else { defaults.removeObject(forKey: AutoClicker.storageKey) }
         }
 
-        var settings = clicker.settings
+        var settings = AutoClickerSettings()   // fresh defaults — never the persisted blob
         settings.pauseOnRealInput = true
         settings.target = .directApp
         settings.directAppBundleID = "com.apple.finder"
+        settings.directAppGameRoute = false   // PIN the route — never inherit the persisted flag
         clicker.settings = settings
 
         clicker.toggle(.hotkey)   // hotkey trigger: no countdown, running immediately
@@ -84,21 +85,22 @@ struct StopLifecycleTests {
 
     // MARK: Stop's cancel-and-wait must fail loud
 
-    /// Blocks the first click post until the test opens the gate — the wedge sits exactly
-    /// where a slow window-server call would, past any cancellation check.
+    /// Parks the worker's first post for the rest of the process — the wedge sits exactly
+    /// where a slow window-server call would, past any cancellation check. It is
+    /// deliberately NEVER released: opening it on teardown let the un-wedged worker finish
+    /// its in-flight post sequence through whatever poster the NEXT test had already armed
+    /// (a measured 4-event leak into a neighbouring test's recorder). A worker parked here
+    /// can never post again; it holds no locks and no RealInputMonitor subscription (the
+    /// overrun tests run on fresh defaults, which never pause on real input), so later
+    /// tests are safe.
     private final class ClickGate: @unchecked Sendable {
         private let entered = DispatchSemaphore(value: 0)
-        private let release = DispatchSemaphore(value: 0)
-        private let lock = NSLock()
-        private var opened = false
+        private let parked = DispatchSemaphore(value: 0)
 
         var poster: (CGEvent, pid_t) -> Void {
             { [self] _, _ in
                 entered.signal()
-                lock.lock()
-                let open = opened
-                lock.unlock()
-                if !open { release.wait() }
+                parked.wait()   // never signalled — the wedge is permanent
             }
         }
 
@@ -107,13 +109,6 @@ struct StopLifecycleTests {
                 throw NSError(domain: "StopLifecycleTests", code: 1,
                                userInfo: [NSLocalizedDescriptionKey: "the worker never reached the click post"])
             }
-        }
-
-        func open() {
-            lock.lock()
-            opened = true
-            lock.unlock()
-            release.signal()
         }
     }
 
@@ -142,7 +137,8 @@ struct StopLifecycleTests {
         BackgroundPoster.eventPoster = gate.poster
         WorkerThread.overrunSurface = { box.services.append($0) }
         defer {
-            gate.open()
+            // No gate release: the worker stays parked for the rest of the process (see
+            // ClickGate) — releasing it here leaked its in-flight posts into the next test.
             BackgroundPoster.eventPoster = savedPoster
             WorkerThread.overrunSurface = savedSurface
             model.permissions.forceAccessibilityTrusted = false
@@ -152,7 +148,7 @@ struct StopLifecycleTests {
             else { defaults.removeObject(forKey: "keyPresser") }
         }
 
-        var settings = presser.settings
+        var settings = KeyPresserSettings()   // fresh defaults — never the persisted blob
         settings.keyText = "space"
         settings.mode = .autoPress
         // Direct-app delivery: the press posts through the (gated) BackgroundPoster seam.
@@ -194,7 +190,8 @@ struct StopLifecycleTests {
         EventSynthesizer.eventPoster = { gate.poster($0, 0) }
         WorkerThread.overrunSurface = { box.services.append($0) }
         defer {
-            gate.open()
+            // No gate release: the worker stays parked for the rest of the process (see
+            // ClickGate) — releasing it here leaked its in-flight posts into the next test.
             EventSynthesizer.eventPoster = savedPoster
             WorkerThread.overrunSurface = savedSurface
             model.permissions.forceAccessibilityTrusted = false
@@ -238,7 +235,9 @@ struct StopLifecycleTests {
         model.permissions.forceAccessibilityTrusted = true
         BackgroundPoster.eventPoster = gate.poster
         defer {
-            gate.open()
+            // No gate release: the worker stays parked for the rest of the process (see
+            // ClickGate) — releasing it here leaked the click's remaining 4 posts into the
+            // NEXT test's event recorder (measured: a 5-event assert saw 9).
             BackgroundPoster.eventPoster = savedPoster
             model.permissions.forceAccessibilityTrusted = false
             model.stopAll()
@@ -247,9 +246,10 @@ struct StopLifecycleTests {
             else { defaults.removeObject(forKey: AutoClicker.storageKey) }
         }
 
-        var settings = clicker.settings
+        var settings = AutoClickerSettings()   // fresh defaults — never the persisted blob
         settings.target = .directApp
         settings.directAppBundleID = "com.apple.finder"
+        settings.directAppGameRoute = false   // PIN the route under test
         clicker.settings = settings
 
         clicker.toggle(.hotkey)
@@ -298,9 +298,10 @@ struct StopLifecycleTests {
             else { defaults.removeObject(forKey: AutoClicker.storageKey) }
         }
 
-        var settings = clicker.settings
+        var settings = AutoClickerSettings()   // fresh defaults — never the persisted blob
         settings.target = .directApp
         settings.directAppBundleID = "com.apple.finder"
+        settings.directAppGameRoute = false   // PIN the route under test
         // Both limits: old code counted the undelivered clicks and would race the click limit;
         // new code never counts them, so the duration limit is what ends the run.
         settings.stopAfterClicks = true
@@ -346,9 +347,13 @@ struct StopLifecycleTests {
             else { defaults.removeObject(forKey: AutoClicker.storageKey) }
         }
 
-        var settings = clicker.settings
+        var settings = AutoClickerSettings()   // fresh defaults — never the persisted blob
         settings.target = .directApp
         settings.directAppBundleID = "com.apple.finder"
+        // PIN the route: this test asserts the PID route's five-event sequence — a leftover
+        // game-route blob in the test domain once made the click take the game route,
+        // refuse on the frontmost guard and post nothing.
+        settings.directAppGameRoute = false
         clicker.settings = settings
 
         let reply = clicker.testClick()

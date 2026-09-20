@@ -139,6 +139,100 @@ enum BackgroundPoster {
         }
     }
 
+    // MARK: Game route
+
+    /// The topmost on-screen window owner at a screen point — pure over one listing (the
+    /// window server returns front to back), so it tests without the window server. The
+    /// game route posts REAL clicks, which land on whatever is topmost at the point: this
+    /// is the truth that decides whether the point is visibly the target's right now.
+    ///
+    /// ANY layer counts, not just 0: a real click lands on the menu bar, the Dock and
+    /// notification banners (all non-layer-0 surfaces) exactly as readily as on an app
+    /// window, so a spot under one of those is NOT the target's to click — whatever the
+    /// layer-0 stacking says. The FIRST entry containing the point wins; a zero-size
+    /// window never matches.
+    static func topmostWindowOwner(at point: CGPoint, in list: [[String: Any]]) -> pid_t? {
+        for info in list {
+            guard let boundsDict = info[kCGWindowBounds as String] as? [String: Any] as CFDictionary?,
+                  let bounds = CGRect(dictionaryRepresentation: boundsDict),
+                  bounds.width > 0, bounds.height > 0,
+                  bounds.contains(point),
+                  let owner = info[kCGWindowOwnerPID as String] as? Int
+            else { continue }
+            return pid_t(owner)
+        }
+        return nil
+    }
+
+    /// Live topmost owner at a point — the single-shot lookups (test click, status line).
+    static func topmostOwner(at point: CGPoint) -> pid_t? {
+        guard let list = windowListCopy(.optionOnScreenOnly) else { return nil }
+        return topmostWindowOwner(at: point, in: list)
+    }
+
+    /// Where a main-actor block runs: INLINE when the caller is already on the main thread,
+    /// a main-queue hop otherwise (the caller never blocks on main). The Test Click's raise
+    /// depends on the inline half: it runs on main and then sleeps ~250 ms to let the raise
+    /// land — with an async-only runner the queued activate sits BEHIND the sleeping main
+    /// thread, so the click posts while the game is still backgrounded, inside its measured
+    /// discard window, and the reply still said "sent" (the shipped blocker: three reviewers).
+    nonisolated(unsafe) static var mainThreadRunner: @Sendable (@escaping @MainActor @Sendable () -> Void) -> Void = { body in
+        if Thread.isMainThread {
+            MainActor.assumeIsolated(body)
+        } else {
+            performOnMain(body)
+        }
+    }
+
+    /// The game route's real raise. Games discard posted input while their app isn't frontmost
+    /// (measured in Roblox: pixel diff 0), and a synthetic click does NOT activate a background
+    /// window (measured on this machine: the cursor moved to the click point, frontmost
+    /// unchanged 1.5 s later) — so a game-route run must bring the target forward itself.
+    /// A seam, so tests never raise a real window.
+    nonisolated(unsafe) static var appActivator: @Sendable (String) -> Void = { bundleID in
+        BackgroundPoster.mainThreadRunner {
+            NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?.activate()
+        }
+    }
+
+    /// The gate's listing TTL, scaled to the run's own cadence: one refresh per tick at click
+    /// rates, capped at the resolver's 300 ms and floored at 10 ms. A stale listing on a
+    /// REAL-click route is up to a TTL of misdirected clicks after something pops over the
+    /// spot — at the run's cadence that's at most one click before the next refresh.
+    static func gateTTL(interval: TimeInterval) -> TimeInterval {
+        min(0.3, max(0.01, interval))
+    }
+
+    /// The game route's per-click visibility gate: one on-screen listing cached for the
+    /// run-interval TTL (see `gateTTL`) — a 1 ms-interval run must not re-query the window
+    /// server per click. A miss means the real click would land on a window the user can't
+    /// see the target owning (occluded, another Space, off-screen), so the click is refused
+    /// instead of aimed blind.
+    final class VisibilityGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private let ttl: TimeInterval
+        private var cacheDate: Date?
+        private var cachedList: [[String: Any]]?
+
+        init(interval: TimeInterval) {
+            self.ttl = BackgroundPoster.gateTTL(interval: interval)
+        }
+
+        /// True when the TOPMOST on-screen window at the point belongs to `pid` (any layer —
+        /// see `topmostWindowOwner`). A nil listing is remembered for the TTL like any other
+        /// result — a hidden window can't re-query the window server once per click either.
+        func isVisible(pid: pid_t, at point: CGPoint) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            if cacheDate == nil || Date().timeIntervalSince(cacheDate!) >= ttl {
+                cachedList = BackgroundPoster.windowListCopy(.optionOnScreenOnly)
+                cacheDate = Date()
+            }
+            guard let list = cachedList else { return false }
+            return BackgroundPoster.topmostWindowOwner(at: point, in: list) == pid
+        }
+    }
+
     // MARK: Apps
 
     /// The target's pid and active state from the lock-protected snapshot — callable from a

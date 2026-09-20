@@ -73,6 +73,11 @@ struct AutoClickerSettings: Codable, Equatable, Sendable {
     var directAppBundleID = ""
     var directAppX: Double = 400
     var directAppY: Double = 300
+    /// Direct-app route for game-class targets (Roblox & co.): they read a click's
+    /// position from the system cursor and discard input while not frontmost (both
+    /// measured), so the PID route can't reach them — with this on, clicks are posted
+    /// as real input at the HID tap instead: the cursor moves, the game comes forward.
+    var directAppGameRoute = false
     /// Pause when the user's own keyboard/mouse input is seen (pause-on-real-input).
     var pauseOnRealInput = false
     /// Seconds of user idle before a paused run starts itself again.
@@ -117,6 +122,7 @@ struct AutoClickerSettings: Codable, Equatable, Sendable {
         pauseOnRealInput = decoded(c, .pauseOnRealInput, fallback: false)
         autoResumeSeconds = clamped(c, .autoResumeSeconds, fallback: 5, in: 1...600)
         stopOnHotkey = decoded(c, .stopOnHotkey, fallback: false)
+        directAppGameRoute = decoded(c, .directAppGameRoute, fallback: false)
     }
 }
 

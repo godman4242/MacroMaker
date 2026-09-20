@@ -68,11 +68,14 @@ import Testing
     }
 
     /// H5: jitter can push a direct-app click point outside the window it must land in — the
-    /// delivery point is clamped back inside the window's bounds.
+    /// delivery point is clamped back inside the window's bounds. The max edges are exclusive
+    /// (a point ON the boundary is the neighbouring surface's to click), so clamp steps one
+    /// ULP inside instead of clamping onto `rect.maxX`.
     @Test func clampPullsAPointBackInsideTheRect() {
         let rect = CGRect(x: 100, y: 200, width: 300, height: 150)
         #expect(ClickGeometry.clamp(CGPoint(x: 50, y: 150), to: rect) == CGPoint(x: 100, y: 200))
-        #expect(ClickGeometry.clamp(CGPoint(x: 900, y: 900), to: rect) == CGPoint(x: 400, y: 350))
+        #expect(ClickGeometry.clamp(CGPoint(x: 900, y: 900), to: rect)
+                == CGPoint(x: 400.nextDown, y: 350.nextDown))
         #expect(ClickGeometry.clamp(CGPoint(x: 250, y: 275), to: rect) == CGPoint(x: 250, y: 275))
         // An empty rect has nothing to clamp into — the point passes through unchanged.
         #expect(ClickGeometry.clamp(CGPoint(x: 250, y: 275), to: CGRect.null) == CGPoint(x: 250, y: 275))

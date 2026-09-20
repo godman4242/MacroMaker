@@ -105,9 +105,10 @@ struct StopOnHotkeyTests {
             if let savedSettingsBlob { defaults.set(savedSettingsBlob, forKey: AutoClicker.storageKey) }
             else { defaults.removeObject(forKey: AutoClicker.storageKey) }
         }
-        var settings = savedSettings
+        var settings = AutoClickerSettings()   // fresh defaults — never the persisted blob
         settings.target = .directApp
         settings.directAppBundleID = "com.apple.finder"
+        settings.directAppGameRoute = false   // PIN the route under test
         clicker.settings = settings
 
         clicker.toggle(.hotkey)   // no countdown: running immediately
@@ -140,9 +141,10 @@ struct StopOnHotkeyTests {
             if let savedSettingsBlob { defaults.set(savedSettingsBlob, forKey: AutoClicker.storageKey) }
             else { defaults.removeObject(forKey: AutoClicker.storageKey) }
         }
-        var settings = savedSettings
+        var settings = AutoClickerSettings()   // fresh defaults — never the persisted blob
         settings.target = .directApp
         settings.directAppBundleID = "com.apple.finder"
+        settings.directAppGameRoute = false   // PIN the route under test
         clicker.settings = settings
 
         clicker.toggle(.button)   // the button path: countdown, then running
@@ -187,7 +189,7 @@ struct StopOnHotkeyTests {
             if let savedSettingsBlob { defaults.set(savedSettingsBlob, forKey: "keyPresser") }
             else { defaults.removeObject(forKey: "keyPresser") }
         }
-        var settings = savedSettings
+        var settings = KeyPresserSettings()   // fresh defaults — never the persisted blob
         settings.keyText = "f5"   // a key no test asserts on
         presser.settings = settings
 

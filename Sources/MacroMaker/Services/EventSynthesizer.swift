@@ -13,13 +13,30 @@ enum EventSynthesizer {
         return tag == 0 ? 1 : tag
     }()
 
-    static var cursorLocation: CGPoint {
+    /// Where the cursor position is read from. The default reads the live hardware cursor;
+    /// tests pin it, so restore-cursor behavior is deterministic — the shipped restore test
+    /// read the REAL cursor and went red whenever the machine's mouse moved during the suite.
+    nonisolated(unsafe) static var cursorLocationReader: @Sendable () -> CGPoint = {
         CGEvent(source: nil)?.location ?? .zero
+    }
+
+    static var cursorLocation: CGPoint {
+        cursorLocationReader()
     }
 
     /// Where synthesized events go. The default posts to the HID tap (the real cursor, the
     /// frontmost app); tests capture instead, so playback never touches the user's machine.
     nonisolated(unsafe) static var eventPoster: (CGEvent) -> Void = { $0.post(tap: .cghidEventTap) }
+
+    /// CGEvent creation seam: `CGEvent(mouseEventSource:...)` is documented to be able to
+    /// return nil, and that failure is invisible to tests against the real constructor.
+    /// Tests swap this to make creation fail, so the click paths' "event couldn't be built"
+    /// branches are reachable (the same shape as `BackgroundPoster.nsMouseEventBuilder`).
+    nonisolated(unsafe) static var mouseBuilder:
+        @Sendable (_ source: CGEventSource?, _ type: CGEventType, _ point: CGPoint,
+                   _ button: CGMouseButton) -> CGEvent? = { source, type, point, button in
+        CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: button)
+    }
 
     /// One event source reused for a whole run: `CGEventSource(stateID:)` is a real allocation,
     /// and making one per posted event costs a round-trip at click rates. The suppression
@@ -36,7 +53,7 @@ enum EventSynthesizer {
         }
 
         func mouse(_ type: CGEventType, at point: CGPoint, button: CGMouseButton) -> CGEvent? {
-            CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: button)
+            EventSynthesizer.mouseBuilder(source, type, point, button)
         }
 
         func key(_ code: CGKeyCode, down: Bool) -> CGEvent? {
@@ -46,26 +63,37 @@ enum EventSynthesizer {
 
     // MARK: Mouse
 
+    /// Posts one mouse transition. False when the event couldn't be built — the caller then
+    /// knows nothing was posted (a half-delivered down/up pair is worth reporting, not hiding).
+    @discardableResult
     static func postMouse(_ type: CGEventType, button: MouseButton, at point: CGPoint,
                           clickCount: Int = 1, flags: CGEventFlags = [],
-                          source: EventSource = EventSource()) {
-        guard let event = source.mouse(type, at: point, button: button.cgButton) else { return }
+                          source: EventSource = EventSource()) -> Bool {
+        guard let event = source.mouse(type, at: point, button: button.cgButton) else { return false }
         event.setIntegerValueField(.mouseEventClickState, value: Int64(clickCount))
         post(event, flags: flags)
+        return true
     }
 
     /// A complete click. `point == nil` clicks wherever the cursor currently is.
-    static func click(_ button: MouseButton, at point: CGPoint?, holdFor duration: TimeInterval) {
+    @discardableResult
+    static func click(_ button: MouseButton, at point: CGPoint?, holdFor duration: TimeInterval) -> Bool {
         click(button, at: point, holdFor: duration, clickCount: 1)
     }
 
     /// A complete click with a click state (2 = double-click, 3 = triple) like `NSEvent.clickCount`.
+    /// False when either half couldn't be built — the caller must not count that click as
+    /// delivered. (A failed down leaves nothing held; a failed up can leave a synthetic
+    /// button-down dangling in HID state — the next down/up pair or a real click clears it.)
+    @discardableResult
     static func click(_ button: MouseButton, at point: CGPoint?, holdFor duration: TimeInterval,
-                      clickCount: Int, source: EventSource = EventSource()) {
+                      clickCount: Int, source: EventSource = EventSource()) -> Bool {
         let location = point ?? cursorLocation
-        postMouse(button.downEventType, button: button, at: location, clickCount: clickCount, source: source)
+        guard postMouse(button.downEventType, button: button, at: location, clickCount: clickCount,
+                        source: source) else { return false }
         if duration > 0 { Thread.sleep(forTimeInterval: duration) }
-        postMouse(button.upEventType, button: button, at: location, clickCount: clickCount, source: source)
+        return postMouse(button.upEventType, button: button, at: location, clickCount: clickCount,
+                         source: source)
     }
 
     /// Posts one scroll-wheel notch with pixel deltas (negative `dy` = the natural down

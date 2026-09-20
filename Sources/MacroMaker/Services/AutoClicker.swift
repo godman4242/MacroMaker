@@ -36,10 +36,14 @@ final class AutoClicker {
     /// Why direct-app targeting can't post reliably right now, if it can't.
     var directAppProblem: String? {
         guard settings.target == .directApp else { return nil }
-        guard BackgroundPoster.targetingSupported else {
-            // Launch validation says exactly what failed (missing symbol / failed round-trip).
-            return BackgroundPoster.windowTargetingProblem
-                ?? "This macOS build doesn't support background clicks: the CGEventSetWindowLocation call is missing."
+        // The game route posts plain HID events, not window-aimed ones — the private
+        // CGEventSetWindowLocation symbol is a requirement of the default PID route only.
+        if !settings.directAppGameRoute {
+            guard BackgroundPoster.targetingSupported else {
+                // Launch validation says exactly what failed (missing symbol / failed round-trip).
+                return BackgroundPoster.windowTargetingProblem
+                    ?? "This macOS build doesn't support background clicks: the CGEventSetWindowLocation call is missing."
+            }
         }
         guard !settings.directAppBundleID.isEmpty else { return "Pick an app to click in." }
         guard BackgroundPoster.processID(forBundleID: settings.directAppBundleID) != nil else {
@@ -87,6 +91,10 @@ final class AutoClicker {
         /// Direct-app delivery: the target app's bundle id and a *screen-space* point on its window.
         let directAppBundleID: String
         let directScreenPoint: CGPoint
+        /// Direct-app route for game-class targets: real HID clicks that move the cursor,
+        /// not PID-posted ones (games read a click's position from the system cursor and
+        /// drop input while not frontmost — both measured). Same-named settings flag.
+        let directAppGameRoute: Bool
 
         init(_ s: AutoClickerSettings, initialFrontmost: String?) {
             button = s.button
@@ -107,6 +115,7 @@ final class AutoClicker {
             humanizer = s.humanizer
             directAppBundleID = s.directAppBundleID
             directScreenPoint = CGPoint(x: s.directAppX, y: s.directAppY)
+            directAppGameRoute = s.directAppGameRoute
         }
     }
 
@@ -167,7 +176,17 @@ final class AutoClicker {
     private func begin(_ plan0: Plan, token: Int) -> (() -> Void)? {
         var plan = plan0
         if plan.stopOnFrontmostChange {
-            plan = Plan(settings, initialFrontmost: TargetSnapshot.shared.frontmostBundleID)
+            // Game route: pin the baseline to the TARGET, not the real frontmost — the run
+            // itself raises the game at start (below, in clickLoop), and that raise would
+            // read as a frontmost change and stop the run on its first check. Any OTHER app
+            // coming forward still stops it. Default modes keep sampling the real frontmost.
+            // The pin is gated on the TARGET too: the toggle lives in the direct-app section,
+            // so switching to fixed-point hides it — a stale ON flag there must not baseline
+            // a fixed-point run on a game that never ran.
+            let gameRoute = plan.target == .directApp && plan.directAppGameRoute
+            let baseline = gameRoute ? plan.directAppBundleID
+                                     : TargetSnapshot.shared.frontmostBundleID
+            plan = Plan(settings, initialFrontmost: baseline)
         }
         /// The run's own copy of the plan (initialFrontmost sampled at begin) lives here so
         /// resume() can rebuild the worker from it.
@@ -312,7 +331,11 @@ final class AutoClicker {
         let source = EventSynthesizer.EventSource()
         var direct: DirectRun?
         if plan.target == .directApp {
-            direct = DirectRun(bundleID: plan.directAppBundleID, snapshot: snapshot)
+            direct = DirectRun(bundleID: plan.directAppBundleID, snapshot: snapshot, interval: plan.interval)
+            // The game route's one raise per worker: games discard posted input while not
+            // frontmost (measured), and the run's clicks alone won't bring the game forward
+            // (measured: a synthetic click does NOT activate a background window).
+            if plan.directAppGameRoute { raiseTargetIfNeeded(plan, snapshot: snapshot, worker: worker, end: end) }
         }
         var lastWarning: String?
 
@@ -325,8 +348,10 @@ final class AutoClicker {
                         report(count, true, "The target app quit or was replaced mid-run — the run stopped rather than click the wrong process.")
                         return
                     case .alive(let pid):
-                        if let undelivered = directClickOnce(plan, pid: pid, resolver: directRun.resolver,
-                                                            activator: directRun.activator) {
+                        if let undelivered = directClickOnce(plan, pid: pid, snapshot: snapshot,
+                                                            resolver: directRun.resolver,
+                                                            activator: directRun.activator,
+                                                            gate: directRun.gate, source: source) {
                             // Undelivered click: never counted — the counter must mean "clicks
                             // that reached the target", or stopAfterClicks lies. The warning
                             // string says WHY (no window / undeliverable event) so the banner
@@ -374,13 +399,20 @@ final class AutoClicker {
         /// Armed once per (pid, window): Chromium-class targets ignore background clicks until
         /// their app is input-active. See BackgroundPoster.activateWithoutRaise.
         let activator = BackgroundPoster.Activator()
+        /// The game route's per-click visibility gate: a real click lands on whatever is
+        /// topmost at the point, so a covered or off-screen point is refused instead of
+        /// clicked blind. Its listing TTL follows the run's cadence (one refresh per tick),
+        /// because a stale listing on a REAL-click route is up to a TTL of misdirected clicks
+        /// after something pops over the spot. Unused by the default PID route.
+        let gate: BackgroundPoster.VisibilityGate
         private var state = State.unchecked
         private enum State { case unchecked, gone }
         private let snapshot: TargetSnapshot
 
-        init(bundleID: String, snapshot: TargetSnapshot) {
+        init(bundleID: String, snapshot: TargetSnapshot, interval: TimeInterval) {
             self.bundleID = bundleID
             self.snapshot = snapshot
+            self.gate = BackgroundPoster.VisibilityGate(interval: interval)
         }
 
         enum Check { case alive(pid: pid_t), dead }
@@ -428,13 +460,20 @@ final class AutoClicker {
         }
     }
 
-    /// Direct-app click: no cursor movement, no app raising — posted into the process.
-    /// Returns nil when the click was delivered; otherwise a one-line warning naming why
-    /// (no window resolvable — even via the .optionAll fallback — or an undeliverable event).
-    /// Nothing is counted when this returns a warning.
+    /// Direct-app click. Two routes share this entry point: the default PID route (no cursor
+    /// movement, no app raising — posted into the process) and the game route (`gameRouteClick`
+    /// below). Returns nil when the click was delivered; otherwise a one-line warning naming
+    /// why, and nothing is counted when this returns a warning.
     nonisolated private static func directClickOnce(_ plan: Plan, pid: pid_t,
+                                                    snapshot: TargetSnapshot,
                                                     resolver: BackgroundPoster.WindowResolver,
-                                                    activator: BackgroundPoster.Activator) -> String? {
+                                                    activator: BackgroundPoster.Activator,
+                                                    gate: BackgroundPoster.VisibilityGate,
+                                                    source: EventSynthesizer.EventSource) -> String? {
+        if plan.directAppGameRoute {
+            return gameRouteClick(plan, pid: pid, snapshot: snapshot, resolver: resolver,
+                                  gate: gate, source: source)
+        }
         // Same single-randomness rule: this point is fixed, positional jitter applies.
         let picked = plan.positionJitterPx == 0 ? plan.directScreenPoint
             : ClickGeometry.jitter(plan.directScreenPoint, amount: plan.positionJitterPx,
@@ -459,6 +498,81 @@ final class AutoClicker {
         return nil
     }
 
+    /// The game route: one REAL click at the point, posted at the HID tap like the foreground
+    /// modes. Games read a click's position from the system cursor, not from the posted
+    /// event's fields (measured: the PID route's clicks land at the LIVE cursor in Roblox),
+    /// and they discard input while not frontmost (measured) — so this branch moves the real
+    /// cursor to the point instead of posting into the process. No primer pair and no
+    /// window-target fields (those serve the PID recipe — and RobloxAuto shows an
+    /// off-screen primer pair registering as a click of its own): the down's location IS the
+    /// cursor move, because the WindowServer processes a HID-tap event's location into cursor
+    /// state (measured: cursor 470,873 → exactly the click point, no leading move).
+    nonisolated private static func gameRouteClick(_ plan: Plan, pid: pid_t,
+                                                   snapshot: TargetSnapshot,
+                                                   resolver: BackgroundPoster.WindowResolver,
+                                                   gate: BackgroundPoster.VisibilityGate,
+                                                   source: EventSynthesizer.EventSource) -> String? {
+        // A real click posted while the game isn't frontmost is discarded (measured) while
+        // it still moves the cursor — refuse like the gate does, or stopAfterClicks counts
+        // clicks that never reached the game. Checked FIRST (cheapest, and every click that
+        // passes it re-reads the snapshot, so a switch back to the game self-heals within
+        // one tick — no re-raise: stealing the front back from the user would be hostile).
+        guard snapshot.targetState(forBundleID: plan.directAppBundleID).isActive else {
+            return "The game isn't frontmost right now — it ignores clicks until you switch back to it; undelivered clicks aren't counted."
+        }
+        // Resolve by the CAPTURED point, then jitter, then clamp: jittering first can step
+        // outside the window the user anchored to, and unclamped jitter on a REAL-click
+        // route can click a neighbouring app's window.
+        guard let window = resolver.window(ofPID: pid, containing: plan.directScreenPoint) else {
+            return "Target window not found — bring it on-screen at least once; undelivered clicks aren't counted."
+        }
+        let picked = plan.positionJitterPx == 0 ? plan.directScreenPoint
+            : ClickGeometry.jitter(plan.directScreenPoint, amount: plan.positionJitterPx,
+                                   u1: .random(in: 0...1), u2: .random(in: 0...1))
+        let screenPoint = ClickGeometry.clamp(picked, to: window.bounds)
+        // A real click goes to whatever is topmost at the point — refuse to click a spot the
+        // user can't see the target owning (occluded, another Space, off-screen).
+        guard gate.isVisible(pid: pid, at: screenPoint) else {
+            return "The captured spot isn't visible on the game right now — something covers it, or its window is on another screen; undelivered clicks aren't counted."
+        }
+        let before = plan.restoreCursor ? EventSynthesizer.cursorLocation : nil
+        let delivered = EventSynthesizer.click(plan.button, at: screenPoint,
+                                               holdFor: TickSchedule.gameRouteHold(interval: plan.interval),
+                                               clickCount: plan.clickCountPerEvent, source: source)
+        // Same restore contract as the foreground modes (clickOnce): a real click moves the
+        // cursor, so put it back when the user asked for that — also when the up half failed
+        // (the down half already moved it).
+        if let before, EventSynthesizer.cursorLocation != before {
+            EventSynthesizer.postMouse(.mouseMoved, button: .left, at: before, source: source)
+        }
+        // The restore runs before this guard on purpose; a half-built pair moved the cursor,
+        // so it gets undone either way.
+        guard delivered else {
+            return "The click's event couldn't be built — nothing was delivered; undelivered clicks aren't counted."
+        }
+        return nil
+    }
+
+    /// The game route's one raise per worker: skip it when the target is already frontmost,
+    /// otherwise raise for real and settle before the first click. Runs once per worker
+    /// (clickLoop setup), so begin AND resume both pass through it — a run resumed after a
+    /// pause re-raises if the game lost the front in between.
+    ///
+    /// The settle is clamped to the run's `end` like every other sleep, so a duration-limited
+    /// run never spends past its budget settling. The isCancelled pre-check skips a raise
+    /// that could no longer serve a click; a Stop racing the call can still enqueue one raise
+    /// before cancellation lands (the main-queue hop isn't cancellable) — bounded, harmless
+    /// and rarer than the pre-check's case, which is why it's a residual, not a guard.
+    nonisolated private static func raiseTargetIfNeeded(_ plan: Plan, snapshot: TargetSnapshot,
+                                                        worker: WorkerThread, end: UInt64) {
+        guard !worker.isCancelled else { return }
+        guard !snapshot.targetState(forBundleID: plan.directAppBundleID).isActive else { return }
+        BackgroundPoster.appActivator(plan.directAppBundleID)
+        // Settle before the first click: the target's input gate opens after the raise lands,
+        // not at the call (the focus-blip measurements needed the same 250 ms).
+        _ = worker.sleep(untilUptime: min(end, DispatchTime.now().uptimeNanoseconds + 250_000_000))
+    }
+
     // MARK: Direct-app helpers (main-actor queries)
 
     /// One line of truth about where direct-app clicks will land, or why they can't.
@@ -473,12 +587,19 @@ final class AutoClicker {
             return "Target window not found — bring it on-screen at least once."
         }
         let local = BackgroundPoster.windowPoint(fromScreenPoint: point, window: window)
+        func shown(_ v: CGFloat) -> Int { v.isFinite ? Int(min(max(v, -100_000), 100_000)) : 0 }
+        if settings.directAppGameRoute {
+            // The game route clicks for REAL at the point, so the truth that matters is
+            // whether the spot is VISIBLY the game's — not which window it would be aimed at.
+            let visible = BackgroundPoster.topmostOwner(at: point) == pid
+            return "Real-input route: the cursor jumps to (\(shown(local.x)), \(shown(local.y))) of this window and the game comes to the front."
+                + (visible ? "" : " The captured spot isn't visible on the game right now: something covers it, or its window is on another screen.")
+        }
         // H4: say it when the captured spot lies outside every window of the app — the click
         // then falls back to the front-most window and lands wherever that one is.
         let whereItLands = window.bounds.contains(point)
             ? "inside it"
             : "outside it — clicks fall back to the app's front-most window"
-        func shown(_ v: CGFloat) -> Int { v.isFinite ? Int(min(max(v, -100_000), 100_000)) : 0 }
         return "Window \(shown(window.bounds.width))×\(shown(window.bounds.height)) — captured spot is (\(shown(local.x)), \(shown(local.y))) \(whereItLands)."
     }
 
@@ -500,6 +621,7 @@ final class AutoClicker {
     /// Posts one click at the chosen target without starting a run. "Sent" only when the event
     /// really went out fully aimed; every skip says why.
     func testClick() -> String {
+        if settings.directAppGameRoute { return gameRouteTestClick() }
         guard BackgroundPoster.targetingSupported else { return directAppProblem ?? "Background clicks aren't supported here." }
         guard permissions.ensureAccessibility() else {
             return "Test click failed — Accessibility permission is off, so the click can't be posted."
@@ -530,6 +652,58 @@ final class AutoClicker {
             .first { $0.bundleID == settings.directAppBundleID }?.name ?? "the target app"
         return "Test click sent to \(name) — look at it now. If nothing happened there, it's a "
             + "game or a drawing-canvas app: those only accept clicks while they're in front."
+    }
+
+    /// The game route's Test Click: bring the game forward (for real — a synthetic click
+    /// does NOT activate a background window, measured), then one REAL click at the captured
+    /// point so the user can watch it land. The reply says exactly what happened, because
+    /// "Test click sent" over a click the game silently ate is the bug this route exists to
+    /// fix.
+    ///
+    /// This runs on main and deliberately blocks it for the ~250 ms settle: user-initiated,
+    /// bounded, and the raise runs INLINE on main (`BackgroundPoster.mainThreadRunner`), so
+    /// it lands inside the sleep. The alternative — probing from a background task while
+    /// the user keeps typing — would let the user's own mouse wander into the click.
+    private func gameRouteTestClick() -> String {
+        guard permissions.ensureAccessibility() else {
+            return "Test click failed — Accessibility permission is off, so the click can't be posted."
+        }
+        guard let pid = BackgroundPoster.processID(forBundleID: settings.directAppBundleID) else {
+            return "Test click failed — the target app isn't running."
+        }
+        let base = CGPoint(x: settings.directAppX, y: settings.directAppY)
+        guard let window = BackgroundPoster.resolveWindowLive(ofPID: pid, containing: base) else {
+            return "Test click failed — target window not found. Bring it on-screen at least once."
+        }
+        if !TargetSnapshot.shared.targetState(forBundleID: settings.directAppBundleID).isActive {
+            BackgroundPoster.appActivator(settings.directAppBundleID)
+            // Same settle the run uses: the target's input gate opens after the raise lands —
+            // and the raise runs inline (see mainThreadRunner), so it CAN land inside this sleep.
+            Thread.sleep(forTimeInterval: 0.25)
+            // The honesty check the shipped version skipped: a game that never came forward
+            // is still discarding input (measured), so a real click posted now is eaten
+            // while looking delivered. Refuse and say so instead of claiming "sent".
+            guard TargetSnapshot.shared.targetState(forBundleID: settings.directAppBundleID).isActive else {
+                return "Test click failed — the game didn't come to the front when asked (its window may "
+                    + "refuse activation). Click the game once to bring it forward, then try again."
+            }
+        }
+        let point = ClickGeometry.clamp(
+            ClickGeometry.jitter(base, amount: settings.jitterEnabled ? settings.jitterPx : 0,
+                                 u1: .random(in: 0...1), u2: .random(in: 0...1)),
+            to: window.bounds)
+        guard BackgroundPoster.topmostOwner(at: point) == pid else {
+            return "Test click failed — the captured spot isn't visible on the game right now: "
+                + "something covers it, or its window is on another screen. Make the spot visible, then try again."
+        }
+        guard EventSynthesizer.click(settings.button, at: point, holdFor: 0.05,
+                                     clickCount: max(1, settings.clickCountPerEvent.rawValue)) else {
+            return "Test click failed — the click's event couldn't be built, so nothing was posted."
+        }
+        let name = BackgroundPoster.targetableApps()
+            .first { $0.bundleID == settings.directAppBundleID }?.name ?? "the target app"
+        return "Test click sent to \(name) — look at it now. That was a real click: your cursor "
+            + "moved to the point, and the game should now be in front."
     }
 
     /// Sampled at tick boundaries so the app-switch check costs one lock-protected read per tick —

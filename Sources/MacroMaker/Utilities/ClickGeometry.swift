@@ -19,10 +19,17 @@ enum ClickGeometry {
 
     /// Pulls a point back inside a rect (H5: jitter must not push a click outside the window
     /// it is aimed at). An empty rect returns the point unchanged.
+    ///
+    /// The max edges are EXCLUSIVE: a point clamped ONTO `rect.maxX` sits on the window's
+    /// boundary, where a real click lands on the neighbouring surface — and the game route's
+    /// visibility gate (`CGRect.contains`, max-exclusive by contract) rejects it as covered,
+    /// so the two disagree and jitter toward the far edge was refused as "covered" by nothing.
+    /// Clamp steps one ULP inside instead (`nextDown`, not −1 pt: the click position must not
+    /// visibly jump). The min edges were already fine: `contains` accepts them.
     static func clamp(_ point: CGPoint, to rect: CGRect) -> CGPoint {
         guard !rect.isEmpty else { return point }
-        return CGPoint(x: min(max(point.x, rect.minX), rect.maxX),
-                       y: min(max(point.y, rect.minY), rect.maxY))
+        return CGPoint(x: min(max(point.x, rect.minX), rect.maxX.nextDown),
+                       y: min(max(point.y, rect.minY), rect.maxY.nextDown))
     }
 
     private static func clamp01(_ value: Double) -> Double {

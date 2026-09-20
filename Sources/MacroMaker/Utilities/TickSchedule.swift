@@ -23,4 +23,14 @@ enum TickSchedule {
     static func pressDuration(interval: TimeInterval) -> TimeInterval {
         min(0.010, interval / 4)
     }
+
+    /// The game route's down→up hold. A real-click pair that completes inside one game poll tick
+    /// is swallowed while CGEventPost still reports success — RobloxAuto documents exactly that
+    /// failure for 0 ms pairs, and cliclick hard-codes a 15 ms hold "to improve reliability" for
+    /// the same class of target. The floor therefore wins over `pressDuration` at EVERY interval
+    /// (its 10 ms cap sits below 15 ms); the `max` keeps the two rules in one place so raising
+    /// either changes the game route consistently.
+    static func gameRouteHold(interval: TimeInterval) -> TimeInterval {
+        max(0.015, pressDuration(interval: interval))
+    }
 }

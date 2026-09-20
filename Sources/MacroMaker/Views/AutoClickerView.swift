@@ -189,9 +189,19 @@ struct AutoClickerView: View {
                 isCapturing: clicker.activePick == .directAppPoint) {
             clicker.pickDirectAppPoint()
         }
+        Toggle("It’s a game — send real clicks that move the cursor",
+               isOn: $clicker.settings.directAppGameRoute)
+            .help("Games ignore clicks posted into a background app; this makes every click real — the cursor moves to the captured spot and the game is brought to the front when the run starts")
+        if clicker.settings.directAppGameRoute {
+            Text("Games ignore clicks posted into a background app — they only act on real ones. With this on, every click is real: your cursor jumps to the captured spot, the click happens there, and — if “Move the cursor back after each click” is on — the cursor jumps back. Each click holds the mouse button down for 15 ms — games swallow faster presses — so delivery tops out at about 60 clicks per second no matter what interval you set. The game’s window must be on this screen with nothing covering the spot, and the game is brought to the front when the run starts; if you switch away mid-run, the game ignores the clicks and they are not counted until you switch back. Keep your hands off the mouse while it runs, or switch on “Pause when I use the mouse or keyboard”.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
         HStack {
             Button("Test Click") { directAppTestResult = clicker.testClick() }
-                .help("Posts one click at the chosen point")
+                .help(clicker.settings.directAppGameRoute
+                      ? "Moves your cursor to the point and clicks for real"
+                      : "Posts one click at the chosen point")
             if let result = directAppTestResult {
                 Text(result)
                     .font(.caption)
@@ -199,9 +209,15 @@ struct AutoClickerView: View {
             }
             Spacer()
         }
-        Text("The app can be behind other windows and your cursor never moves — clicks are delivered straight to the app’s process, aimed at whichever of its windows is on top, re-aimed if the window moves. The catch: apps that read the raw input device instead of the event queue (many games, e.g. Roblox) ignore these clicks entirely.")
-            .font(.caption)
-            .foregroundStyle(.secondary)
+        if clicker.settings.directAppGameRoute {
+            Text("While a run is live the clicker owns the cursor: every click moves it. Auto-clicking can also be against a game’s rules — that risk is yours.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            Text("The app can be behind other windows and your cursor never moves — clicks are delivered straight to the app’s process, aimed at whichever of its windows is on top, re-aimed if the window moves. The catch: apps that read the raw input device instead of the event queue (many games, e.g. Roblox) ignore these clicks entirely — for one of those, switch on “It’s a game” above.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 
     @ViewBuilder private func pickRow(instruction: String, button: String, capturing: String,
