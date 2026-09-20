@@ -37,13 +37,18 @@ final class AppModel {
     }
 
     /// Loads a library record into the player (same as opening its file, without the panel dance).
+    ///
+    /// The record link is set AFTER `load(_:)`: `load` clears `loadedRecord` (fresh recordings
+    /// and opened files belong to no record), so setting it first meant the edit-back link was
+    /// wiped the instant it was written — every later step edit reached only the autosave,
+    /// never the library file.
     func loadFromLibrary(_ record: MacroRecord) {
         guard let loaded = library.load(record) else {
             NSSound.beep()
             return
         }
-        loadedRecord = record
         load(loaded)
+        loadedRecord = record
     }
 
     /// Whether a library record has its own hotkey; assigning one registers the dynamic action.
@@ -370,7 +375,7 @@ final class AppModel {
     private func load(_ opened: Macro) {
         player.session.stop()
         macro = opened
-        loadedRecord = nil   // callers that load from the library set it right after
+        loadedRecord = nil   // callers that load from the library re-set it AFTER this returns
         fileError = nil
         if let warning = MacroFiles.autosave(opened) { fileError = warning }
     }
