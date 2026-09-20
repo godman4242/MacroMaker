@@ -50,6 +50,20 @@ struct RunControls: View {
             }
             .font(.callout)
             .foregroundStyle(.secondary)
+
+            // macOS refused this run's shortcut (usually another app owns it). While a run is
+            // active its stop hotkey is the emergency exit — if it silently didn't register,
+            // the run looked unstoppable. The in-panel Stop below still works either way; the
+            // global "stop the current run" (F6) failing gets its own line for the same reason.
+            if session.phase.isActive {
+                if model.hotkeys.unavailable.contains(hotkey) {
+                    StatusMessage(kind: .warning,
+                                  text: "Stop hotkey unavailable — another app owns it. Use the Stop button.")
+                } else if model.hotkeys.unavailable.contains(.stopRun) {
+                    StatusMessage(kind: .warning,
+                                  text: "The stop-run shortcut (F6) is unavailable — another app owns it. Use the Stop button.")
+                }
+            }
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)

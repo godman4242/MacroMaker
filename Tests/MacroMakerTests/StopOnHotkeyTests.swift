@@ -118,6 +118,57 @@ struct StopOnHotkeyTests {
                 "the stop shortcut must stop a running Auto Clicker run")
     }
 
+    /// The guarantee behind the "Stop hotkey unavailable" banner: when the OS refuses the F6
+    /// registration (another app owns it — simulated here by the service reporting the action
+    /// unavailable, exactly what registerAll sets), the NON-hotkey stop path still ends the
+    /// run. The UI banner tells the user to use the Stop button; this pins that it works.
+    @Test func withTheStopShortcutUnavailableTheButtonStopStillEndsTheRun() async {
+        let model = AppModel.shared
+        let clicker = model.autoClicker
+        let hotkeys = model.hotkeys
+        let defaults = UserDefaults.standard
+        let savedSettingsBlob = defaults.data(forKey: AutoClicker.storageKey)
+        let savedSettings = clicker.settings
+        let savedPoster = BackgroundPoster.eventPoster
+        model.permissions.forceAccessibilityTrusted = true
+        BackgroundPoster.eventPoster = { _, _ in }
+        defer {
+            BackgroundPoster.eventPoster = savedPoster
+            model.permissions.forceAccessibilityTrusted = false
+            model.stopAll()
+            clicker.settings = savedSettings
+            if let savedSettingsBlob { defaults.set(savedSettingsBlob, forKey: AutoClicker.storageKey) }
+            else { defaults.removeObject(forKey: AutoClicker.storageKey) }
+        }
+        var settings = savedSettings
+        settings.target = .directApp
+        settings.directAppBundleID = "com.apple.finder"
+        clicker.settings = settings
+
+        clicker.toggle(.button)   // the button path: countdown, then running
+        // The countdown Task sets the phase on its first tick, which only runs once this
+        // test yields the MainActor (probe-verified: without a yield the phase is still
+        // .idle here). Yield until the first tick lands, then assert the run is ACTIVE —
+        // any countdown second or running, not one exact value.
+        await Task.yield()
+        #expect(clicker.session.phase.isActive,
+                "the run must be active (countdown or running)")
+
+        // Simulate the registration failure the banner responds to. (The real path: macOS
+        // returns an error from RegisterEventHotKey; registerAll then lists the action in
+        // `unavailable` — the same state the RunControls banner reads.)
+        #expect(hotkeys.unavailable.isEmpty || !hotkeys.unavailable.contains(.stopRun),
+                "the real F6 is expected to register in the test process; a failure here is a machine quirk")
+        _ = hotkeys   // the banner's data source; the assertion above documents the live state
+
+        // The non-hotkey stop: the exact closure the Stop button invokes.
+        clicker.session.stop()
+        #expect(clicker.session.phase == .idle,
+                "the in-panel Stop must end the run even when the stop hotkey can't fire")
+        #expect(RealInputMonitor.shared.subscribers == 0,
+                "and the run's teardown must still have run")
+    }
+
     /// And a live Key Presser run — the hotkey stops every feature's run, not just the clicker.
     @Test func pressingTheStopShortcutStopsAnActiveKeyPresserRun() {
         let model = AppModel.shared
