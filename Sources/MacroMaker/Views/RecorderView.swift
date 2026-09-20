@@ -79,6 +79,12 @@ struct RecorderView: View {
                 if let message = model.fileError {
                     StatusMessage(kind: .error, text: message)
                 }
+                // No phase condition — the chain's launch refusal happens BEFORE a run
+                // starts, and its run-time failure lands the same hop that ends the run.
+                // Cleared on every launch and every stop, like AutoClicker's runWarning.
+                if let warning = player.runWarning {
+                    StatusMessage(kind: .warning, text: warning)
+                }
                 if recorder.isRecording {
                     StatusMessage(kind: .info, text: "Recording — click and type in other apps. Input into Macro Maker itself isn't recorded.")
                 } else if let macro = model.macro {
@@ -220,6 +226,7 @@ struct RecorderView: View {
         Button("Insert Typed Text…") {
             insertText(after: index)
         }
+        insertRunMacroMenu(after: index)
         Divider()
         Button("Delete Step", role: .destructive) {
             deleteStep(at: index)
@@ -398,6 +405,40 @@ struct RecorderView: View {
         guard let macro = model.macro, index >= 0, index < macro.events.count else { return }
         editor = .insertText(after: index)
         editorDraft = ""
+    }
+
+    /// Insert Run Macro: a submenu of the library, so a chain step is one right-click away.
+    /// The macro being edited is offered too — playing yourself is a CYCLE the launch check
+    /// catches and names, so it stays visible (and its own menu item says so) rather than
+    /// disappearing depending on what's loaded. The one thing a submenu buys over the sheet
+    /// machinery is not needing a picker: the library is already the picker.
+    @ViewBuilder private func insertRunMacroMenu(after index: Int) -> some View {
+        let others = model.library.sortedRecords
+        Menu {
+            ForEach(others) { record in
+                Button(record.name) {
+                    insertRunMacro(after: index, macroID: record.id)
+                }
+            }
+        } label: {
+            Label("Insert Run Macro…", systemImage: "link")
+        } primaryAction: {
+            // A primary action inserts the first (favorite-first) record; the submenu is the
+            // full list. Disabled outright when the library is empty.
+            if let first = others.first {
+                insertRunMacro(after: index, macroID: first.id)
+            }
+        }
+        .disabled(others.isEmpty)
+    }
+
+    private func insertRunMacro(after index: Int, macroID: UUID) {
+        guard let macro = model.macro, index >= 0, index < macro.events.count else { return }
+        var updated = macro
+        updated.events = MacroLibraryRules.insertRunMacro(events: macro.events,
+                                                          atIndex: index, macroID: macroID)
+        model.macro = updated
+        model.autosaveMacro()
     }
 
     private func deleteStep(at index: Int) {

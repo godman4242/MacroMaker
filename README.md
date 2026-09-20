@@ -13,6 +13,7 @@ Written in Swift and SwiftUI. Needs macOS 14 (Sonoma) or later, and runs nativel
 - **Pause on real input:** your own clicks and keys pause the run ("Paused — you took over"), with optional auto-resume after N idle seconds.
 - **Profiles:** save every feature's settings as a named profile and share them as `.macromakerprofile` files.
 - **Macro Library:** keep recordings forever, star favorites, assign each its own hotkey, and edit steps right in the table — rename, re-time, move up/down, delete, insert waits of any duration, insert typed text, and fix a click's coordinates.
+- **Macro chaining:** a step can run another library macro inline — chains resolve at play time, refuse loops and over-deep nesting before starting, and fail loud when a referenced macro was deleted.
 - **Polish:** a sidebar layout, an always-on status line that says what's running, and a first-run onboarding sheet.
 
 | Tab | What it does |
@@ -20,7 +21,7 @@ Written in Swift and SwiftUI. Needs macOS 14 (Sonoma) or later, and runs nativel
 | **Auto Clicker** | Left, right or middle clicks every N ms, with optional jitter. Clicks at the cursor, a fixed point, inside a rectangle, or inside a chosen app in the background. Can burst clicks, hold a button down, stop after N clicks or a time limit — or repeat until you press the stop shortcut (F6). |
 | **Key Presser** | Presses any key: letters, digits, `!@#$`, space, enter, tab, arrows, F1–F20, or combos like `cmd+shift+z`. **Auto press** repeats it on an interval; **hold down** keeps it pressed with key repeat. Can type into a chosen app in the background. |
 | **Web Target** | Clicks an element in a Safari or Chrome tab, found by CSS selector, XPath or page coordinates. It works by running JavaScript inside the tab, so the tab can be in the background while you use other apps. |
-| **Macro Recorder** | Records mouse clicks, key presses, scrolling and cursor movement, replays them with the original timing (repeatable, looped, 0.25×–4× speed, humanized). The built-in step editor renames, re-times, reorders and deletes steps, inserts waits and typed text, and edits a click's coordinates. Save/open as `.macromaker`, and keep them in the **Library** with a per-macro hotkey. |
+| **Macro Recorder** | Records mouse clicks, key presses, scrolling and cursor movement, replays them with the original timing (repeatable, looped, 0.25×–4× speed, humanized). The built-in step editor renames, re-times, reorders and deletes steps, inserts waits, typed text and **Run Macro** steps (play another library macro at that point — chains refuse loops and nesting past 3, and a deleted reference stops the run with a warning), and edits a click's coordinates. Save/open as `.macromaker`, and keep them in the **Library** with a per-macro hotkey. |
 
 Intended for UI automation and accessibility use. Use of autoclickers may violate the terms of some games and services.
 
@@ -110,6 +111,7 @@ macOS blocks apps from controlling your computer until you allow them. Macro Mak
 - **Fixed point:** click *Pick with Cursor…* and hover over the target for 3 seconds. Coordinates are screen points measured from the top-left corner of the main display.
 - **Finding a CSS selector:** in the browser, right-click the element ▸ Inspect. Then right-click the highlighted code ▸ Copy ▸ *Copy selector* (Chrome) or *Selector Path* (Safari).
 - **Recording:** clicks, typing, scrolling and cursor movement inside Macro Maker's own windows are not recorded. The shortcut you use to start and stop recording is trimmed out automatically. Cursor moves are thinned to at most one per 100 ms — only the last move before a click matters, not every pixel — and scrolling records each wheel notch.
+- **Run Macro steps (chaining):** right-click any step in the table ▸ *Insert Run Macro…* to play another library macro at that point. The referenced macro is resolved at play time, so renaming or re-editing it keeps the chain working. A chain can't repeat a macro and can't nest more than 3 deep — both are refused before playback starts, with the reason shown on the tab; a chain step whose macro was deleted stops the run with a warning naming it, never a silent skip.
 - **Dock icon:** hidden by default; Macro Maker lives in the menu bar. Turn the Dock icon on in Settings.
 - Your last recording is kept automatically in `~/Library/Application Support/Macro Maker/`.
 
@@ -123,7 +125,8 @@ macOS blocks apps from controlling your computer until you allow them. Macro Mak
     { "t": 1.5,  "type": "keyDown",   "keyCode": 0, "repeat": false, "flags": 256 },
     { "t": 1.6,  "type": "keyUp",     "keyCode": 0, "flags": 256 },
     { "t": 2.0,  "type": "scroll",    "x": 512, "y": 384, "dx": 0, "dy": -24, "flags": 256 },
-    { "t": 2.1,  "type": "move",      "x": 600, "y": 400, "flags": 256 } ] }
+    { "t": 2.1,  "type": "move",      "x": 600, "y": 400, "flags": 256 },
+    { "t": 2.2,  "type": "runMacro",  "macro": "1D5E2B47-…", "flags": 0 } ] }
 ```
 
 The fields:
@@ -133,6 +136,7 @@ The fields:
 - `keyCode`: macOS virtual key code (the number macOS assigns to each physical key)
 - `flags`: which modifier keys were held (raw `CGEventFlags` value)
 - `dx`, `dy` *(since 2.1)*: one scroll-wheel notch's pixel deltas — `dy` is vertical (negative = down), `dx` horizontal
+- `macro` *(since 2.1)*: the library id of the macro a `runMacro` step plays inline at that point. Resolved at play time; a file with a `runMacro` step but no `macro` id fails to open (a step that references nothing is corrupt, not blank).
 - `text` *(since 2.0)*: optional — when the step editor inserts typed text, the key events carry the character here and are played as Unicode input. v1-era readers ignore this field and load the file fine.
 
 Version 1 files (no `scroll`/`move` steps) keep opening unchanged; Macro Maker 2.0 and older won't open files saved with version 2's new step kinds.

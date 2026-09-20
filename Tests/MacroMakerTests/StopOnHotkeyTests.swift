@@ -11,7 +11,7 @@ import Testing
 /// Auto Clicker and Playback get a "repeat until the stop shortcut" stop condition that
 /// turns off their count/duration bounds, exactly like the frontmost-stop option is a
 /// settings bool that changes the run's plan.
-@Suite("Stop-on-hotkey", .serialized)
+@Suite("Stop-on-hotkey", .serialized, .seamSerialized)
 @MainActor
 struct StopOnHotkeyTests {
 

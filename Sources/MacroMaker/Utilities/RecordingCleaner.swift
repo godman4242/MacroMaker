@@ -25,9 +25,10 @@ enum RecordingCleaner {
                 kept.append(event)
             case let .mouseUp(button, _, _):
                 if heldButtons.remove(button) != nil { kept.append(event) }
-            case .scroll, .move:
-                // Neither holds anything down (the trailing-held sweep below keys off the
-                // held sets, so a trailing scroll/move can never be misread as still-held).
+            case .scroll, .move, .runMacro:
+                // None holds anything down (the trailing-held sweep below keys off the held
+                // sets, so a trailing one can never be misread as still-held). A run-macro
+                // step is a launch-time reference; the chain check happens before the run.
                 kept.append(event)
             }
         }

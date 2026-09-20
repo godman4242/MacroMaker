@@ -12,7 +12,7 @@ import Testing
 ///
 /// One serialized suite: these tests share the `RealInputMonitor` singleton and the
 /// `BackgroundPoster` event-poster seam.
-@Suite("Stop-path lifecycle", .serialized)
+@Suite("Stop-path lifecycle", .serialized, .seamSerialized)
 @MainActor
 struct StopLifecycleTests {
 

@@ -11,7 +11,7 @@ import Testing
 /// 100 ms (only the last move before a click aims it — the player aims every click
 /// anyway, so the pixel path between is noise). The file format becomes version 2,
 /// and every version-1 file must keep opening unchanged.
-@Suite("Scroll and cursor-move capture", .serialized)
+@Suite("Scroll and cursor-move capture", .serialized, .seamSerialized)
 struct ScrollMoveCaptureTests {
 
     // MARK: File format version 2

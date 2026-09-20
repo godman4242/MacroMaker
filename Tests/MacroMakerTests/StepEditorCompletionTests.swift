@@ -8,7 +8,7 @@ import Testing
 /// missing is reordering, editing a click's coordinates, and inserting a wait with a chosen
 /// duration (the menu offered only fixed 0.5 s / 1 s). Edits made to a macro loaded from the
 /// library must persist back to that library record, not just the autosave.
-@Suite("Step editor completion", .serialized)
+@Suite("Step editor completion", .serialized, .seamSerialized)
 struct StepEditorCompletionTests {
 
     // MARK: Reorder

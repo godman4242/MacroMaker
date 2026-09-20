@@ -147,7 +147,7 @@ enum MacroLibraryRules {
             out.action = .mouseDown(button, CGPoint(x: x, y: y), clickCount: clickCount)
         case let .mouseUp(button, _, clickCount):
             out.action = .mouseUp(button, CGPoint(x: x, y: y), clickCount: clickCount)
-        case let .move(_):
+        case .move:
             out.action = .move(CGPoint(x: x, y: y))
         default:
             break
@@ -181,6 +181,20 @@ enum MacroLibraryRules {
         events.enumerated()
             .sorted { $0.element.time != $1.element.time ? $0.element.time < $1.element.time : $0.offset < $1.offset }
             .map(\.element)
+    }
+
+    /// Inserts a run-macro step referencing `macroID` right after the selected step, a
+    /// beat later on the timeline. Unlike the wait/text inserts it shifts NOTHING: the
+    /// referenced macro plays inline from this step's time, and later steps keep their
+    /// times — a chain step is a branch, not a pause.
+    static func insertRunMacro(events: [MacroEvent], atIndex: Int, macroID: UUID,
+                               start: TimeInterval? = nil) -> [MacroEvent] {
+        guard atIndex >= 0, atIndex < events.count else { return events }
+        var out = events
+        out.insert(MacroEvent(time: start ?? (events[atIndex].time + 0.02),
+                              action: .runMacro(macroID), flags: 0),
+                   at: atIndex + 1)
+        return out
     }
 
     /// Types `text` as keyDown/keyUp pairs at `start`, returning the events created (each key

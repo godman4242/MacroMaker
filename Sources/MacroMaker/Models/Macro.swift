@@ -91,6 +91,9 @@ struct MacroEvent: Equatable, Sendable {
         case scroll(CGPoint, dx: Int, dy: Int)
         /// One cursor move at `point` (the recorder throttles these to ~10 a second).
         case move(CGPoint)
+        /// Run another macro by its LIBRARY id — resolved at run time, so a renamed or
+        /// re-saved macro keeps working and a deleted one fails loud (not a silent skip).
+        case runMacro(UUID)
     }
 
     /// Seconds since the start of the macro.
@@ -128,6 +131,8 @@ struct MacroEvent: Equatable, Sendable {
             return "Scroll \(direction) \(abs(amount)) px"
         case let .move(point):
             return "Move to \(Int(point.x)), \(Int(point.y))"
+        case .runMacro:
+            return "Run macro"
         }
     }
 }
@@ -135,7 +140,7 @@ struct MacroEvent: Equatable, Sendable {
 extension MacroEvent: Codable {
     private enum CodingKeys: String, CodingKey {
         case time = "t", type, button, x, y, clickCount, keyCode, isRepeat = "repeat", flags,
-             dx, dy
+             dx, dy, macroID = "macro"
         /// Editor insertions attach their character to a placeholder key transition via the
         /// optional "text" key. V1-era readers ignore unknown keys and load the file fine —
         /// they'd just play those transitions as key-code-0 presses, so share edited macros
@@ -147,6 +152,8 @@ extension MacroEvent: Codable {
         case mouseDown, mouseUp, keyDown, keyUp
         /// Version 2 step kinds; a v1 reader rejects them by their unknown `type` name.
         case scroll, move
+        /// Version 2.1 (feature 4): run another macro by its library id.
+        case runMacro = "runMacro"
     }
 
     init(from decoder: Decoder) throws {
@@ -183,6 +190,10 @@ extension MacroEvent: Codable {
             let point = CGPoint(x: (try? c.decodeIfPresent(Double.self, forKey: .x)) ?? nil ?? 0,
                                 y: (try? c.decodeIfPresent(Double.self, forKey: .y)) ?? nil ?? 0)
             action = .move(point)
+        case .runMacro:
+            // Not tolerant: a run-macro step without its id is a corrupt step, and a
+            // silent "run nothing" would hide a broken chain behind a green run.
+            action = .runMacro(try c.decode(UUID.self, forKey: .macroID))
         }
     }
 
@@ -220,6 +231,9 @@ extension MacroEvent: Codable {
             try c.encode(EventType.move, forKey: .type)
             try c.encode(Double(aPoint.x), forKey: .x)
             try c.encode(Double(aPoint.y), forKey: .y)
+        case let .runMacro(id):
+            try c.encode(EventType.runMacro, forKey: .type)
+            try c.encode(id, forKey: .macroID)
         }
     }
 }

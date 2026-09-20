@@ -9,7 +9,7 @@ import Testing
 /// Wave 4 — recorder/player correctness (adversarial review 2026-09-18, findings #1, #6, #7).
 /// One serialized suite: these tests swap global seams (`MacroRecorder.tapBuilder`,
 /// `EventSynthesizer.eventPoster`) that no other suite must see mid-flight.
-@Suite("Recorder/player correctness", .serialized)
+@Suite("Recorder/player correctness", .serialized, .seamSerialized)
 struct RecorderPlayerTests {
 
     // MARK: Finding 1 — recorded offsets follow the event's own timestamp

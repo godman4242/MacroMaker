@@ -6,7 +6,7 @@ import Testing
 @testable import MacroMaker
 
 // .serialized: one test swaps the process-wide windowLocationResolver seam.
-@Suite("BackgroundPoster", .serialized)
+@Suite("BackgroundPoster", .serialized, .seamSerialized)
 struct BackgroundPosterTests {
 
     private static func info(pid: Int32, layer: Int = 0, number: Int = 42,

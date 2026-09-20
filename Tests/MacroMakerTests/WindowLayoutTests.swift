@@ -15,7 +15,7 @@ import Testing
 /// mechanism (no content view controller, `.width,.height` autoresizing), the frame equality
 /// at several window sizes including the field-measured 851x1050, and the window metadata
 /// that must not regress (autosave names, min size, settings non-resizable).
-@Suite(.serialized)
+@Suite(.serialized, .seamSerialized)
 struct WindowLayoutTests {
     @MainActor
     @Test func mainWindowHostingIsPinnedToWindowBounds() throws {
