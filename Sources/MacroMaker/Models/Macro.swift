@@ -1,23 +1,29 @@
 import CoreGraphics
 import Foundation
 
-/// A recorded sequence of mouse clicks and key presses, saved as a `.macromaker` JSON file.
+/// A recorded sequence of mouse clicks, key presses, scrolls and cursor moves, saved as a
+/// `.macromaker` JSON file.
 ///
-/// File format (version 1):
+/// File format (version 2 — version 1 files keep opening; v2 adds the `scroll` and `move`
+/// step kinds and nothing else):
 /// ```json
-/// { "format": "macromaker", "version": 1, "name": "Login", "createdAt": "2026-09-16T10:00:00Z",
+/// { "format": "macromaker", "version": 2, "name": "Login", "createdAt": "2026-09-16T10:00:00Z",
 ///   "events": [
 ///     { "t": 0,    "type": "mouseDown", "button": "left", "x": 512, "y": 384, "clickCount": 1, "flags": 256 },
 ///     { "t": 0.08, "type": "mouseUp",   "button": "left", "x": 512, "y": 384, "clickCount": 1, "flags": 256 },
 ///     { "t": 1.5,  "type": "keyDown",   "keyCode": 0, "repeat": false, "flags": 256 },
-///     { "t": 1.6,  "type": "keyUp",     "keyCode": 0, "flags": 256 } ] }
+///     { "t": 1.6,  "type": "keyUp",     "keyCode": 0, "flags": 256 },
+///     { "t": 2.0,  "type": "scroll",    "x": 512, "y": 384, "dx": 0, "dy": -24, "flags": 256 },
+///     { "t": 2.1,  "type": "move",      "x": 600, "y": 400, "flags": 256 } ] }
 /// ```
 /// `t` is seconds from the first event, `x`/`y` are global screen points (origin top-left of the
 /// main display), `keyCode` is a macOS virtual key code and `flags` the raw CGEventFlags.
+/// `scroll` carries the pixel deltas of one scroll-wheel notch in `dx` (horizontal) and
+/// `dy` (vertical, negative = towards the content's end); `move` is one throttled cursor move.
 struct Macro: Codable, Equatable, Sendable {
     static let fileExtension = "macromaker"
     static let formatName = "macromaker"
-    static let formatVersion = 1
+    static let formatVersion = 2
 
     var name: String
     var createdAt: Date
@@ -80,6 +86,11 @@ struct MacroEvent: Equatable, Sendable {
         /// `isRepeat` marks the auto-repeat presses macOS generates while a key is held.
         case keyDown(CGKeyCode, isRepeat: Bool)
         case keyUp(CGKeyCode)
+        /// One scroll-wheel notch at `point`: pixel deltas `dx` (horizontal) and `dy`
+        /// (vertical, negative = the wheel's natural down direction).
+        case scroll(CGPoint, dx: Int, dy: Int)
+        /// One cursor move at `point` (the recorder throttles these to ~10 a second).
+        case move(CGPoint)
     }
 
     /// Seconds since the start of the macro.
@@ -111,13 +122,20 @@ struct MacroEvent: Equatable, Sendable {
         case let .keyUp(keyCode):
             if textOverride != nil { return "(end character)" }
             return "Key up \(KeyboardLayout.displayName(for: keyCode))"
+        case let .scroll(_, dx, dy):
+            let amount = (abs(dy) >= abs(dx) ? dy : dx)
+            let direction = (abs(dy) >= abs(dx) ? (dy < 0 ? "down" : "up") : (dx < 0 ? "left" : "right"))
+            return "Scroll \(direction) \(abs(amount)) px"
+        case let .move(point):
+            return "Move to \(Int(point.x)), \(Int(point.y))"
         }
     }
 }
 
 extension MacroEvent: Codable {
     private enum CodingKeys: String, CodingKey {
-        case time = "t", type, button, x, y, clickCount, keyCode, isRepeat = "repeat", flags
+        case time = "t", type, button, x, y, clickCount, keyCode, isRepeat = "repeat", flags,
+             dx, dy
         /// Editor insertions attach their character to a placeholder key transition via the
         /// optional "text" key. V1-era readers ignore unknown keys and load the file fine —
         /// they'd just play those transitions as key-code-0 presses, so share edited macros
@@ -127,6 +145,8 @@ extension MacroEvent: Codable {
 
     private enum EventType: String, Codable {
         case mouseDown, mouseUp, keyDown, keyUp
+        /// Version 2 step kinds; a v1 reader rejects them by their unknown `type` name.
+        case scroll, move
     }
 
     init(from decoder: Decoder) throws {
@@ -155,7 +175,20 @@ extension MacroEvent: Codable {
                               isRepeat: try c.decodeIfPresent(Bool.self, forKey: .isRepeat) ?? false)
         case .keyUp:
             action = .keyUp(try c.decode(CGKeyCode.self, forKey: .keyCode))
+        case .scroll:
+            let point = CGPoint(x: (try? c.decodeIfPresent(Double.self, forKey: .x)) ?? nil ?? 0,
+                                y: (try? c.decodeIfPresent(Double.self, forKey: .y)) ?? nil ?? 0)
+            action = .scroll(point, dx: Self.delta(c, .dx), dy: Self.delta(c, .dy))
+        case .move:
+            let point = CGPoint(x: (try? c.decodeIfPresent(Double.self, forKey: .x)) ?? nil ?? 0,
+                                y: (try? c.decodeIfPresent(Double.self, forKey: .y)) ?? nil ?? 0)
+            action = .move(point)
         }
+    }
+
+    /// One scroll delta; absent decodes as 0 (the axis wasn't scrolled).
+    private static func delta(_ c: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys) -> Int {
+        ((try? c.decodeIfPresent(Int.self, forKey: key)) ?? nil) ?? 0
     }
 
     func encode(to encoder: Encoder) throws {
@@ -177,6 +210,16 @@ extension MacroEvent: Codable {
         case let .keyUp(keyCode):
             try c.encode(EventType.keyUp, forKey: .type)
             try c.encode(keyCode, forKey: .keyCode)
+        case let .scroll(aPoint, dx, dy):
+            try c.encode(EventType.scroll, forKey: .type)
+            try c.encode(Double(aPoint.x), forKey: .x)
+            try c.encode(Double(aPoint.y), forKey: .y)
+            try c.encode(dx, forKey: .dx)
+            try c.encode(dy, forKey: .dy)
+        case let .move(aPoint):
+            try c.encode(EventType.move, forKey: .type)
+            try c.encode(Double(aPoint.x), forKey: .x)
+            try c.encode(Double(aPoint.y), forKey: .y)
         }
     }
 }

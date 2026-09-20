@@ -15,6 +15,9 @@ final class MacroRecorder {
     @ObservationIgnored private var startUptime: UInt64 = 0
     /// Buttons pressed on Macro Maker's own windows; their releases are ignored too.
     @ObservationIgnored private var ignoredButtons = Set<MouseButton>()
+    /// Uptime of the last RECORDED move (0 = none yet); the throttle compares against this,
+    /// so a burst keeps resetting its own gate only when one actually records.
+    @ObservationIgnored private var lastMoveUptime: UInt64 = 0
 
     /// Builds the listen-only tap. The real one needs an Input Monitoring grant the test
     /// runner doesn't have, so tests swap in an inert mach port and drive `handle(_:)` directly.
@@ -28,7 +31,8 @@ final class MacroRecorder {
     func start() -> Bool {
         guard !isRecording else { return true }
         let types: [CGEventType] = [.leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp,
-                                    .otherMouseDown, .otherMouseUp, .keyDown, .keyUp, .flagsChanged]
+                                    .otherMouseDown, .otherMouseUp, .keyDown, .keyUp, .flagsChanged,
+                                    .scrollWheel, .mouseMoved]
         let mask = types.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << CGEventMask($1.rawValue)) }
 
         guard let tap = Self.tapBuilder(mask, Unmanaged.passUnretained(self).toOpaque())
@@ -45,6 +49,7 @@ final class MacroRecorder {
         runLoopSource = source
         startUptime = DispatchTime.now().uptimeNanoseconds
         ignoredButtons.removeAll()
+        lastMoveUptime = startUptime
         liveEvents = []
         errorMessage = nil
         isRecording = true
@@ -100,6 +105,19 @@ final class MacroRecorder {
             action = KeyCodes.isModifierDown(code: event.keyCode, flags: event.flags)
                 ? .keyDown(event.keyCode, isRepeat: false)
                 : .keyUp(event.keyCode)
+        case .scrollWheel:
+            // Scroll deltas are extracted on the tap thread (TapEvent init), like every
+            // other field; here the step is just the envelope. Scrolls are not throttled:
+            // the wheel's own notches are the signal, not noise.
+            action = .scroll(event.location, dx: event.scrollDX, dy: event.scrollDY)
+        case .mouseMoved:
+            // A move records only after the throttle gap: raw mouseMoved fires for every
+            // pixel of a crossing (~100/s), and the player aims every click anyway — only
+            // the last move before a click matters, so the stream is thinned to ≤10/s and
+            // capped by the run's own step budget (the macro is bounded by what stop() keeps).
+            guard Self.shouldRecordMove(lastRecordedAt: lastMoveUptime,
+                                        proposedAt: event.timestampNanos) else { return }
+            action = .move(event.location)
         default:
             return
         }
@@ -111,7 +129,15 @@ final class MacroRecorder {
         let time = stamp > 0
             ? Double(stamp - min(stamp, startUptime)) / 1_000_000_000
             : Double(DispatchTime.now().uptimeNanoseconds - startUptime) / 1_000_000_000
+        if case .move = action { lastMoveUptime = stamp > 0 ? stamp : DispatchTime.now().uptimeNanoseconds }
         liveEvents.append(MacroEvent(time: time, action: action, flags: event.flags))
+    }
+
+    /// The move throttle, as a pure rule (uptime nanoseconds): a move records only when at
+    /// least 100 ms has passed since the last RECORDED move — since a suppressed move never
+    /// becomes the reference point, the gap can't drift shorter with each suppressed event.
+    nonisolated static func shouldRecordMove(lastRecordedAt: UInt64, proposedAt: UInt64) -> Bool {
+        proposedAt &- lastRecordedAt >= 100_000_000
     }
 
     /// Clicks on Macro Maker's own windows (Record/Stop buttons, menu bar icon) aren't recorded.
@@ -134,6 +160,9 @@ struct TapEvent: Sendable {
     let buttonNumber: Int64
     let isAutorepeat: Bool
     let isOwnEvent: Bool
+    /// Scroll-wheel pixel deltas (negative dy = the wheel's natural down direction).
+    let scrollDX: Int
+    let scrollDY: Int
     /// The window server's own clock for the input, in nanoseconds since startup (zero when
     /// unstamped) — the accurate moment the event happened, not when main got around to it.
     let timestampNanos: UInt64
@@ -147,6 +176,8 @@ struct TapEvent: Sendable {
         buttonNumber = event.getIntegerValueField(.mouseEventButtonNumber)
         isAutorepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
         isOwnEvent = event.getIntegerValueField(.eventSourceUserData) == EventSynthesizer.eventTag
+        scrollDX = Int(event.getIntegerValueField(.scrollWheelEventPointDeltaAxis2))
+        scrollDY = Int(event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1))
         timestampNanos = event.timestamp
     }
 }

@@ -157,6 +157,10 @@ final class MacroPlayer {
                 EventSynthesizer.postKey(code, down: false, flags: flags, source: source)
                 heldKeys.remove(code)
             }
+        case let .scroll(point, dx, dy):
+            EventSynthesizer.postScroll(dx: dx, dy: dy, at: point, flags: flags, source: source)
+        case let .move(point):
+            EventSynthesizer.postMouse(.mouseMoved, button: .left, at: point, flags: flags, source: source)
         }
     }
 

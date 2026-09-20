@@ -42,7 +42,7 @@ import Testing
     @Test func rejectsOtherFormatsAndNewerVersions() {
         let wrongFormat = #"{ "format": "other", "version": 1, "name": "x", "createdAt": "2026-09-16T10:00:00Z", "events": [] }"#
         let newer = #"{ "format": "macromaker", "version": 99, "name": "x", "createdAt": "2026-09-16T10:00:00Z", "events": [] }"#
-        let badType = #"{ "format": "macromaker", "version": 1, "name": "x", "createdAt": "2026-09-16T10:00:00Z", "events": [ { "t": 0, "type": "scroll" } ] }"#
+        let badType = #"{ "format": "macromaker", "version": 1, "name": "x", "createdAt": "2026-09-16T10:00:00Z", "events": [ { "t": 0, "type": "zoom" } ] }"#
         for json in [wrongFormat, newer, badType, "not json"] {
             #expect(throws: DecodingError.self) { try Macro(jsonData: Data(json.utf8)) }
         }

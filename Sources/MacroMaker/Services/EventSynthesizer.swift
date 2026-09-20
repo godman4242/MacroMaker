@@ -26,7 +26,9 @@ enum EventSynthesizer {
     /// interval is written on it at checkout, keeping `localEventsSuppressionInterval = 0`
     /// behavior identical to the per-event source.
     final class EventSource: @unchecked Sendable {
-        private let source = CGEventSource(stateID: .hidSystemState)
+        /// The raw CGEventSource, for the one call that wants it directly (scroll events).
+        let source = CGEventSource(stateID: .hidSystemState)
+        var underlying: CGEventSource? { source }
 
         init() {
             // Don't freeze the user's real mouse/keyboard after each synthetic event (default 0.25 s).
@@ -64,6 +66,20 @@ enum EventSynthesizer {
         postMouse(button.downEventType, button: button, at: location, clickCount: clickCount, source: source)
         if duration > 0 { Thread.sleep(forTimeInterval: duration) }
         postMouse(button.upEventType, button: button, at: location, clickCount: clickCount, source: source)
+    }
+
+    /// Posts one scroll-wheel notch with pixel deltas (negative `dy` = the natural down
+    /// direction, matching what the recorder read off the same fields).
+    static func postScroll(dx: Int, dy: Int, at point: CGPoint,
+                           flags: CGEventFlags = [], source: EventSource = EventSource()) {
+        // 0 deltas post nothing: an all-zero scroll event is a wheel wiggle with no content.
+        guard dx != 0 || dy != 0,
+              let event = CGEvent(scrollWheelEvent2Source: source.underlying,
+                                  units: .pixel, wheelCount: 2,
+                                  wheel1: Int32(dy), wheel2: Int32(dx), wheel3: 0)
+        else { return }
+        event.location = point
+        post(event, flags: flags)
     }
 
     // MARK: Keyboard

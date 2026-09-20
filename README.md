@@ -20,7 +20,7 @@ Written in Swift and SwiftUI. Needs macOS 14 (Sonoma) or later, and runs nativel
 | **Auto Clicker** | Left, right or middle clicks every N ms, with optional jitter. Clicks at the cursor, a fixed point, inside a rectangle, or inside a chosen app in the background. Can burst clicks, hold a button down, stop after N clicks or a time limit — or repeat until you press the stop shortcut (F6). |
 | **Key Presser** | Presses any key: letters, digits, `!@#$`, space, enter, tab, arrows, F1–F20, or combos like `cmd+shift+z`. **Auto press** repeats it on an interval; **hold down** keeps it pressed with key repeat. Can type into a chosen app in the background. |
 | **Web Target** | Clicks an element in a Safari or Chrome tab, found by CSS selector, XPath or page coordinates. It works by running JavaScript inside the tab, so the tab can be in the background while you use other apps. |
-| **Macro Recorder** | Records mouse clicks and key presses, replays them with the original timing (repeatable, looped, 0.25×–4× speed, humanized). The built-in step editor deletes steps, inserts waits, and inserts typed text. Save/open as `.macromaker`, and keep them in the **Library** with a per-macro hotkey. |
+| **Macro Recorder** | Records mouse clicks, key presses, scrolling and cursor movement, replays them with the original timing (repeatable, looped, 0.25×–4× speed, humanized). The built-in step editor deletes steps, inserts waits, and inserts typed text. Save/open as `.macromaker`, and keep them in the **Library** with a per-macro hotkey. |
 
 Intended for UI automation and accessibility use. Use of autoclickers may violate the terms of some games and services.
 
@@ -109,19 +109,21 @@ macOS blocks apps from controlling your computer until you allow them. Macro Mak
 
 - **Fixed point:** click *Pick with Cursor…* and hover over the target for 3 seconds. Coordinates are screen points measured from the top-left corner of the main display.
 - **Finding a CSS selector:** in the browser, right-click the element ▸ Inspect. Then right-click the highlighted code ▸ Copy ▸ *Copy selector* (Chrome) or *Selector Path* (Safari).
-- **Recording:** clicks and typing inside Macro Maker's own windows are not recorded. The shortcut you use to start and stop recording is trimmed out automatically.
+- **Recording:** clicks, typing, scrolling and cursor movement inside Macro Maker's own windows are not recorded. The shortcut you use to start and stop recording is trimmed out automatically. Cursor moves are thinned to at most one per 100 ms — only the last move before a click matters, not every pixel — and scrolling records each wheel notch.
 - **Dock icon:** hidden by default; Macro Maker lives in the menu bar. Turn the Dock icon on in Settings.
 - Your last recording is kept automatically in `~/Library/Application Support/Macro Maker/`.
 
-### `.macromaker` file format (version 1)
+### `.macromaker` file format (version 2)
 
 ```json
-{ "format": "macromaker", "version": 1, "name": "Login", "createdAt": "2026-09-16T10:00:00Z",
+{ "format": "macromaker", "version": 2, "name": "Login", "createdAt": "2026-09-16T10:00:00Z",
   "events": [
     { "t": 0,    "type": "mouseDown", "button": "left", "x": 512, "y": 384, "clickCount": 1, "flags": 256 },
     { "t": 0.08, "type": "mouseUp",   "button": "left", "x": 512, "y": 384, "clickCount": 1, "flags": 256 },
     { "t": 1.5,  "type": "keyDown",   "keyCode": 0, "repeat": false, "flags": 256 },
-    { "t": 1.6,  "type": "keyUp",     "keyCode": 0, "flags": 256 } ] }
+    { "t": 1.6,  "type": "keyUp",     "keyCode": 0, "flags": 256 },
+    { "t": 2.0,  "type": "scroll",    "x": 512, "y": 384, "dx": 0, "dy": -24, "flags": 256 },
+    { "t": 2.1,  "type": "move",      "x": 600, "y": 400, "flags": 256 } ] }
 ```
 
 The fields:
@@ -130,7 +132,10 @@ The fields:
 - `x`, `y`: screen points from the top-left of the main display
 - `keyCode`: macOS virtual key code (the number macOS assigns to each physical key)
 - `flags`: which modifier keys were held (raw `CGEventFlags` value)
+- `dx`, `dy` *(since 2.1)*: one scroll-wheel notch's pixel deltas — `dy` is vertical (negative = down), `dx` horizontal
 - `text` *(since 2.0)*: optional — when the step editor inserts typed text, the key events carry the character here and are played as Unicode input. v1-era readers ignore this field and load the file fine.
+
+Version 1 files (no `scroll`/`move` steps) keep opening unchanged; Macro Maker 2.0 and older won't open files saved with version 2's new step kinds.
 
 Profiles are separate `.macromakerprofile` files (plain JSON of every feature's settings); the library keeps its files in `~/Library/Application Support/Macro Maker/Macros/` with an index in the app's preferences.
 
@@ -185,7 +190,7 @@ How the main pieces work:
 ## Limitations
 
 - **Web Target** clicks are synthetic JavaScript events (`isTrusted = false`), and a few sites ignore those. It clicks in the top-level page only, not inside iframes. Only Safari and Google Chrome are supported.
-- **Recorder** captures clicks and key presses, not cursor movement or scrolling. A drag is replayed as press at the start point, then release at the end point.
+- **Recorder** captures clicks, key presses, scrolling and (throttled) cursor movement. A drag is replayed as press, the recorded moves, then release.
 - Replayed clicks land at the same screen positions as when recorded, so a different display arrangement or window position changes where they land.
 - Rebuilding an unsigned app resets its permissions (see *First launch*).
 

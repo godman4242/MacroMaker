@@ -25,6 +25,10 @@ enum RecordingCleaner {
                 kept.append(event)
             case let .mouseUp(button, _, _):
                 if heldButtons.remove(button) != nil { kept.append(event) }
+            case .scroll, .move:
+                // Neither holds anything down (the trailing-held sweep below keys off the
+                // held sets, so a trailing scroll/move can never be misread as still-held).
+                kept.append(event)
             }
         }
 
