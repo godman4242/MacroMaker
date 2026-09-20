@@ -93,6 +93,102 @@ struct ScrollMoveCaptureTests {
         #expect(point0.x > 0 && point0.y > 0, "the scroll's cursor point is recorded (the probe showed a real location)")
     }
 
+    // MARK: Recording — fractional (trackpad) scroll accumulation
+
+    /// Trackpad ticks arrive in the 16.16 fixed-point field, sub-notch (−0.5 px here). The
+    /// old integer read of the pixel field turned every gentle scroll into zero; the pending
+    /// buffer must sum them and emit one step per accumulated pixel, preserving sign and point.
+    @Test @MainActor func fractionalTrackpadScrollsAccumulateIntoSteps() throws {
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.accessory)
+        let priorTap = MacroRecorder.tapBuilder
+        MacroRecorder.tapBuilder = { _, _ in CFMachPortCreate(nil, nil, nil, nil) }
+        defer { MacroRecorder.tapBuilder = priorTap }
+
+        let recorder = MacroRecorder()
+        #expect(recorder.start())
+        defer { _ = recorder.stop() }
+
+        let base = DispatchTime.now().uptimeNanoseconds
+        // Four -0.5 px ticks (FixedPt −0.05): the first stays under the 1.0 threshold,
+        // the second crosses it (one step, dy = −1, −0.5 stays pending), the third crosses
+        // again (another −1), the fourth leaves −0.5 pending — flushed as nothing at stop.
+        // The macro records the SAME total delta a wheel would have, without four zero
+        // steps that replay as nothing.
+        for offset in [UInt64(100_000_000), 200_000_000, 300_000_000, 400_000_000] {
+            // A gentle trackpad tick, as the hardware delivers it: the PointDelta field
+            // truncates to 0 (the old integer read recorded nothing), and the FixedPt field
+            // carries −0.05 in 16.16 fixed = −0.5 px after the recorder's ×10 pixel scale.
+            let cgEvent = try #require(CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
+                                               wheelCount: 1, wheel1: 0, wheel2: 0, wheel3: 0))
+            // −1/16 is exactly representable in 16.16 fixed (raw −4096): −0.625 px per
+            // tick after the recorder's ×10 pixel scale — sub-notch, and the arithmetic
+            // has no encoding rounding to chase.
+            cgEvent.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1, value: -0.0625)
+            cgEvent.timestamp = base &+ offset
+            recorder.handle(TapEvent(type: .scrollWheel, event: cgEvent))
+        }
+
+        let scrolls = recorder.liveEvents.compactMap { event -> (Int, Int)? in
+            if case let .scroll(_, dx, dy) = event.action { return (dx, dy) }
+            return nil
+        }
+        // Ticks of −0.625 px: −0.625, −1.25 (emit −1, rem −0.25), −0.875, −1.5 (emit −1,
+        // rem −0.5) → two steps total, −0.5 left pending.
+        #expect(scrolls.count == 2, "accumulation crosses 1.0 twice — two steps, got \(scrolls)")
+        #expect(scrolls.allSatisfy { $0.1 == -1 }, "each emitted step carries −1 px (sign preserved), got \(scrolls)")
+
+        // Stop flush: the buffer holds −0.5, whose integer part is 0 — flushing it as a
+        // step would be a zero-delta event, so stop adds NO new scroll beyond the two above.
+        // (stop() returns the whole cleaned event list, not just the flushed remainder.)
+        let events = recorder.stop()
+        let totalScrolls = events.compactMap { event -> (Int, Int)? in
+            if case let .scroll(_, dx, dy) = event.action { return (dx, dy) }
+            return nil
+        }
+        #expect(totalScrolls.count == 2, "a sub-notch remainder flushes as nothing — still two steps, got \(totalScrolls)")
+    }
+
+    /// Mouse-wheel notches are already ≥1: they must keep emitting exactly as before (the
+    /// wheel path is byte-identical — one step per event, exact deltas).
+    @Test @MainActor func wheelNotchesStillEmitImmediatelyAndExactly() throws {
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.accessory)
+        let priorTap = MacroRecorder.tapBuilder
+        MacroRecorder.tapBuilder = { _, _ in CFMachPortCreate(nil, nil, nil, nil) }
+        defer { MacroRecorder.tapBuilder = priorTap }
+
+        let recorder = MacroRecorder()
+        #expect(recorder.start())
+        defer { _ = recorder.stop() }
+
+        let base = DispatchTime.now().uptimeNanoseconds
+        for (offset, dy, dx) in [(UInt64(100_000_000), -24, 3), (UInt64(110_000_000), -6, 0)] {
+            let cgEvent = try #require(CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
+                                               wheelCount: 2, wheel1: Int32(dy), wheel2: Int32(dx), wheel3: 0))
+            cgEvent.timestamp = base &+ offset
+            recorder.handle(TapEvent(type: .scrollWheel, event: cgEvent))
+        }
+        let actions = recorder.liveEvents.map(\.action)
+        guard actions.count == 2,
+              case let .scroll(_, dx0, dy0) = actions[0],
+              case let .scroll(_, dx1, dy1) = actions[1]
+        else {
+            Issue.record("both wheel notches must emit immediately, got \(actions)")
+            return
+        }
+        #expect(dx0 == 3 && dy0 == -24, "wheel notch 1 emits exactly, got \(dx0),\(dy0)")
+        #expect(dx1 == 0 && dy1 == -6, "wheel notch 2 emits exactly, got \(dx1),\(dy1)")
+    }
+
+    /// The pure emission rule: either axis alone crossing emits, sign never matters.
+    @Test func theScrollFlushRule() {
+        #expect(!MacroRecorder.shouldFlushScroll(dx: 0.9, dy: -0.9, threshold: 1.0), "both axes just under")
+        #expect(MacroRecorder.shouldFlushScroll(dx: -1.2, dy: 0.1, threshold: 1.0), "x alone over")
+        #expect(MacroRecorder.shouldFlushScroll(dx: 0.1, dy: 1.0, threshold: 1.0), "y at the threshold")
+        #expect(MacroRecorder.shouldFlushScroll(dx: 0.0, dy: -1.0, threshold: 1.0), "exactly one notch emits")
+    }
+
     // MARK: Recording — throttled moves
 
     /// The pure rule: a move records only ≥100 ms after the previous RECORDED move —

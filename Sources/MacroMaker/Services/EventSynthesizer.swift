@@ -79,6 +79,13 @@ enum EventSynthesizer {
                                   wheel1: Int32(dy), wheel2: Int32(dx), wheel3: 0)
         else { return }
         event.location = point
+        // The PointDelta fields carry integer pixels; the FixedPt fields (16.16 fixed-point)
+        // are what fractional-scroll consumers (NSScrollWheel delta*, Chromium) read. Stamp
+        // both: a recorded -1 px replay scrolls -1 in every reader, not just integer ones.
+        event.setIntegerValueField(.scrollWheelEventFixedPtDeltaAxis1,
+                                   value: Int64(dy) << 16)
+        event.setIntegerValueField(.scrollWheelEventFixedPtDeltaAxis2,
+                                   value: Int64(dx) << 16)
         post(event, flags: flags)
     }
 

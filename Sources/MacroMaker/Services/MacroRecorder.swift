@@ -18,6 +18,22 @@ final class MacroRecorder {
     /// Uptime of the last RECORDED move (0 = none yet); the throttle compares against this,
     /// so a burst keeps resetting its own gate only when one actually records.
     @ObservationIgnored private var lastMoveUptime: UInt64 = 0
+    /// Un-emitted fractional scroll deltas (trackpad ticks arrive as ±0.1..1). The buffer
+    /// accumulates them and emits a `.scroll` step when the magnitude crosses 1.0, preserving
+    /// sign per axis — so a gentle scroll records the SAME total delta a wheel would, instead
+    /// of recording nothing. Reset by start()/stop(); the stop flushes any remainder so the
+    /// tail of a slow scroll isn't dropped.
+    @ObservationIgnored private var pendingScrollDX: Double = 0
+    @ObservationIgnored private var pendingScrollDY: Double = 0
+    /// Location of the oldest un-emitted scroll delta, so the emitted step records where the
+    /// user actually was — not where the finger was when the threshold happened to cross.
+    @ObservationIgnored private var pendingScrollLocation: CGPoint = .zero
+
+    /// The accumulation threshold: one full "notch" of pixel delta. Below it, deltas wait in
+    /// the pending buffer (a scroll of 0.3+0.3+0.3 emits one step of ~0.9 — the replay scrolls
+    /// what was recorded, which is the point). Mouse-wheel notches are ≥1 and emit immediately,
+    /// so wheel behaviour is byte-identical to before.
+    nonisolated static let scrollEmissionThreshold: Double = 1.0
 
     /// Builds the listen-only tap. The real one needs an Input Monitoring grant the test
     /// runner doesn't have, so tests swap in an inert mach port and drive `handle(_:)` directly.
@@ -49,6 +65,9 @@ final class MacroRecorder {
         runLoopSource = source
         startUptime = DispatchTime.now().uptimeNanoseconds
         ignoredButtons.removeAll()
+        pendingScrollDX = 0
+        pendingScrollDY = 0
+        pendingScrollLocation = .zero
         lastMoveUptime = startUptime
         liveEvents = []
         errorMessage = nil
@@ -71,6 +90,29 @@ final class MacroRecorder {
         runLoopSource = nil
         isRecording = false
         session.stop()
+        // Flush a partially-accumulated scroll so a gentle tail isn't dropped: the integer
+        // part of the buffer becomes one final step (a zero-integer remainder is nothing).
+        // The step is stamped at the recording's end time — a time of 0 would replay it FIRST.
+        if pendingScrollDX != 0 || pendingScrollDY != 0 {
+            let dx = Int(pendingScrollDX), dy = Int(pendingScrollDY)
+            if dx != 0 || dy != 0 {
+                let lastPoint: CGPoint? = liveEvents.last.flatMap { event -> CGPoint? in
+                    switch event.action {
+                    case let .mouseDown(_, p, _), let .mouseUp(_, p, _), let .scroll(p, _, _), let .move(p):
+                        return p
+                    default: return nil
+                    }
+                }
+                let buffered = pendingScrollLocation == .zero ? nil : pendingScrollLocation
+                if let point = lastPoint ?? buffered {
+                    let end = liveEvents.last?.time ?? 0
+                    liveEvents.append(MacroEvent(time: end, action: .scroll(point, dx: dx, dy: dy), flags: 0))
+                }
+            }
+            pendingScrollDX = 0
+            pendingScrollDY = 0
+            pendingScrollLocation = .zero
+        }
         let events = RecordingCleaner.clean(liveEvents)
         liveEvents = []
         return events
@@ -106,10 +148,22 @@ final class MacroRecorder {
                 ? .keyDown(event.keyCode, isRepeat: false)
                 : .keyUp(event.keyCode)
         case .scrollWheel:
-            // Scroll deltas are extracted on the tap thread (TapEvent init), like every
-            // other field; here the step is just the envelope. Scrolls are not throttled:
-            // the wheel's own notches are the signal, not noise.
-            action = .scroll(event.location, dx: event.scrollDX, dy: event.scrollDY)
+            // Scroll deltas are extracted on the tap thread (TapEvent init) as fractions.
+            // They accumulate in pendingScroll*; a step emits only when the accumulated
+            // magnitude crosses 1.0 — a wheel notch (already ≥1) behaves exactly as before,
+            // while trackpad's ±0.1..1 ticks sum into real steps instead of vanishing.
+            if pendingScrollDX == 0, pendingScrollDY == 0 { pendingScrollLocation = event.location }
+            pendingScrollDX += event.scrollDX
+            pendingScrollDY += event.scrollDY
+            guard Self.shouldFlushScroll(dx: pendingScrollDX, dy: pendingScrollDY,
+                                         threshold: Self.scrollEmissionThreshold) else { return }
+            let dx = Int(pendingScrollDX), dy = Int(pendingScrollDY)
+            // The oldest buffered location, or this event's when the buffer started here.
+            let point = pendingScrollLocation == .zero ? event.location : pendingScrollLocation
+            action = .scroll(point, dx: dx, dy: dy)
+            pendingScrollDX -= Double(dx)   // keep the fraction for the next step
+            pendingScrollDY -= Double(dy)
+            pendingScrollLocation = .zero   // the next accumulation starts fresh
         case .mouseMoved:
             // A move records only after the throttle gap: raw mouseMoved fires for every
             // pixel of a crossing (~100/s), and the player aims every click anyway — only
@@ -153,6 +207,12 @@ final class MacroRecorder {
         return WindowAnchor(bundleID: bundleID, origin: window.bounds.origin)
     }
 
+    /// The scroll emission rule, as a pure function: true when |accumulated| has crossed the
+    /// threshold on either axis. The caller reads the integer part and keeps the fraction.
+    nonisolated static func shouldFlushScroll(dx: Double, dy: Double, threshold: Double) -> Bool {
+        abs(dx) >= threshold || abs(dy) >= threshold
+    }
+
     /// The move throttle, as a pure rule (uptime nanoseconds): a move records only when at
     /// least 100 ms has passed since the last RECORDED move — since a suppressed move never
     /// becomes the reference point, the gap can't drift shorter with each suppressed event.
@@ -181,8 +241,10 @@ struct TapEvent: Sendable {
     let isAutorepeat: Bool
     let isOwnEvent: Bool
     /// Scroll-wheel pixel deltas (negative dy = the wheel's natural down direction).
-    let scrollDX: Int
-    let scrollDY: Int
+    /// FRACTIONAL: trackpad point deltas are double fields, often ±0.1..1 — an integer read
+    /// truncated every gentle scroll to zero, so those scrolls recorded no step at all.
+    let scrollDX: Double
+    let scrollDY: Double
     /// The window server's own clock for the input, in nanoseconds since startup (zero when
     /// unstamped) — the accurate moment the event happened, not when main got around to it.
     let timestampNanos: UInt64
@@ -196,8 +258,19 @@ struct TapEvent: Sendable {
         buttonNumber = event.getIntegerValueField(.mouseEventButtonNumber)
         isAutorepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
         isOwnEvent = event.getIntegerValueField(.eventSourceUserData) == EventSynthesizer.eventTag
-        scrollDX = Int(event.getIntegerValueField(.scrollWheelEventPointDeltaAxis2))
-        scrollDY = Int(event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1))
+        // Two encodings, one measurement (probe-verified on this toolchain): the PointDelta
+        // fields are INTEGER pixels (a wheel notch = ±1; a gentle trackpad tick truncates to
+        // 0 — the original bug), and the FixedPt fields are 16.16 fixed-point at Apple's
+        // 10×-smaller scale (wheel1: −24 → FixedPt −2.4; getDoubleValueField applies the
+        // fixed-point conversion). Read PointDelta when it survived (wheels: exact, byte-
+        // identical to the old code); when it truncated to 0 but FixedPt carries data, scale
+        // FixedPt back to pixels (×10) so a gentle scroll records what a wheel would have.
+        let pointDX = event.getDoubleValueField(.scrollWheelEventPointDeltaAxis2)
+        let fixedDX = event.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2)
+        let pointDY = event.getDoubleValueField(.scrollWheelEventPointDeltaAxis1)
+        let fixedDY = event.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1)
+        scrollDX = pointDX != 0 ? pointDX : fixedDX * 10
+        scrollDY = pointDY != 0 ? pointDY : fixedDY * 10
         timestampNanos = event.timestamp
     }
 }
