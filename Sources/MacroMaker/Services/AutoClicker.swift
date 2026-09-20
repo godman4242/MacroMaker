@@ -520,7 +520,16 @@ final class AutoClicker {
                                      window: window, pid: pid) else {
             return "Test click failed — the click's event couldn't be built or aimed at the window."
         }
-        return "Test click sent."
+        // "Sent" is ALL this can honestly claim: delivery is one-way, so nothing here can see
+        // whether the target acted on the click. Saying only "Test click sent." read as "it
+        // works" — and for a game it never did, which is hours of hunting a bug in the wrong
+        // place. The message now names the one check the app can't make, and the one class of
+        // target that silently eats background clicks (measured: Roblox, unchanged pixel for
+        // pixel; the same click works the moment the game is frontmost).
+        let name = BackgroundPoster.targetableApps()
+            .first { $0.bundleID == settings.directAppBundleID }?.name ?? "the target app"
+        return "Test click sent to \(name) — look at it now. If nothing happened there, it's a "
+            + "game or a drawing-canvas app: those only accept clicks while they're in front."
     }
 
     /// Sampled at tick boundaries so the app-switch check costs one lock-protected read per tick —

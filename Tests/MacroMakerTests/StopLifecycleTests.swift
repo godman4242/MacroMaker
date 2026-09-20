@@ -352,7 +352,11 @@ struct StopLifecycleTests {
         clicker.settings = settings
 
         let reply = clicker.testClick()
-        #expect(reply == "Test click sent.", "a healthy click must report sent, got: \(reply)")
+        // A healthy click reports sent AND tells the user to go and look: "sent" alone reads as
+        // "it works", which is false for any target that silently eats background clicks.
+        #expect(reply.hasPrefix("Test click sent to "), "a healthy click must report sent, got: \(reply)")
+        #expect(reply.contains("look at it now"),
+                "the reply must send the user to check the target, since delivery can't be confirmed: \(reply)")
         // Five, not two: a background click is a stamped move, an off-screen primer down/up,
         // then the real down/up — the sequence Chromium-class targets need (BackgroundPoster.click).
         #expect(box.events.count == 5, "a click is move + primer pair + down/up, got \(box.events.count)")
@@ -369,7 +373,7 @@ struct StopLifecycleTests {
         BackgroundPoster.nsMouseEventBuilder = { _, _, _, _, _ in nil }
         box.events.removeAll()
         let failed = clicker.testClick()
-        #expect(failed != "Test click sent.", "an undeliverable test click must not claim success")
+        #expect(!failed.hasPrefix("Test click sent"), "an undeliverable test click must not claim success")
         #expect(failed.contains("failed"), "the failure must say so, got: \(failed)")
         #expect(box.events.isEmpty, "nothing may be posted when the event can't be built")
     }
