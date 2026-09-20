@@ -109,6 +109,52 @@ enum MacroLibraryRules {
         return candidate(index)
     }
 
+    /// Moves the step at `index` by `offset` places (±1 from the editor's Move Up/Down).
+    /// Refused — the array unchanged — when the move would leave the array, or when it would
+    /// separate a keyDown/keyUp or mouseDown/mouseUp pair across the swap: a stranded half
+    /// is exactly what the recording cleaner drops on playback, so the edit the user asked
+    /// for would silently delete a step. Swapping keeps each step's own time (reordering is
+    /// a sequence change; the timeline stays what it was).
+    static func moved(_ events: [MacroEvent], at index: Int, offset: Int) -> [MacroEvent] {
+        let target = index + offset
+        guard abs(offset) == 1, index >= 0, index < events.count,
+              target >= 0, target < events.count else { return events }
+        guard !wouldStrand(events[index], events[target]) else { return events }
+        var out = events
+        out.swapAt(index, target)
+        return out
+    }
+
+    /// Whether swapping `a` with `b` would strand a held input: a down separated from its own
+    /// up (either direction) puts the up before the down — the recording cleaner drops the
+    /// orphaned up on playback, so the edit the user asked for would silently delete a step.
+    /// Only matched pairs count; two unrelated mouse steps swap freely.
+    private static func wouldStrand(_ a: MacroEvent, _ b: MacroEvent) -> Bool {
+        if case let .keyDown(code, _) = a.action, case .keyUp(let other) = b.action { return code == other }
+        if case let .keyUp(code) = a.action, case .keyDown(let other, _) = b.action { return code == other }
+        if case let .mouseDown(button, _, _) = a.action, case .mouseUp(let other, _, _) = b.action { return button == other }
+        if case let .mouseUp(button, _, _) = a.action, case .mouseDown(let other, _, _) = b.action { return button == other }
+        return false
+    }
+
+    /// Rewrites a mouse step's point, leaving time, clickCount and deltas alone. Non-mouse
+    /// steps come back untouched; scrolls keep their recorded point (their pixel deltas were
+    /// measured there).
+    static func withPoint(_ event: MacroEvent, x: Double, y: Double) -> MacroEvent {
+        var out = event
+        switch event.action {
+        case let .mouseDown(button, _, clickCount):
+            out.action = .mouseDown(button, CGPoint(x: x, y: y), clickCount: clickCount)
+        case let .mouseUp(button, _, clickCount):
+            out.action = .mouseUp(button, CGPoint(x: x, y: y), clickCount: clickCount)
+        case let .move(_):
+            out.action = .move(CGPoint(x: x, y: y))
+        default:
+            break
+        }
+        return out
+    }
+
     /// Inserting a wait of `seconds` at `atIndex` shifts every later event back.
     static func shiftedForWait(events: [MacroEvent], atIndex: Int, seconds: Double) -> [MacroEvent] {
         guard seconds > 0, atIndex >= 0, atIndex < events.count else { return events }

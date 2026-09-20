@@ -181,6 +181,40 @@ final class MacroLibrary {
         persist()
     }
 
+    /// Persists an edited macro back into its existing record: the file on disk is rewritten
+    /// in place (same name, same id) and the index row's event count and duration follow.
+    /// Step edits in the recorder call this through `AppModel.autosaveMacro` when the macro
+    /// was loaded from the library, so an edit never lives only in the autosave. Returns the
+    /// refreshed record, or nil with `lastError` set when the record is unknown or the write
+    /// fails — never silently.
+    @discardableResult
+    func update(_ record: MacroRecord, with edited: Macro) -> MacroRecord? {
+        guard MacroLibraryRules.isSafeFileName(record.fileName) else {
+            lastError = "“\(record.fileName)” isn't a name this library can safely update."
+            return nil
+        }
+        guard let folder = Self.folder,
+              let index = records.firstIndex(where: { $0.id == record.id }) else {
+            lastError = "Couldn't save the edit — “\(record.name)” is no longer in the library."
+            return nil
+        }
+        let url = folder.appending(path: record.fileName)
+        do {
+            var stored = edited
+            stored.name = record.name
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try stored.jsonData().write(to: url, options: .atomic)
+            records[index].eventCount = edited.events.count
+            records[index].durationSeconds = edited.duration
+            guard persist() else { return nil }
+            lastError = nil
+            return records[index]
+        } catch {
+            lastError = "Couldn't save the edit to “\(record.name)”: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
     /// Loads the record's macro payload. Returns nil for orphans, corrupt files, and index
     /// entries whose file name could escape the library folder.
     func load(_ record: MacroRecord) -> Macro? {

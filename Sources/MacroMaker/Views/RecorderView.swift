@@ -19,10 +19,15 @@ struct RecorderView: View {
         case editTime(Int)
         /// Ask for the text FIRST, then insert it after this step.
         case insertText(after: Int)
+        /// Edit a mouse step's click point ("x, y" as text).
+        case editPoint(Int)
+        /// Insert a wait of a chosen duration after this step.
+        case insertWait(after: Int)
 
         var index: Int {
             switch self {
-            case let .renameText(index), let .editTime(index), let .insertText(index): index
+            case let .renameText(index), let .editTime(index), let .insertText(index),
+                 let .editPoint(index), let .insertWait(index): index
             }
         }
     }
@@ -196,12 +201,21 @@ struct RecorderView: View {
             editor = .editTime(index)
             editorDraft = timeText(for: index)
         }
-        Divider()
-        Button("Insert Wait 0.5 s After") {
-            insertWait(after: index, seconds: 0.5)
+        if isMouseStep(index) {
+            Button("Edit Coordinates…") {
+                editor = .editPoint(index)
+                editorDraft = pointText(for: index)
+            }
         }
-        Button("Insert Wait 1 s After") {
-            insertWait(after: index, seconds: 1)
+        Divider()
+        Button("Move Up") { moveStep(at: index, offset: -1) }
+            .disabled(index == 0)
+        Button("Move Down") { moveStep(at: index, offset: 1) }
+            .disabled(index >= (model.macro?.events.count ?? 0) - 1)
+        Divider()
+        Button("Insert Wait…") {
+            editor = .insertWait(after: index)
+            editorDraft = "0.5"
         }
         Button("Insert Typed Text…") {
             insertText(after: index)
@@ -221,6 +235,8 @@ struct RecorderView: View {
         case .renameText: "Rename Step"
         case .editTime: "Edit Start Time (seconds)"
         case .insertText: "Insert Typed Text"
+        case .editPoint: "Edit Click Point (x, y)"
+        case .insertWait: "Insert Wait (seconds)"
         case nil: ""
         }
     }
@@ -230,6 +246,8 @@ struct RecorderView: View {
         case .renameText: "The text typed for this key step. Leave empty to play the raw key code."
         case .editTime: "Seconds since the start of the macro, e.g. 1.25"
         case .insertText: "Typed one character at a time after the selected step, at typing speed."
+        case .editPoint: "Screen point from the top-left of the main display, e.g. 512, 384"
+        case .insertWait: "A pause after the selected step; later steps shift back by this much."
         case nil: ""
         }
     }
@@ -258,6 +276,10 @@ struct RecorderView: View {
         case .renameText: return true   // clearing the text is a valid "play raw key"
         case .editTime: return (Double(editorDraft.trimmingCharacters(in: .whitespaces))?.isFinite ?? false)
         case .insertText: return !editorDraft.isEmpty   // inserting nothing is not an edit
+        case .editPoint: return parsePoint(editorDraft) != nil
+        case .insertWait:
+            let seconds = Double(editorDraft.trimmingCharacters(in: .whitespaces))
+            return seconds?.isFinite == true && (seconds ?? 0) > 0
         }
     }
 
@@ -282,6 +304,20 @@ struct RecorderView: View {
         case .insertText:
             updated.events = MacroLibraryRules.insertTypedText(events: macro.events, atIndex: index,
                                                                text: editorDraft)
+        case .editPoint:
+            // `parsePoint` validated the draft (editorIsValid gates Apply); a failed parse here
+            // leaves the step alone rather than doing nothing at all.
+            if let point = parsePoint(editorDraft) {
+                updated.events[index] = MacroLibraryRules.withPoint(updated.events[index],
+                                                                    x: point.x, y: point.y)
+            }
+        case .insertWait:
+            if let seconds = Double(editorDraft.trimmingCharacters(in: .whitespaces)),
+               seconds.isFinite, seconds > 0 {
+                let insertAt = index + 1
+                updated.events = MacroLibraryRules.shiftedForWait(events: macro.events,
+                                                                  atIndex: insertAt, seconds: seconds)
+            }
         }
         model.macro = updated
         model.autosaveMacro()
@@ -296,6 +332,46 @@ struct RecorderView: View {
     private func timeText(for index: Int) -> String {
         guard let macro = model.macro, index < macro.events.count else { return "" }
         return macro.events[index].time.formatted(.number.precision(.fractionLength(3)))
+    }
+
+    /// Whether the step has an editable point (mouse transitions and cursor moves — the ones
+    /// `MacroLibraryRules.withPoint` rewrites).
+    private func isMouseStep(_ index: Int) -> Bool {
+        guard let macro = model.macro, index < macro.events.count else { return false }
+        switch macro.events[index].action {
+        case .mouseDown, .mouseUp, .move: return true
+        default: return false
+        }
+    }
+
+    private func pointText(for index: Int) -> String {
+        guard let macro = model.macro, index < macro.events.count else { return "" }
+        switch macro.events[index].action {
+        case let .mouseDown(_, point, _), let .mouseUp(_, point, _), let .move(point):
+            return "\(Int(point.x)), \(Int(point.y))"
+        default: return ""
+        }
+    }
+
+    /// Parses "x, y" (comma or space separated) into a point; nil when it isn't one.
+    private func parsePoint(_ text: String) -> CGPoint? {
+        let parts = text.split(whereSeparator: { ",;".contains($0) })
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard parts.count == 2,
+              let x = Double(parts[0]), let y = Double(parts[1]),
+              x.isFinite, y.isFinite else { return nil }
+        return CGPoint(x: x, y: y)
+    }
+
+    /// Move Up/Down: the pure rule refuses the bounds and pair-stranding swaps silently,
+    /// so a refused swap simply changes nothing.
+    private func moveStep(at index: Int, offset: Int) {
+        guard let macro = model.macro, index >= 0, index < macro.events.count else { return }
+        var updated = macro
+        updated.events = MacroLibraryRules.moved(updated.events, at: index, offset: offset)
+        model.macro = updated
+        model.autosaveMacro()
     }
 
     private func insertWait(after index: Int, seconds: Double) {

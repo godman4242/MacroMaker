@@ -42,6 +42,7 @@ final class AppModel {
             NSSound.beep()
             return
         }
+        loadedRecord = record
         load(loaded)
     }
 
@@ -91,6 +92,10 @@ final class AppModel {
 
     /// The macro shown in the recorder tab (last recording or opened file).
     var macro: Macro?
+    /// The library record `macro` was loaded from ("Edit…" in the Library section), if any.
+    /// Step edits persist back to this record — otherwise an edited library macro lived only
+    /// in the "Last Recording" autosave, and the Library kept the pre-edit file.
+    var loadedRecord: MacroRecord?
     var fileError: String?
     var selectedTab: AppTab = .autoClicker
 
@@ -291,6 +296,7 @@ final class AppModel {
             // An empty recording (e.g. started and stopped by accident) keeps the previous macro.
             guard !events.isEmpty else { return }
             macro = Macro(name: "Recording \(Self.recordingNameFormatter.string(from: Date()))", events: events)
+            loadedRecord = nil   // a fresh recording belongs to no library record
             if let warning = MacroFiles.autosave(macro) { fileError = warning }
         } else {
             guard !player.session.phase.isActive else {
@@ -345,18 +351,26 @@ final class AppModel {
     func clearMacro() {
         player.session.stop()
         macro = nil
+        loadedRecord = nil
         MacroFiles.autosave(nil)
     }
 
     /// Writes the current macro to the "Last Recording" autosave (called after step edits too,
-    /// so quitting mid-edit doesn't lose them).
+    /// so quitting mid-edit doesn't lose them) — and, when the macro was loaded from the
+    /// library, back into its own record, so the Library never keeps a stale copy.
     func autosaveMacro() {
         if let warning = MacroFiles.autosave(macro) { fileError = warning }
+        if let loadedRecord, let macro {
+            if library.update(loadedRecord, with: macro) == nil, let problem = library.lastError {
+                fileError = problem
+            }
+        }
     }
 
     private func load(_ opened: Macro) {
         player.session.stop()
         macro = opened
+        loadedRecord = nil   // callers that load from the library set it right after
         fileError = nil
         if let warning = MacroFiles.autosave(opened) { fileError = warning }
     }
