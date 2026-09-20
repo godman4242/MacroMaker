@@ -229,6 +229,10 @@ struct PlaybackSettings: Codable, Equatable, Sendable {
     /// "Repeat until the stop shortcut": the stop-run hotkey (default F6) ends the playback,
     /// ignoring the repeat count and the loop toggle (F-11).
     var stopOnHotkey = false
+    /// "Follow the window" (F-14): anchored mouse steps replay translated by the window's
+    /// move since recording. ON by default — the common case is wanting the clicks to land
+    /// where the window now is; turning it off is the escape hatch to pure absolute replay.
+    var followWindow = true
 
     init() {}
 
@@ -239,5 +243,6 @@ struct PlaybackSettings: Codable, Equatable, Sendable {
         speed = clamped(c, .speed, fallback: 1, in: 0.25...4)
         humanizer = decoded(c, .humanizer, fallback: HumanizerSettings())
         stopOnHotkey = decoded(c, .stopOnHotkey, fallback: false)
+        followWindow = decoded(c, .followWindow, fallback: true)
     }
 }

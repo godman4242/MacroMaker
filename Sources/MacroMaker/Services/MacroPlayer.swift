@@ -44,14 +44,18 @@ final class MacroPlayer {
         /// How run-macro steps resolve at run time (nil = the plan has no run-macro steps
         /// and none of this machinery runs — the pre-chaining plans).
         let chain: ChainedMacros?
+        /// "Follow the window" (F-14): anchored mouse steps translate by the window's move.
+        let followWindow: Bool
 
         init(events: [MacroEvent], repeats: Int?, speed: Double,
-             humanizer: HumanizerSettings, chain: ChainedMacros? = nil) {
+             humanizer: HumanizerSettings, chain: ChainedMacros? = nil,
+             followWindow: Bool = true) {
             self.events = events
             self.repeats = repeats
             self.speed = speed
             self.humanizer = humanizer
             self.chain = chain
+            self.followWindow = followWindow
         }
     }
 
@@ -65,6 +69,24 @@ final class MacroPlayer {
         let macroID: UUID
         /// Why it failed: nil = the macro is gone; a number = the chain got that deep.
         let depth: Int?
+        /// Non-nil when the failure is a window-binding miss (F-14): the app whose window
+        /// couldn't be found at replay. A chain failure leaves it nil; the two share this
+        /// one loud channel because both mean "the run couldn't do what it promised".
+        var windowApp: String?
+
+        init(stepIndex: Int, macroID: UUID, depth: Int?) {
+            self.stepIndex = stepIndex
+            self.macroID = macroID
+            self.depth = depth
+            self.windowApp = nil
+        }
+
+        init(windowGone app: String, at index: Int) {
+            self.stepIndex = index
+            self.macroID = UUID()
+            self.depth = nil
+            self.windowApp = app
+        }
     }
 
     /// The pass count for a playback (F-11 "repeat until the stop shortcut"). Until-hotkey
@@ -135,7 +157,8 @@ final class MacroPlayer {
                         repeats: Self.playbackRepeats(settings),
                         speed: min(max(settings.speed, 0.1), 10),
                         humanizer: settings.humanizer,
-                        chain: chain?.chain)
+                        chain: chain?.chain,
+                        followWindow: settings.followWindow)
         session.start(withCountdown: trigger == .button) { [weak self] token in
             guard let self else { return nil }
             runID += 1
@@ -186,6 +209,9 @@ final class MacroPlayer {
     /// The user-facing line for a run-time chain failure: names the macro the step wanted
     /// and what happened to it, anchored at the ROOT step the user can see and edit.
     nonisolated private static func describe(_ failure: ChainFailure, resolve: ChainedMacros.Resolver) -> String {
+        if let app = failure.windowApp {
+            return "The run stopped: “\(app)” has no window to follow — its window couldn't be found (step \(failure.stepIndex + 1))."
+        }
         let name = resolve(failure.macroID)?.name ?? failure.macroID.uuidString
         if let depth = failure.depth, depth > ChainingRules.defaultDepthLimit {
             return "The chain stopped: “\(name)” nests more than \(ChainingRules.defaultDepthLimit) deep."
@@ -207,6 +233,9 @@ final class MacroPlayer {
 
         var cancelled = false
         var failure: ChainFailure?
+        // The window-gone handshake: post() reports a missing window through this box (a
+        // @Sendable closure can't capture the loop's vars), the loop reads it right after.
+        let windowMiss = WindowMissBox()
         playback: while plan.repeats.map({ progress.iteration < $0 }) ?? true {
             var heldKeys = Set<CGKeyCode>()
             var heldButtons: [MouseButton: CGPoint] = [:]
@@ -248,7 +277,16 @@ final class MacroPlayer {
                     progress.eventIndex = index + 1
                     continue
                 }
-                post(event, heldKeys: &heldKeys, heldButtons: &heldButtons, source: source)
+                post(event, heldKeys: &heldKeys, heldButtons: &heldButtons, source: source,
+                     followWindow: plan.followWindow, missingWindow: { app in
+                         windowMiss.record(app)
+                         return true
+                     })
+                if let app = windowMiss.take() {
+                    failure = ChainFailure(windowGone: app, at: index)
+                    cancelled = true
+                    break playback
+                }
 
                 progress.eventIndex = index + 1
                 let now = DispatchTime.now().uptimeNanoseconds
@@ -277,6 +315,25 @@ final class MacroPlayer {
     private nonisolated enum ExpansionResult {
         case ran
         case failed(ChainFailure)
+    }
+
+    /// The window-gone report from the worker to the loop: a locked one-slot box, because a
+    /// @Sendable closure can't capture the loop's mutable state under strict concurrency.
+    private final class WindowMissBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var app: String?
+
+        func record(_ bundleID: String) {
+            lock.lock(); defer { lock.unlock() }
+            app = bundleID
+        }
+
+        func take() -> String? {
+            lock.lock(); defer { lock.unlock() }
+            let taken = app
+            app = nil
+            return taken
+        }
     }
 
     /// Plays the macro `id` resolves to, inline: the child's events post at their recorded
@@ -312,20 +369,26 @@ final class MacroPlayer {
 
     nonisolated private static func post(_ event: MacroEvent, heldKeys: inout Set<CGKeyCode>,
                                          heldButtons: inout [MouseButton: CGPoint],
-                                         source: EventSynthesizer.EventSource) {
+                                         source: EventSynthesizer.EventSource,
+                                         followWindow: Bool = true,
+                                         missingWindow: (@Sendable (String) -> Bool)? = nil) {
         // Caps Lock is a toggle, not a held key: replaying its flag would force uppercase.
         let flags = CGEventFlags(rawValue: event.flags).subtracting(.maskAlphaShift)
         switch event.action {
         case let .mouseDown(button, point, clickCount):
-            EventSynthesizer.postMouse(.mouseMoved, button: .left, at: point, flags: flags, source: source)
-            EventSynthesizer.postMouse(button.downEventType, button: button, at: point, clickCount: clickCount,
+            guard let at = Self.bound(point, of: event, followWindow: followWindow,
+                                      missingWindow: missingWindow) else { return }
+            EventSynthesizer.postMouse(.mouseMoved, button: .left, at: at, flags: flags, source: source)
+            EventSynthesizer.postMouse(button.downEventType, button: button, at: at, clickCount: clickCount,
                                        flags: flags, source: source)
-            heldButtons[button] = point
+            heldButtons[button] = at
         case let .mouseUp(button, point, clickCount):
             // No fabricated drag transition (review finding 6): a recording carries only what
             // was recorded, and replay posts exactly that — a synthetic dragged event at the
             // release point reads to apps as a jump-click, not the drag the user made.
-            EventSynthesizer.postMouse(button.upEventType, button: button, at: point, clickCount: clickCount,
+            guard let at = Self.bound(point, of: event, followWindow: followWindow,
+                                      missingWindow: missingWindow) else { return }
+            EventSynthesizer.postMouse(button.upEventType, button: button, at: at, clickCount: clickCount,
                                        flags: flags, source: source)
             heldButtons[button] = nil
         case let .keyDown(code, isRepeat):
@@ -351,6 +414,39 @@ final class MacroPlayer {
             // Kept as a no-op so the switch stays exhaustive for hand-built event lists.
             _ = id
         }
+    }
+
+    /// The point to post for a mouse step under "Follow the window" (F-14): an anchored
+    /// step translates by the window's move since recording — the window's CURRENT origin
+    /// is resolved live, so a window moved between passes follows too. The window gone
+    /// at replay fails LOUD through `missingWindow` — never a click into whatever now
+    /// sits at the recorded coordinates.
+    ///
+    /// Returns nil when the step should play verbatim: unanchored, the toggle off, or the
+    /// app no longer running (an app that quit can't have moved — its clicks play where
+    /// they were recorded, which for a quit app is moot anyway).
+    nonisolated private static func boundPoint(_ point: CGPoint, of event: MacroEvent,
+                                               followWindow: Bool,
+                                               missingWindow: (@Sendable (String) -> Bool)?) -> CGPoint? {
+        guard followWindow, let anchor = event.windowAnchor else { return point }
+        guard let pid = BackgroundPoster.pidResolver(anchor.bundleID),
+              let window = BackgroundPoster.resolveWindowLive(ofPID: pid, containing: nil) else {
+            // The app quit: nothing to follow, the recorded point stands.
+            if BackgroundPoster.pidResolver(anchor.bundleID) == nil { return point }
+            // The app runs but no window resolves: LOUD, the run can't promise this click.
+            if let missingWindow, missingWindow(anchor.bundleID) { return nil }
+            return point
+        }
+        return WindowBinding.translated(point, recordedOrigin: anchor.origin,
+                                        currentOrigin: window.bounds.origin)
+    }
+
+    /// The posted point for a mouse step: translated when the binding resolves one, the
+    /// recorded point otherwise. Nil = the caller cancelled the run (window gone).
+    nonisolated private static func bound(_ point: CGPoint, of event: MacroEvent,
+                                         followWindow: Bool,
+                                         missingWindow: (@Sendable (String) -> Bool)?) -> CGPoint? {
+        boundPoint(point, of: event, followWindow: followWindow, missingWindow: missingWindow)
     }
 
     /// The longest offset a single event may be scheduled at. A macro is a replay of something a

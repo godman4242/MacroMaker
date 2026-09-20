@@ -112,6 +112,7 @@ macOS blocks apps from controlling your computer until you allow them. Macro Mak
 - **Finding a CSS selector:** in the browser, right-click the element ▸ Inspect. Then right-click the highlighted code ▸ Copy ▸ *Copy selector* (Chrome) or *Selector Path* (Safari).
 - **Recording:** clicks, typing, scrolling and cursor movement inside Macro Maker's own windows are not recorded. The shortcut you use to start and stop recording is trimmed out automatically. Cursor moves are thinned to at most one per 100 ms — only the last move before a click matters, not every pixel — and scrolling records each wheel notch.
 - **Run Macro steps (chaining):** right-click any step in the table ▸ *Insert Run Macro…* to play another library macro at that point. The referenced macro is resolved at play time, so renaming or re-editing it keeps the chain working. A chain can't repeat a macro and can't nest more than 3 deep — both are refused before playback starts, with the reason shown on the tab; a chain step whose macro was deleted stops the run with a warning naming it, never a silent skip.
+- **Follow the window:** every recorded click captures the app it was clicked in and that window's position. With **Follow the window** on (default), replay translates each click by how far the window has moved — a macro recorded on a window in one place keeps working after you move it. Turn it off for exact recorded screen positions. If the app or its window is gone at replay, the run stops with a warning instead of clicking wherever the old coordinates now point. Recordings made before this feature (and clicks whose window couldn't be identified) simply replay at their recorded positions.
 - **Dock icon:** hidden by default; Macro Maker lives in the menu bar. Turn the Dock icon on in Settings.
 - Your last recording is kept automatically in `~/Library/Application Support/Macro Maker/`.
 
@@ -137,6 +138,7 @@ The fields:
 - `flags`: which modifier keys were held (raw `CGEventFlags` value)
 - `dx`, `dy` *(since 2.1)*: one scroll-wheel notch's pixel deltas — `dy` is vertical (negative = down), `dx` horizontal
 - `macro` *(since 2.1)*: the library id of the macro a `runMacro` step plays inline at that point. Resolved at play time; a file with a `runMacro` step but no `macro` id fails to open (a step that references nothing is corrupt, not blank).
+- `app`, `wx`, `wy` *(since 2.1)*: optional — the app (bundle id) and window origin a mouse step was clicked in, so "Follow the window" can translate the point at replay. Older files without them replay at the recorded positions; a non-finite `wx`/`wy` is dropped at open.
 - `text` *(since 2.0)*: optional — when the step editor inserts typed text, the key events carry the character here and are played as Unicode input. v1-era readers ignore this field and load the file fine.
 
 Version 1 files (no `scroll`/`move` steps) keep opening unchanged; Macro Maker 2.0 and older won't open files saved with version 2's new step kinds.
@@ -195,7 +197,7 @@ How the main pieces work:
 
 - **Web Target** clicks are synthetic JavaScript events (`isTrusted = false`), and a few sites ignore those. It clicks in the top-level page only, not inside iframes. Only Safari and Google Chrome are supported.
 - **Recorder** captures clicks, key presses, scrolling and (throttled) cursor movement. A drag is replayed as press, the recorded moves, then release.
-- Replayed clicks land at the same screen positions as when recorded, so a different display arrangement or window position changes where they land.
+- Replayed clicks land at the recorded screen positions unless the step carries a window anchor and **Follow the window** is on — then they follow the window's current position. A different display arrangement with no anchor still changes where they land.
 - Rebuilding an unsigned app resets its permissions (see *First launch*).
 
 ## License

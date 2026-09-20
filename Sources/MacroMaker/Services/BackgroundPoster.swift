@@ -141,6 +141,12 @@ enum BackgroundPoster {
         NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?.processIdentifier
     }
 
+    /// Bundle id → pid as a seam, for the worker-thread paths (recorder anchors, window
+    /// binding at replay): they can't hop to main, and tests have no real running apps.
+    nonisolated(unsafe) static var pidResolver: @Sendable (String) -> pid_t? = { bundleID in
+        MainActor.assumeIsolated { processID(forBundleID: bundleID) }
+    }
+
     /// Regular apps the user could plausibly click in, without Macro Maker itself.
     @MainActor static func targetableApps() -> [ListedApp] {
         NSWorkspace.shared.runningApplications

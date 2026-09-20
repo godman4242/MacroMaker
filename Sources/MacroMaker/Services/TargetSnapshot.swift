@@ -70,6 +70,17 @@ final class TargetSnapshot: @unchecked Sendable {
         return _frontmostBundleID
     }
 
+    /// Test seam: sets the frontmost bundle id the recorder's window-anchor capture reads,
+    /// without running the real notification watcher. Restore to nil after the test.
+    nonisolated var frontmostBundleIDForTests: String? {
+        get { frontmostBundleID }
+        set {
+            lock.lock()
+            _frontmostBundleID = newValue
+            lock.unlock()
+        }
+    }
+
     /// The target app's pid and active state from the snapshot — safe from worker threads.
     /// The first lookup of a bundle id hops to the main actor **asynchronously** (refresh) and
     /// reports not-found until the snapshot catches up; runs start after a countdown, so a

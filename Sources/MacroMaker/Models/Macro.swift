@@ -105,12 +105,19 @@ struct MacroEvent: Equatable, Sendable {
     /// playback posts it as a Unicode string (like `KeyStroke.text`) instead of key code 0.
     /// Always nil on real recordings; part of the envelope but not of v1 `.macromaker` files.
     var textOverride: String?
+    /// The window this mouse step was clicked in (feature 5, F-14): the app and its frame
+    /// origin at record time, so "Follow the window" can translate the point at replay.
+    /// nil on steps recorded before the feature or with the window unresolvable — those
+    /// play absolute, exactly as before.
+    var windowAnchor: WindowAnchor?
 
-    init(time: TimeInterval, action: Action, flags: UInt64, textOverride: String? = nil) {
+    init(time: TimeInterval, action: Action, flags: UInt64, textOverride: String? = nil,
+         windowAnchor: WindowAnchor? = nil) {
         self.time = time
         self.action = action
         self.flags = flags
         self.textOverride = textOverride
+        self.windowAnchor = windowAnchor
     }
 
     @MainActor var summary: String {
@@ -146,6 +153,10 @@ extension MacroEvent: Codable {
         /// they'd just play those transitions as key-code-0 presses, so share edited macros
         /// with Macro Maker 2.0 or newer.
         case textOverride = "text"
+        /// Window binding (feature 5): the app ("app") and window origin ("wx"/"wy") the
+        /// mouse step was clicked in. Older readers ignore unknown keys; older files simply
+        /// lack them and decode with a nil anchor.
+        case anchorApp = "app", anchorX = "wx", anchorY = "wy"
     }
 
     private enum EventType: String, Codable {
@@ -168,6 +179,7 @@ extension MacroEvent: Codable {
         }
         flags = try c.decodeIfPresent(UInt64.self, forKey: .flags) ?? 0
         textOverride = try c.decodeIfPresent(String.self, forKey: .textOverride)
+        windowAnchor = Self.anchor(from: c)
         let type = try c.decode(EventType.self, forKey: .type)
         switch type {
         case .mouseDown, .mouseUp:
@@ -202,11 +214,27 @@ extension MacroEvent: Codable {
         ((try? c.decodeIfPresent(Int.self, forKey: key)) ?? nil) ?? 0
     }
 
+    /// The window anchor, tolerant the way the feature demands: absent keys decode as nil
+    /// (every pre-binding file), and a NON-FINITE origin is dropped rather than trusted —
+    /// a NaN reaching the translation would poison every downstream point.
+    private static func anchor(from c: KeyedDecodingContainer<CodingKeys>) -> WindowAnchor? {
+        guard let app = (try? c.decodeIfPresent(String.self, forKey: .anchorApp)) ?? nil,
+              let wx = (try? c.decodeIfPresent(Double.self, forKey: .anchorX)) ?? nil,
+              let wy = (try? c.decodeIfPresent(Double.self, forKey: .anchorY)) ?? nil,
+              wx.isFinite, wy.isFinite else { return nil }
+        return WindowAnchor(bundleID: app, origin: CGPoint(x: wx, y: wy))
+    }
+
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(time, forKey: .time)
         try c.encode(flags, forKey: .flags)
         if let textOverride { try c.encode(textOverride, forKey: .textOverride) }
+        if let anchor = windowAnchor {
+            try c.encode(anchor.bundleID, forKey: .anchorApp)
+            try c.encode(Double(anchor.origin.x), forKey: .anchorX)
+            try c.encode(Double(anchor.origin.y), forKey: .anchorY)
+        }
         switch action {
         case let .mouseDown(button, point, clickCount), let .mouseUp(button, point, clickCount):
             try c.encode(action.isMouseDown ? EventType.mouseDown : .mouseUp, forKey: .type)

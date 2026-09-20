@@ -130,7 +130,27 @@ final class MacroRecorder {
             ? Double(stamp - min(stamp, startUptime)) / 1_000_000_000
             : Double(DispatchTime.now().uptimeNanoseconds - startUptime) / 1_000_000_000
         if case .move = action { lastMoveUptime = stamp > 0 ? stamp : DispatchTime.now().uptimeNanoseconds }
-        liveEvents.append(MacroEvent(time: time, action: action, flags: event.flags))
+        // Window binding (F-14): every mouse step carries the frontmost app and its window's
+        // origin, so "Follow the window" can translate the point at replay. Key steps skip
+        // the capture (a key doesn't aim); a step whose window can't be resolved records
+        // unanchored and plays absolute — the pre-binding behaviour, never a failed recording.
+        let anchor: WindowAnchor?
+        if case .mouseDown = action {
+            anchor = Self.anchorForMouseDown(at: event.location)
+        } else {
+            anchor = nil
+        }
+        liveEvents.append(MacroEvent(time: time, action: action, flags: event.flags, windowAnchor: anchor))
+    }
+
+    /// The frontmost app and the origin of its window containing (or front-most at) the
+    /// click. Runs on the main run loop with the recorder, so the window server query is
+    /// cheap and the frontmost app is whatever the user actually clicked in.
+    nonisolated static func anchorForMouseDown(at point: CGPoint) -> WindowAnchor? {
+        guard let bundleID = TargetSnapshot.shared.frontmostBundleID,
+              let pid = BackgroundPoster.pidResolver(bundleID),
+              let window = BackgroundPoster.resolveWindowLive(ofPID: pid, containing: point) else { return nil }
+        return WindowAnchor(bundleID: bundleID, origin: window.bounds.origin)
     }
 
     /// The move throttle, as a pure rule (uptime nanoseconds): a move records only when at

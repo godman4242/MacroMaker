@@ -141,6 +141,8 @@ struct RecorderView: View {
                 }
             }
             .fixedSize()
+            Toggle("Follow the window", isOn: $player.settings.followWindow)
+                .help("Clicks recorded inside a window land at the same spot inside it wherever it has moved. Off = replay at the exact recorded screen positions.")
             Toggle("Humanise", isOn: $player.settings.humanizer.enabled)
                 .help("Jitters the gap before each replayed event")
         }
