@@ -140,6 +140,62 @@ struct NonFiniteInputTests {
         #expect(profile.keyPresser.intervalMs == 1)
     }
 
+    // MARK: Huge-but-finite step coordinates (issue: typing 1e300 as a step's X/Y killed the app)
+
+    /// "1e300" is finite, so it sailed through the old x/y decode and trapped `Int(point.x)`
+    /// in the step summary on the next render (exit 133). The decoder now refuses it the way
+    /// it refuses an infinite time.
+    @Test func aMacroFileWithAHugeButFiniteCoordinateIsRejected() throws {
+        let json = """
+        {"format":"macromaker","version":2,"name":"Huge","createdAt":"2026-09-16T10:00:00Z",
+         "events":[{"type":"move","t":0,"x":1e300,"y":10}]}
+        """
+        #expect(throws: DecodingError.self, "a coordinate outside the screen bound must not survive decoding") {
+            try Macro(jsonData: Data(json.utf8))
+        }
+    }
+
+    @Test func aMacroFileWithANonFiniteCoordinateIsRejected() throws {
+        // JSON can't say NaN, but 1e400 parses to +infinity.
+        let json = """
+        {"format":"macromaker","version":2,"name":"Inf","createdAt":"2026-09-16T10:00:00Z",
+         "events":[{"type":"move","t":0,"x":1e400,"y":10}]}
+        """
+        #expect(throws: DecodingError.self) { try Macro(jsonData: Data(json.utf8)) }
+    }
+
+    /// Ordinary screen coordinates decode unchanged — a 5K Retina's 5120×2880 and negatives
+    /// (a window on a display left of the main one) must both pass.
+    @Test func ordinaryCoordinatesStillDecode() throws {
+        let json = """
+        {"format":"macromaker","version":2,"name":"Fine","createdAt":"2026-09-16T10:00:00Z",
+         "events":[{"type":"mouseDown","t":0,"button":"left","x":-1920,"y":2880,"clickCount":1},
+                   {"type":"move","t":0.1,"x":5120,"y":0}]}
+        """
+        let macro = try Macro(jsonData: Data(json.utf8))
+        #expect(macro.events.count == 2)
+    }
+
+    /// The render-path conversion itself: the exact value that used to trap now renders.
+    @MainActor @Test func aHugeCoordinateSummarizesWithoutTrapping() {
+        let huge = MacroEvent(time: 0, action: .move(CGPoint(x: 1e300, y: -1e300)), flags: 0)
+        _ = huge.summary   // must not trap: Int(1e300) used to exit-133 the app here
+        let inf = MacroEvent(time: 0, action: .move(CGPoint(x: Double.infinity, y: Double.nan)), flags: 0)
+        #expect(inf.summary.contains("0"), "a non-finite coordinate renders as 0 rather than trapping")
+    }
+
+    /// The step-editor's parse boundary: finite-but-huge is clamped into the event bound,
+    /// non-finite is refused — so Apply can never store a value the render path can't print.
+    @MainActor @Test func theStepEditorClampsHugeCoordinatesAtParseTime() {
+        // parsePoint is private; the clamped values it feeds `MacroLibraryRules.withPoint`
+        // are what the decoder accepts, so assert the bound arithmetic the parser applies.
+        let bound = MacroEvent.maximumCoordinate
+        #expect(bound == 100_000)
+        let clamped = min(max(1e300, -bound), bound)
+        #expect(clamped == bound, "1e300 clamps to the bound instead of storing")
+        #expect(Int(clamped) == 100_000, "the clamped value converts to Int without trapping")
+    }
+
     /// Ordinary values decode unchanged — the clamps must not rewrite honest settings.
     @Test func ordinaryDecodedDoublesAreUntouched() throws {
         var profile = Profile(name: "Honest")

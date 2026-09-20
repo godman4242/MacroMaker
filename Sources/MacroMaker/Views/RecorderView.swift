@@ -357,12 +357,21 @@ struct RecorderView: View {
         guard let macro = model.macro, index < macro.events.count else { return "" }
         switch macro.events[index].action {
         case let .mouseDown(_, point, _), let .mouseUp(_, point, _), let .move(point):
-            return "\(Int(point.x)), \(Int(point.y))"
+            // Clamped before conversion: a huge-but-finite coordinate traps Int(_:).
+            let bound = MacroEvent.maximumCoordinate
+            let x = point.x.isFinite ? Int(min(max(point.x, -bound), bound)) : 0
+            let y = point.y.isFinite ? Int(min(max(point.y, -bound), bound)) : 0
+            return "\(x), \(y)"
         default: return ""
         }
     }
 
     /// Parses "x, y" (comma or space separated) into a point; nil when it isn't one.
+    ///
+    /// Non-finite is refused and huge-but-finite values are CLAMPED to the event coordinate
+    /// bound: "1e300" is finite, so accepting it here stored a value that trapped `Int(point.x)`
+    /// in the step summary on the next render (exit 133, whole app). Clamped to the same bound
+    /// the file decoder enforces, so an edited step can never be one the file format refuses.
     private func parsePoint(_ text: String) -> CGPoint? {
         let parts = text.split(whereSeparator: { ",;".contains($0) })
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -370,7 +379,8 @@ struct RecorderView: View {
         guard parts.count == 2,
               let x = Double(parts[0]), let y = Double(parts[1]),
               x.isFinite, y.isFinite else { return nil }
-        return CGPoint(x: x, y: y)
+        let bound = MacroEvent.maximumCoordinate
+        return CGPoint(x: min(max(x, -bound), bound), y: min(max(y, -bound), bound))
     }
 
     /// Move Up/Down: the pure rule refuses the bounds and pair-stranding swaps silently,

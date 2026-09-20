@@ -120,12 +120,22 @@ struct MacroEvent: Equatable, Sendable {
         self.windowAnchor = windowAnchor
     }
 
+    /// A coordinate rendered as an integer without the trap: `Int(_:)` on a value outside
+    /// Int's range (a huge-but-finite step coordinate from an old build's file) crashes the
+    /// app, so the render path clamps to the event bound first. Non-finite collapses to 0 —
+    /// this sits on the render path where refusing (nil) has no caller to handle it.
+    private static func displayed(_ value: CGFloat) -> Int {
+        let bound = MacroEvent.maximumCoordinate
+        guard value.isFinite else { return 0 }
+        return Int(min(max(value, -bound), bound))
+    }
+
     @MainActor var summary: String {
         switch action {
         case let .mouseDown(button, point, clickCount):
-            return "\(button.title) mouse down at \(Int(point.x)), \(Int(point.y))" + (clickCount > 1 ? " (×\(clickCount))" : "")
+            return "\(button.title) mouse down at \(Self.displayed(point.x)), \(Self.displayed(point.y))" + (clickCount > 1 ? " (×\(clickCount))" : "")
         case let .mouseUp(button, point, _):
-            return "\(button.title) mouse up at \(Int(point.x)), \(Int(point.y))"
+            return "\(button.title) mouse up at \(Self.displayed(point.x)), \(Self.displayed(point.y))"
         case let .keyDown(keyCode, isRepeat):
             if let textOverride { return "Type “\(textOverride)”" }
             return "Key down \(KeyboardLayout.displayName(for: keyCode))" + (isRepeat ? " (repeat)" : "")
@@ -137,7 +147,7 @@ struct MacroEvent: Equatable, Sendable {
             let direction = (abs(dy) >= abs(dx) ? (dy < 0 ? "down" : "up") : (dx < 0 ? "left" : "right"))
             return "Scroll \(direction) \(abs(amount)) px"
         case let .move(point):
-            return "Move to \(Int(point.x)), \(Int(point.y))"
+            return "Move to \(Self.displayed(point.x)), \(Self.displayed(point.y))"
         case .runMacro:
             return "Run macro"
         }
@@ -184,7 +194,7 @@ extension MacroEvent: Codable {
         switch type {
         case .mouseDown, .mouseUp:
             let button = try c.decode(MouseButton.self, forKey: .button)
-            let point = CGPoint(x: try c.decode(Double.self, forKey: .x), y: try c.decode(Double.self, forKey: .y))
+            let point = CGPoint(x: try Self.coordinate(c, .x), y: try Self.coordinate(c, .y))
             let clickCount = try c.decodeIfPresent(Int.self, forKey: .clickCount) ?? 1
             action = type == .mouseDown
                 ? .mouseDown(button, point, clickCount: clickCount)
@@ -195,18 +205,44 @@ extension MacroEvent: Codable {
         case .keyUp:
             action = .keyUp(try c.decode(CGKeyCode.self, forKey: .keyCode))
         case .scroll:
-            let point = CGPoint(x: (try? c.decodeIfPresent(Double.self, forKey: .x)) ?? nil ?? 0,
-                                y: (try? c.decodeIfPresent(Double.self, forKey: .y)) ?? nil ?? 0)
+            let point = CGPoint(x: try Self.optionalCoordinate(c, .x), y: try Self.optionalCoordinate(c, .y))
             action = .scroll(point, dx: Self.delta(c, .dx), dy: Self.delta(c, .dy))
         case .move:
-            let point = CGPoint(x: (try? c.decodeIfPresent(Double.self, forKey: .x)) ?? nil ?? 0,
-                                y: (try? c.decodeIfPresent(Double.self, forKey: .y)) ?? nil ?? 0)
+            let point = CGPoint(x: try Self.optionalCoordinate(c, .x), y: try Self.optionalCoordinate(c, .y))
             action = .move(point)
         case .runMacro:
             // Not tolerant: a run-macro step without its id is a corrupt step, and a
             // silent "run nothing" would hide a broken chain behind a green run.
             action = .runMacro(try c.decode(UUID.self, forKey: .macroID))
         }
+    }
+
+    /// The largest coordinate magnitude a step may carry. Screen space on any Mac sold this
+    /// decade fits far inside it; the bound exists so a huge-but-finite value ("1e300" typed
+    /// into the step editor, or a corrupted file) can never reach `Int(point.x)` in the step
+    /// summaries — that conversion traps (exit 133) and kills the app on the next render.
+    static let maximumCoordinate: Double = 100_000
+
+    /// One event coordinate: finite and inside `maximumCoordinate`, or the file is corrupt.
+    /// `1e300` parses and is finite, so a mere `isFinite` check (like the time guard's first
+    /// draft) would let it through to the trapping `Int(_:)` conversions in the render path.
+    private static func coordinate(_ c: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys) throws -> Double {
+        let value = try c.decode(Double.self, forKey: key)
+        guard value.isFinite, abs(value) <= maximumCoordinate else {
+            throw DecodingError.dataCorruptedError(
+                forKey: key, in: c,
+                debugDescription: "Event coordinate must be finite and within \(Int(maximumCoordinate)) of the origin, got \(value).")
+        }
+        return value
+    }
+
+    /// One OPTIONAL event coordinate (scroll/move tolerate an absent key — old files may not
+    /// carry it): absent decodes as 0, but a PRESENT invalid value (non-finite or outside
+    /// `maximumCoordinate`) is still corrupt and throws — `try?` here would have swallowed
+    /// the bound violation back to 0, the exact bug the bound exists to prevent.
+    private static func optionalCoordinate(_ c: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys) throws -> Double {
+        guard c.contains(key) else { return 0 }
+        return try coordinate(c, key)
     }
 
     /// One scroll delta; absent decodes as 0 (the axis wasn't scrolled).
