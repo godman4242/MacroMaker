@@ -1,13 +1,32 @@
 import Foundation
 
-/// Bounds a decoded Double. Decoded settings are untrusted — a defaults blob or an imported
-/// profile can carry values the UI's NumberFields would never let through, and the run paths
-/// convert them straight into `Int`/`UInt64`, which trap on out-of-range input (measured:
-/// exit 133). The ranges mirror the UI fields exactly, so honest settings are untouched.
-/// Swift's min/max propagate NaN, so a non-finite value falls back to the field's default
-/// rather than a bound.
-private func clamped(_ raw: Double?, fallback: Double, in range: ClosedRange<Double>) -> Double {
-    guard let raw, raw.isFinite else { return fallback }
+/// Per-field tolerant decoding (review N4): a decoded settings blob is untrusted — one
+/// type-mismatched or out-of-range field in a hand-edited defaults plist or an imported
+/// profile must cost that field alone. Throwing through used to meet `Persistence.load`'s
+/// `try?`, which reset the WHOLE blob to defaults — permanent, silent loss of every sibling
+/// setting. Each helper below makes one field's failure local:
+/// - `decoded` defaults the field when absent, null, or the wrong shape;
+/// - `clamped` additionally bounds a Double/Int to the range the UI's fields enforce
+///   (Swift's min/max propagate NaN, so a non-finite value falls back rather than to a bound).
+private func decoded<K: CodingKey, V: Decodable>(_ c: KeyedDecodingContainer<K>, _ key: K,
+                                                 fallback: V) -> V {
+    ((try? c.decodeIfPresent(V.self, forKey: key)) ?? nil) ?? fallback
+}
+
+private func clamped<K: CodingKey>(_ c: KeyedDecodingContainer<K>, _ key: K,
+                                   fallback: Double, in range: ClosedRange<Double>) -> Double {
+    guard let raw = ((try? c.decodeIfPresent(Double.self, forKey: key)) ?? nil), raw.isFinite
+    else { return fallback }
+    return min(max(raw, range.lowerBound), range.upperBound)
+}
+
+/// The Int twin of the Double clamp (review N7): `maxClicks`, `burstSize` and playback's
+/// `repeatCount` decoded unbounded, outside the discipline every decoded Double already had.
+/// A value beyond Int's representation throws inside `decode` — the `try?` turns that into
+/// the field's fallback, never the whole blob's.
+private func clamped<K: CodingKey>(_ c: KeyedDecodingContainer<K>, _ key: K,
+                                   fallback: Int, in range: ClosedRange<Int>) -> Int {
+    guard let raw = ((try? c.decodeIfPresent(Int.self, forKey: key)) ?? nil) else { return fallback }
     return min(max(raw, range.lowerBound), range.upperBound)
 }
 
@@ -62,44 +81,38 @@ struct AutoClickerSettings: Codable, Equatable, Sendable {
     init() {}
 
     /// Tolerant decoding: v2 fields default when missing, so a v1 settings blob still loads.
-    /// Every decoded Double is bounded (`clamped`) so a hostile or corrupt value can never
-    /// reach the `Int`/`UInt64` conversions in the run paths.
+    /// Every decoded field is local to its own failure (see the helpers above) and every
+    /// numeric value is bounded so a hostile or corrupt value can never reach the
+    /// `Int`/`UInt64` conversions in the run paths.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        button = try c.decodeIfPresent(MouseButton.self, forKey: .button) ?? .left
-        intervalMs = clamped(try c.decodeIfPresent(Double.self, forKey: .intervalMs), fallback: 100,
-                             in: 1...IntervalUnit.maximumIntervalMs)
-        randomizeInterval = try c.decodeIfPresent(Bool.self, forKey: .randomizeInterval) ?? false
-        randomOffsetMs = clamped(try c.decodeIfPresent(Double.self, forKey: .randomOffsetMs), fallback: 20,
-                                 in: 0...60_000)
-        target = try c.decodeIfPresent(Target.self, forKey: .target) ?? .cursor
-        x = clamped(try c.decodeIfPresent(Double.self, forKey: .x), fallback: 500, in: -20_000...20_000)
-        y = clamped(try c.decodeIfPresent(Double.self, forKey: .y), fallback: 500, in: -20_000...20_000)
-        stopAfterClicks = try c.decodeIfPresent(Bool.self, forKey: .stopAfterClicks) ?? false
-        maxClicks = try c.decodeIfPresent(Int.self, forKey: .maxClicks) ?? 100
-        stopAfterDuration = try c.decodeIfPresent(Bool.self, forKey: .stopAfterDuration) ?? false
-        maxDurationSeconds = clamped(try c.decodeIfPresent(Double.self, forKey: .maxDurationSeconds), fallback: 60,
-                                     in: 0.1...86_400)
-        intervalUnit = try c.decodeIfPresent(IntervalUnit.self, forKey: .intervalUnit) ?? .milliseconds
-        burstSize = try c.decodeIfPresent(Int.self, forKey: .burstSize) ?? 1
-        clickCountPerEvent = try c.decodeIfPresent(ClickCount.self, forKey: .clickCountPerEvent) ?? .single
-        region = try c.decodeIfPresent(ClickRegion.self, forKey: .region) ?? ClickRegion()
-        jitterEnabled = try c.decodeIfPresent(Bool.self, forKey: .jitterEnabled) ?? false
-        jitterPx = clamped(try c.decodeIfPresent(Double.self, forKey: .jitterPx), fallback: 5, in: 0...200)
-        stopOnFrontmostChange = try c.decodeIfPresent(Bool.self, forKey: .stopOnFrontmostChange) ?? false
-        holdToClick = try c.decodeIfPresent(Bool.self, forKey: .holdToClick) ?? false
-        delayedStartSeconds = clamped(try c.decodeIfPresent(Double.self, forKey: .delayedStartSeconds), fallback: 0,
-                                       in: 0...600)
-        restoreCursor = try c.decodeIfPresent(Bool.self, forKey: .restoreCursor) ?? false
-        humanizer = try c.decodeIfPresent(HumanizerSettings.self, forKey: .humanizer) ?? HumanizerSettings()
-        directAppBundleID = try c.decodeIfPresent(String.self, forKey: .directAppBundleID) ?? ""
-        directAppX = clamped(try c.decodeIfPresent(Double.self, forKey: .directAppX), fallback: 400,
-                             in: -20_000...20_000)
-        directAppY = clamped(try c.decodeIfPresent(Double.self, forKey: .directAppY), fallback: 300,
-                             in: -20_000...20_000)
-        pauseOnRealInput = try c.decodeIfPresent(Bool.self, forKey: .pauseOnRealInput) ?? false
-        autoResumeSeconds = clamped(try c.decodeIfPresent(Double.self, forKey: .autoResumeSeconds), fallback: 5,
-                                    in: 1...600)
+        button = decoded(c, .button, fallback: .left)
+        intervalMs = clamped(c, .intervalMs, fallback: 100, in: 1...IntervalUnit.maximumIntervalMs)
+        randomizeInterval = decoded(c, .randomizeInterval, fallback: false)
+        randomOffsetMs = clamped(c, .randomOffsetMs, fallback: 20, in: 0...60_000)
+        target = decoded(c, .target, fallback: .cursor)
+        x = clamped(c, .x, fallback: 500, in: -20_000...20_000)
+        y = clamped(c, .y, fallback: 500, in: -20_000...20_000)
+        stopAfterClicks = decoded(c, .stopAfterClicks, fallback: false)
+        maxClicks = clamped(c, .maxClicks, fallback: 100, in: 1...10_000_000)
+        stopAfterDuration = decoded(c, .stopAfterDuration, fallback: false)
+        maxDurationSeconds = clamped(c, .maxDurationSeconds, fallback: 60, in: 0.1...86_400)
+        intervalUnit = decoded(c, .intervalUnit, fallback: .milliseconds)
+        burstSize = clamped(c, .burstSize, fallback: 1, in: 1...10)
+        clickCountPerEvent = decoded(c, .clickCountPerEvent, fallback: .single)
+        region = decoded(c, .region, fallback: ClickRegion())
+        jitterEnabled = decoded(c, .jitterEnabled, fallback: false)
+        jitterPx = clamped(c, .jitterPx, fallback: 5, in: 0...200)
+        stopOnFrontmostChange = decoded(c, .stopOnFrontmostChange, fallback: false)
+        holdToClick = decoded(c, .holdToClick, fallback: false)
+        delayedStartSeconds = clamped(c, .delayedStartSeconds, fallback: 0, in: 0...600)
+        restoreCursor = decoded(c, .restoreCursor, fallback: false)
+        humanizer = decoded(c, .humanizer, fallback: HumanizerSettings())
+        directAppBundleID = decoded(c, .directAppBundleID, fallback: "")
+        directAppX = clamped(c, .directAppX, fallback: 400, in: -20_000...20_000)
+        directAppY = clamped(c, .directAppY, fallback: 300, in: -20_000...20_000)
+        pauseOnRealInput = decoded(c, .pauseOnRealInput, fallback: false)
+        autoResumeSeconds = clamped(c, .autoResumeSeconds, fallback: 5, in: 1...600)
     }
 }
 
@@ -119,12 +132,11 @@ struct KeyPresserSettings: Codable, Equatable, Sendable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        keyText = try c.decodeIfPresent(String.self, forKey: .keyText) ?? "space"
-        mode = try c.decodeIfPresent(Mode.self, forKey: .mode) ?? .autoPress
-        intervalMs = clamped(try c.decodeIfPresent(Double.self, forKey: .intervalMs), fallback: 100,
-                             in: 1...IntervalUnit.maximumIntervalMs)
-        humanizer = try c.decodeIfPresent(HumanizerSettings.self, forKey: .humanizer) ?? HumanizerSettings()
-        sendToBundleID = try c.decodeIfPresent(String.self, forKey: .sendToBundleID) ?? ""
+        keyText = decoded(c, .keyText, fallback: "space")
+        mode = decoded(c, .mode, fallback: .autoPress)
+        intervalMs = clamped(c, .intervalMs, fallback: 100, in: 1...IntervalUnit.maximumIntervalMs)
+        humanizer = decoded(c, .humanizer, fallback: HumanizerSettings())
+        sendToBundleID = decoded(c, .sendToBundleID, fallback: "")
     }
 }
 
@@ -188,18 +200,19 @@ struct WebTargetSettings: Codable, Equatable, Sendable {
 
     init() {}
 
-    /// Tolerant decoding: absent or unreadable fields default, and the Doubles are bounded like
-    /// every other decoded setting (the UI NumberFields enforce these ranges on the way in).
+    /// Tolerant decoding: absent or unreadable fields default per field (one bad value costs
+    /// itself, never the blob — review N4), and the Doubles are bounded like every other
+    /// decoded setting (the UI NumberFields enforce these ranges on the way in).
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        browser = try c.decodeIfPresent(Browser.self, forKey: .browser) ?? .safari
-        urlMatch = try c.decodeIfPresent(String.self, forKey: .urlMatch) ?? ""
-        locatorKind = try c.decodeIfPresent(LocatorKind.self, forKey: .locatorKind) ?? .css
-        cssSelector = try c.decodeIfPresent(String.self, forKey: .cssSelector) ?? ""
-        xpath = try c.decodeIfPresent(String.self, forKey: .xpath) ?? ""
-        x = clamped(try c.decodeIfPresent(Double.self, forKey: .x), fallback: 100, in: 0...100_000)
-        y = clamped(try c.decodeIfPresent(Double.self, forKey: .y), fallback: 100, in: 0...100_000)
-        intervalMs = clamped(try c.decodeIfPresent(Double.self, forKey: .intervalMs), fallback: 1000,
+        browser = decoded(c, .browser, fallback: .safari)
+        urlMatch = decoded(c, .urlMatch, fallback: "")
+        locatorKind = decoded(c, .locatorKind, fallback: .css)
+        cssSelector = decoded(c, .cssSelector, fallback: "")
+        xpath = decoded(c, .xpath, fallback: "")
+        x = clamped(c, .x, fallback: 100, in: 0...100_000)
+        y = clamped(c, .y, fallback: 100, in: 0...100_000)
+        intervalMs = clamped(c, .intervalMs, fallback: 1000,
                              in: Double(WebClicker.minimumIntervalMs)...IntervalUnit.maximumIntervalMs)
     }
 }
@@ -214,9 +227,9 @@ struct PlaybackSettings: Codable, Equatable, Sendable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        repeatCount = try c.decodeIfPresent(Int.self, forKey: .repeatCount) ?? 1
-        loopForever = try c.decodeIfPresent(Bool.self, forKey: .loopForever) ?? false
-        speed = clamped(try c.decodeIfPresent(Double.self, forKey: .speed), fallback: 1, in: 0.25...4)
-        humanizer = try c.decodeIfPresent(HumanizerSettings.self, forKey: .humanizer) ?? HumanizerSettings()
+        repeatCount = clamped(c, .repeatCount, fallback: 1, in: 1...10_000)
+        loopForever = decoded(c, .loopForever, fallback: false)
+        speed = clamped(c, .speed, fallback: 1, in: 0.25...4)
+        humanizer = decoded(c, .humanizer, fallback: HumanizerSettings())
     }
 }

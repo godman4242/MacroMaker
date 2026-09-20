@@ -174,6 +174,14 @@ extension HotkeyAction {
     /// `JSONEncoder` writes a dictionary whose keys aren't String/Int as an UNKEYED ARRAY of
     /// alternating name/value elements — that is the v1 on-disk format. A hand-edited plist
     /// may instead hold a keyed object; both shapes are read, entry by entry.
+    ///
+    /// Honest limit (review N6): a *type mismatch* in one slot doesn't throw — it returns
+    /// nil and advances the container past that element, so a torn unkeyed stream can
+    /// re-sync shifted by one. The decoder therefore validates PAIRS: an entry whose name
+    /// is unreadable, or whose value slot is the wrong shape, ends decoding at the tear —
+    /// the healthy prefix survives and no neighbour is swallowed. A mid-array tear is
+    /// already foreign-shape-only (an honest blob never fails these guards); trying to
+    /// re-sync past an unknown point would decode arbitrary junk as entries.
     nonisolated static func storedCombos(from data: Data) -> [HotkeyAction: KeyCombo?] {
         // The v1 shape: ["toggleAutoClicker", {"keyCode":8,"modifiers":3}, "stopAll", null, ...]
         struct TolerantArray: Decodable {
@@ -182,19 +190,25 @@ extension HotkeyAction {
                 var u = try decoder.unkeyedContainer()
                 var entries: [StoredEntry] = []
                 while !u.isAtEnd {
-                    let name = try? u.decode(String.self)
-                    var combo: KeyCombo?
-                    var readable = false
-                    if !u.isAtEnd {
-                        // do/catch, not `try?`: SE-0230 flattens `try?` over an optional-typed
-                        // expression, erasing the line between a stored null (a deliberately
-                        // cleared hotkey) and a value that failed to decode.
-                        do {
+                    // A `try?` on the name would silently advance past a type mismatch and
+                    // read the NEXT pair's fields as this pair's (review N6, measured) — so
+                    // an unreadable name ENDS the stream at the tear. The whole entry is
+                    // wrapped in the do-block below for the same reason: a name slot holding
+                    // an object reads as a combo and re-syncs the pair shifted by one, so
+                    // ANY field failure in an entry ends decoding there.
+                    do {
+                        let name = try u.decode(String.self)
+                        var combo: KeyCombo?
+                        var readable = false
+                        if !u.isAtEnd {
+                            // do/catch, not `try?`: SE-0230 flattens `try?` over an optional-
+                            // typed expression, erasing the line between a stored null (a
+                            // deliberately cleared hotkey) and a value that failed to decode.
                             combo = try u.decode(KeyCombo?.self)
                             readable = true
-                        } catch { }
-                    }
-                    entries.append(StoredEntry(name: name, combo: combo, readable: readable))
+                        }
+                        entries.append(StoredEntry(name: name, combo: combo, readable: readable))
+                    } catch { break }
                 }
                 self.entries = entries
             }

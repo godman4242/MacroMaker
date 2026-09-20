@@ -24,4 +24,26 @@ struct ClickRegion: Codable, Equatable, Sendable {
     }
 
     var cgRect: CGRect { CGRect(x: x, y: y, width: width, height: height) }
+
+    /// Tolerant per-field decoding (review N4): a corrupt region used to throw through the
+    /// settings' `decodeIfPresent` and, via `Persistence.load`'s `try?`, silently reset the
+    /// WHOLE AutoClickerSettings blob to defaults. One unreadable or out-of-range field now
+    /// costs that field alone. Bounds mirror the UI's NumberFields; non-finite values fall
+    /// back to the field default (min/max propagate NaN).
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        x = Self.field(c, .x, fallback: 400, in: -20_000...20_000)
+        y = Self.field(c, .y, fallback: 300, in: -20_000...20_000)
+        width = Self.field(c, .width, fallback: 200, in: 1...20_000)
+        height = Self.field(c, .height, fallback: 150, in: 1...20_000)
+    }
+
+    private enum CodingKeys: String, CodingKey { case x, y, width, height }
+
+    private static func field(_ c: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys,
+                              fallback: Double, in range: ClosedRange<Double>) -> Double {
+        guard let raw = ((try? c.decodeIfPresent(Double.self, forKey: key)) ?? nil), raw.isFinite
+        else { return fallback }
+        return min(max(raw, range.lowerBound), range.upperBound)
+    }
 }

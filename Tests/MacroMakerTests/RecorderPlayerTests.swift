@@ -100,4 +100,31 @@ struct RecorderPlayerTests {
         #expect(box.finished.last == false,
                 "a cancelled run's final report must say finished: false, got \(box.finished)")
     }
+
+    // MARK: Wave 6 N8 — the unstamped-event arrival fallback
+
+    /// An event whose stamp is 0 (the window server didn't stamp it) falls back to arrival
+    /// time. The branch is one line and was never exercised; the assertion is only that it
+    /// produces a sane, non-negative offset rather than trapping or going backwards.
+    @Test @MainActor func anUnstampedEventFallsBackToArrivalTime() throws {
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.accessory)
+        let priorTap = MacroRecorder.tapBuilder
+        MacroRecorder.tapBuilder = { _, _ in CFMachPortCreate(nil, nil, nil, nil) }
+        defer { MacroRecorder.tapBuilder = priorTap }
+
+        let recorder = MacroRecorder()
+        #expect(recorder.start(), "start must succeed on the inert tap seam")
+        defer { _ = recorder.stop() }
+
+        let cgEvent = try #require(CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(kVK_ANSI_A), keyDown: true))
+        cgEvent.timestamp = 0   // unstamped: the recorder must fall back to arrival time
+        recorder.handle(TapEvent(type: .keyDown, event: cgEvent))
+
+        let times = recorder.liveEvents.map(\.time)
+        #expect(times.count == 1, "the unstamped event must still be recorded")
+        guard times.count == 1 else { return }
+        #expect(times[0] >= 0 && times[0] < 5,
+                "an unstamped event records an arrival-time offset, got \(times[0])")
+    }
 }

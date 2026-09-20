@@ -13,6 +13,8 @@ final class HotkeyService {
     private(set) var slotConflicts: Set<UUID> = []
     /// Dynamic actions beyond the builtins (per-macro play shortcuts), capped for slot hygiene.
     private(set) var dynamicActions: [HotkeyAction] = []
+    /// A failed hotkey-blob write, surfaced the way MacroLibrary/ProfileService surface theirs.
+    private(set) var lastError: String?
 
     /// Single-subscriber by design: assigning replaces the previous trigger (asserted in debug
     /// while the old one was live). The app routes every hotkey through AppModel.
@@ -152,7 +154,13 @@ final class HotkeyService {
         for action in dynamicActions {
             stored[action] = combos[action]
         }
-        Persistence.save(stored, key: Self.storageKey)
+        // A failed write was invisible: the Bool was discarded, so the user's shortcuts
+        // silently reset to the previous blob's values on next launch.
+        guard Persistence.save(stored, key: Self.storageKey) else {
+            lastError = "Couldn't save your keyboard shortcuts — this change wasn't stored."
+            return
+        }
+        lastError = nil
     }
 
     private func registerAll() {

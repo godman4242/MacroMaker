@@ -47,6 +47,16 @@ struct SettingsView: View {
             }
 
             Section {
+                if let error = model.hotkeys.lastError {
+                    StatusMessage(kind: .warning, text: error)
+                }
+            } header: {
+                Text("Save status")
+            } footer: {
+                Text("Shown only when a change to your shortcuts couldn't be saved.")
+            }
+
+            Section {
                 PermissionRow(title: "Accessibility", detail: "Required to click and press keys for you.",
                               isGranted: model.permissions.isAccessibilityTrusted) {
                     model.permissions.requestAccessibility()

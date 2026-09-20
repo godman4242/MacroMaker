@@ -106,7 +106,14 @@ final class MacroLibrary {
             return
         }
         if let folder = Self.folder {
-            try? FileManager.default.removeItem(at: folder.appending(path: record.fileName))
+            // The remove was a silent `try?` (review N5): an undeletable file left index and
+            // disk disagreeing with nothing said. The record still leaves the index — the
+            // user asked for it gone — but the failure is surfaced.
+            do {
+                try FileManager.default.removeItem(at: folder.appending(path: record.fileName))
+            } catch {
+                lastError = "Couldn't delete “\(record.fileName)” from disk: \(error.localizedDescription)"
+            }
         }
         records.removeAll { $0.id == record.id }
         persist()

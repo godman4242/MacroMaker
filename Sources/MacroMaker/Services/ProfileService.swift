@@ -57,12 +57,17 @@ final class ProfileService {
             entry.id = entries[existing].id
             entries[existing] = entry
         } else {
+            var clashWarning: String?
             if let clash = entries.firstIndex(where: { $0.name.localizedCaseInsensitiveCompare(entry.name) == .orderedSame }) {
                 let clashingName = entries[clash].name
                 entry.name = ProfileRules.uniqueDisplayName(for: entry.name, taken: entries.map(\.name))
-                lastError = "A profile named “\(clashingName)” already exists — saved this one as “\(entry.name)”."
+                clashWarning = "A profile named “\(clashingName)” already exists — saved this one as “\(entry.name)”."
             }
             entries.insert(entry, at: 0)
+            // Set AFTER persist(): a landed save clears lastError (N5), so the clash notice
+            // would be wiped by its own success if it went in before the write.
+            if persist() { lastError = clashWarning }
+            return
         }
         persist()
     }
@@ -109,12 +114,16 @@ final class ProfileService {
 
     /// Returns whether the write landed. A failed save was a silent `try?` —
     /// indistinguishable from success exactly when the user's profiles are at stake.
+    /// A LANDED save also clears `lastError` (review N5): a stale "Couldn't save" used to
+    /// outlive the recovery that fixed it. Callers with their own post-success message
+    /// (importFile's clash warning) set it AFTER this returns, so the clear never swallows it.
     @discardableResult
     private func persist() -> Bool {
         guard Persistence.save(entries, key: Self.storageKey) else {
             lastError = "Couldn't save your profiles — this change wasn't stored."
             return false
         }
+        lastError = nil
         return true
     }
 
