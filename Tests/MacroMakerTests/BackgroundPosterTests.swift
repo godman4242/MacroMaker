@@ -5,6 +5,12 @@ import Testing
 
 @testable import MacroMaker
 
+/// One background click is FIVE posted events, not two: a stamped `mouseMoved`, an off-screen
+/// primer down/up, then the real down/up. MEASURED 2026-09-20 on macOS 26.5.2 — without the
+/// primer pair a Chromium-class target whose app is in the background drops the click entirely,
+/// while the same click lands pixel-exact with it. See `BackgroundPoster.click`.
+private let eventsPerClick = 5
+
 // .serialized: one test swaps the process-wide windowLocationResolver seam.
 @Suite("BackgroundPoster", .serialized, .seamSerialized)
 struct BackgroundPosterTests {
@@ -85,7 +91,7 @@ struct BackgroundPosterTests {
                                window: BackgroundPoster.Window(id: 7, bounds: CGRect(x: 0, y: 0, width: 100, height: 100)),
                                pid: 1)
 
-        #expect(box.events.count == 2, "a click is a down and an up, got \(box.events.count)")
+        #expect(box.events.count == eventsPerClick, "a click is move + primer pair + down/up, got \(box.events.count)")
         for event in box.events {
             #expect(event.flags == .maskNonCoalesced,
                     "background clicks must not pretend modifiers are held: \(event.flags)")
@@ -132,7 +138,7 @@ struct BackgroundPosterTests {
                                window: BackgroundPoster.Window(id: 4242, bounds: CGRect(x: 100, y: 200, width: 800, height: 600)),
                                pid: 1234)
 
-        #expect(box.events.count == 2)
+        #expect(box.events.count == eventsPerClick)
         #expect(aimBox.stateIDs.allSatisfy { $0 != 0 },
                 "the window aim must be applied after setSource (private source state), saw \(aimBox.stateIDs)")
         #expect(aimBox.flagsAtAim.allSatisfy { $0 == .maskNonCoalesced },
@@ -336,7 +342,12 @@ struct BackgroundPosterTests {
         let window = BackgroundPoster.Window(id: 1, bounds: CGRect(x: 10, y: 20, width: 100, height: 80))
         BackgroundPoster.click(.left, screenPoint: CGPoint(x: 110, y: 120), holdFor: 0,
                                clickCount: 1, window: window, pid: 1)
-        #expect(box.recorded == [CGPoint(x: 100, y: 100), CGPoint(x: 100, y: 100)],
+        // The move and the real down/up carry the window-local aim (110,120) - (10,20) =
+        // (100,100). The two primers carry a literal (-1,-1) instead: a primer that inherited
+        // the aim's window-local point would be a second real click on the page.
+        #expect(box.recorded == [CGPoint(x: 100, y: 100),
+                                 BackgroundPoster.primerPoint, BackgroundPoster.primerPoint,
+                                 CGPoint(x: 100, y: 100), CGPoint(x: 100, y: 100)],
                 "each transition's window-local point, passed through: \(box.recorded)")
     }
 
@@ -354,7 +365,7 @@ struct BackgroundPosterTests {
         BackgroundPoster.click(.left, screenPoint: CGPoint(x: 50, y: 50), holdFor: 0,
                                clickCount: 1, window: window, pid: 1)
 
-        #expect(box.events.count == 2)  // down + up
+        #expect(box.events.count == eventsPerClick)  // move + primer down/up + real down/up
         for event in box.events {
             #expect(event.getIntegerValueField(.eventSourceStateID) != 0,
                     "background clicks must post from a private event source, not the shared HID state")
@@ -392,7 +403,7 @@ struct BackgroundPosterTests {
         BackgroundPoster.click(.left, screenPoint: CGPoint(x: 50, y: 50), holdFor: 0,
                                clickCount: 1, window: window, pid: 4242)
         #expect(box.route == "skylight(pid:4242)", "delivery must prefer the SkyLight route, got \(box.route)")
-        #expect(box.events.count == 2, "down and up both via SkyLight, got \(box.events.count)")
+        #expect(box.events.count == eventsPerClick, "every event of the gesture goes via SkyLight, got \(box.events.count)")
 
         // Route 2: the symbol is absent — the public postToPid fallback runs.
         box.route = ""
@@ -406,7 +417,49 @@ struct BackgroundPosterTests {
         BackgroundPoster.click(.left, screenPoint: CGPoint(x: 50, y: 50), holdFor: 0,
                                clickCount: 1, window: window, pid: 4242)
         #expect(box.route == "postToPid", "an absent SkyLight symbol must fall back to postToPid, got \(box.route)")
-        #expect(box.events.count == 2)
+        #expect(box.events.count == eventsPerClick)
+    }
+
+    /// The measured Chromium recipe, pinned event by event. The bug this closes: with only a
+    /// down/up pair, a background Brave dropped every click silently (measured 2026-09-20,
+    /// four variants incl. a forced-correct window); with the move + off-screen primer in
+    /// front of it the same click landed pixel-exact with another app frontmost. A primer is
+    /// needed on EVERY click — skipping it after one primed click went back to being dropped.
+    @Test func everyClickCarriesTheMoveAndOffScreenPrimerChromiumNeeds() {
+        let box = PostedEventBox()
+        let prior = BackgroundPoster.eventPoster
+        defer { BackgroundPoster.eventPoster = prior }
+        BackgroundPoster.eventPoster = { event, _ in box.events.append(event) }
+
+        let window = BackgroundPoster.Window(id: 7, bounds: CGRect(x: 0, y: 0, width: 800, height: 600))
+        BackgroundPoster.click(.left, screenPoint: CGPoint(x: 300, y: 400), holdFor: 0,
+                               clickCount: 1, window: window, pid: 1234)
+
+        let phaseField = CGEventField(rawValue: 0)!
+        let groupField = CGEventField(rawValue: 58)!
+        let phases = box.events.map { $0.getIntegerValueField(phaseField) }
+        let types = box.events.map(\.type)
+
+        #expect(types == [.mouseMoved, .leftMouseDown, .leftMouseUp, .leftMouseDown, .leftMouseUp],
+                "the gesture is move -> primer down/up -> real down/up, got \(types)")
+        #expect(phases == [BackgroundPoster.Phase.move,
+                           BackgroundPoster.Phase.primerDown,
+                           BackgroundPoster.Phase.primerUp,
+                           BackgroundPoster.Phase.real,
+                           BackgroundPoster.Phase.real],
+                "Chromium tells the primer from the real click by field 0, got \(phases)")
+
+        // The primer must land OFF the window: on it, it would click the page for real.
+        #expect(box.events[1].location == BackgroundPoster.primerPoint)
+        #expect(box.events[2].location == BackgroundPoster.primerPoint)
+        // ...and the real pair at the point the caller asked for.
+        #expect(box.events[3].location == CGPoint(x: 300, y: 400))
+        #expect(box.events[4].location == CGPoint(x: 300, y: 400))
+
+        // One click-group id across the whole gesture, and never 0 (0 reads as "no group").
+        let groups = Set(box.events.map { $0.getIntegerValueField(groupField) })
+        #expect(groups.count == 1, "one gesture must carry one click-group id, got \(groups)")
+        #expect(groups.first != 0, "a zero click-group id is indistinguishable from unset")
     }
 
     /// Chromium's renderer filter reads the target pid (f40) off the event; the click must
@@ -422,7 +475,7 @@ struct BackgroundPosterTests {
                                clickCount: 1,
                                window: BackgroundPoster.Window(id: 77, bounds: CGRect(x: 0, y: 0, width: 100, height: 100)),
                                pid: 9182)
-        #expect(box.events.count == 2)
+        #expect(box.events.count == eventsPerClick)
         for event in box.events {
             #expect(event.getIntegerValueField(CGEventField(rawValue: 40)!) == 9182,
                     "the target pid must ride field 40 (Chromium's synthetic-event filter)")
@@ -487,7 +540,7 @@ struct BackgroundPosterTests {
                                clickCount: 1,
                                window: BackgroundPoster.Window(id: 7, bounds: CGRect(x: 0, y: 0, width: 800, height: 600)),
                                pid: 1234)
-        #expect(tags.count == 2, "a click is a down and an up, got \(tags.count)")
+        #expect(tags.count == eventsPerClick, "every event of the gesture carries the tag, got \(tags.count)")
         #expect(tags.allSatisfy { $0 == EventSynthesizer.eventTag },
                 "posted clicks lost the self-tag: \(tags) != \(EventSynthesizer.eventTag)")
     }

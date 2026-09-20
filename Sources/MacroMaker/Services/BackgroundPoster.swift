@@ -43,6 +43,10 @@ enum BackgroundPoster {
     /// `protectedFields` list of values this code must never overwrite, and re-stamping the
     /// same window number would be that, with nothing gained.
     private static let targetPidField = CGEventField(rawValue: 40)!
+    /// Gesture-phase marker — see `Phase`. Chromium tells the primer from the real click by it.
+    private static let gesturePhaseField = CGEventField(rawValue: 0)!
+    /// Click-group id: one value shared by every event of a gesture, so the target coalesces them.
+    private static let clickGroupField = CGEventField(rawValue: 58)!
 
     /// Pure filter over one raw CGWindowInfo dictionary: the app's layer-0 windows only.
     static func window(fromInfo info: [String: Any], ownerPID: pid_t) -> Window? {
@@ -282,8 +286,9 @@ enum BackgroundPoster {
     }
 
     /// The NSEvent type to seed `mouseEvent(with:)` with for a recipe event type (the reverse of
-    /// `equivalentCGEventType`, minus drags — background clicks only ever post down/up). Anything
-    /// else returns nil so a bad type fails loudly instead of synthesizing a move.
+    /// `equivalentCGEventType`, minus drags — background clicks post down/up plus the leading
+    /// `mouseMoved` the Chromium recipe requires). Anything else returns nil so a bad type fails
+    /// loudly instead of synthesizing something the caller didn't ask for.
     private static func nsEventType(_ type: CGEventType) -> NSEvent.EventType? {
         switch type {
         case .leftMouseDown: .leftMouseDown
@@ -292,6 +297,7 @@ enum BackgroundPoster {
         case .rightMouseUp: .rightMouseUp
         case .otherMouseDown: .otherMouseDown
         case .otherMouseUp: .otherMouseUp
+        case .mouseMoved: .mouseMoved
         default: nil
         }
     }
@@ -347,19 +353,68 @@ enum BackgroundPoster {
         return event
     }
 
-    /// A complete click delivered to the process: down, hold, up. False = undelivered: nothing
-    /// went out (the AppKit conversion returned nil, or the window aim was refused), so the
-    /// caller must not count the click — F5's silent swallow ends here.
+    /// Gesture-phase marker (field 0). Chromium's renderer reads it to tell the primer pair
+    /// apart from the real click; AppKit targets ignore it.
+    enum Phase {
+        static let move: Int64 = 2
+        static let primerDown: Int64 = 1
+        static let primerUp: Int64 = 2
+        static let real: Int64 = 3
+    }
+
+    /// Where the primer click lands: off every window, so it opens Chromium's user-activation
+    /// gate without hitting anything on the page. Used as BOTH the screen and the window-local
+    /// point — the recipe this came from stamps a literal (-1, -1) window location.
+    static let primerPoint = CGPoint(x: -1, y: -1)
+
+    /// Gaps between the events of one gesture. Below the 100 ms primer settle Chromium reads the
+    /// primer and the real click as one run-on gesture and drops the second.
+    static let moveSettle: TimeInterval = 0.015
+    static let primerGap: TimeInterval = 0.001
+    static let primerSettle: TimeInterval = 0.100
+
+    /// A complete click delivered to the process. False = undelivered: the REAL click's event
+    /// couldn't be built or aimed, so the caller must not count it — F5's silent swallow ends here.
+    ///
+    /// The sequence is the measured one, not a down/up pair:
+    ///   stamped `mouseMoved` at the target → primer down/up off-screen → the real down/up.
+    /// MEASURED 2026-09-20 on macOS 26.5.2: with only down/up, a Chromium-class target
+    /// (Brave/Chrome/Electron) whose app is in the background drops the click silently — four
+    /// variants confirmed, including a forced-correct window. With this sequence the same click
+    /// lands pixel-exact while another app stays frontmost. AppKit targets accept it either way,
+    /// so one path serves both. A primer is needed on EVERY click: skipping it after a first
+    /// primed click was measured to go back to being dropped.
     @discardableResult
     static func click(_ button: MouseButton, screenPoint: CGPoint, holdFor duration: TimeInterval,
                       clickCount: Int, window: Window, pid: pid_t) -> Bool {
-        guard post(mouseEvent(button.downEventType, button: button, clickCount: clickCount,
-                              screenPoint: screenPoint, window: window),
-                   window: window, screenPoint: screenPoint, pid: pid) else { return false }
+        // One id across every event of this gesture (field 58) so the target coalesces them as
+        // one click instead of unrelated taps.
+        let group = Int64(DispatchTime.now().uptimeNanoseconds & 0x7FFF_FFFF)
+
+        func send(_ type: CGEventType, at point: CGPoint, localPoint: CGPoint?,
+                  state: Int, phase: Int64) -> Bool {
+            post(mouseEvent(type, button: button, clickCount: state,
+                            screenPoint: point, window: window),
+                 window: window, screenPoint: point, pid: pid,
+                 phase: phase, clickGroup: group, localOverride: localPoint)
+        }
+
+        // The primers' return values are deliberately ignored: only the real click decides
+        // whether this counted, and a refused primer must not be reported as a delivered click.
+        _ = send(.mouseMoved, at: screenPoint, localPoint: nil, state: 0, phase: Phase.move)
+        Thread.sleep(forTimeInterval: moveSettle)
+        _ = send(button.downEventType, at: primerPoint, localPoint: primerPoint,
+                 state: 1, phase: Phase.primerDown)
+        Thread.sleep(forTimeInterval: primerGap)
+        _ = send(button.upEventType, at: primerPoint, localPoint: primerPoint,
+                 state: 1, phase: Phase.primerUp)
+        Thread.sleep(forTimeInterval: primerSettle)
+
+        guard send(button.downEventType, at: screenPoint, localPoint: nil,
+                   state: clickCount, phase: Phase.real) else { return false }
         if duration > 0 { Thread.sleep(forTimeInterval: duration) }
-        return post(mouseEvent(button.upEventType, button: button, clickCount: clickCount,
-                               screenPoint: screenPoint, window: window),
-                    window: window, screenPoint: screenPoint, pid: pid)
+        return send(button.upEventType, at: screenPoint, localPoint: nil,
+                    state: clickCount, phase: Phase.real)
     }
 
     /// Delivery seam: swapped in tests so `click` can be asserted without hitting real processes.
@@ -393,7 +448,112 @@ enum BackgroundPoster {
         return true
     }
 
-    private static func post(_ event: CGEvent?, window: Window, screenPoint: CGPoint, pid: pid_t) -> Bool {
+    // MARK: Activation without raising
+
+    /// Runtime seam over the three SkyLight/Carbon symbols the activation step needs. A test
+    /// swaps this for a recorder; `nil` = a symbol is missing, so the step reports failure
+    /// instead of pretending the target was activated.
+    struct ActivationSymbols {
+        let getFrontProcess: @convention(c) (UnsafeMutableRawPointer) -> Int32
+        let postEventRecord: @convention(c) (UnsafeMutableRawPointer, UnsafeMutablePointer<UInt8>) -> Int32
+        let processForPID: @convention(c) (pid_t, UnsafeMutableRawPointer) -> Int32
+    }
+
+    nonisolated(unsafe) static var activationSymbols: @Sendable () -> ActivationSymbols? = {
+        let rtldDefault = UnsafeMutableRawPointer(bitPattern: -2)
+        guard let front = dlsym(rtldDefault, "_SLPSGetFrontProcess"),
+              let post = dlsym(rtldDefault, "SLPSPostEventRecordTo"),
+              let forPID = dlsym(rtldDefault, "GetProcessForPID")
+        else { return nil }
+        return ActivationSymbols(
+            getFrontProcess: unsafeBitCast(front, to: (@convention(c) (UnsafeMutableRawPointer) -> Int32).self),
+            postEventRecord: unsafeBitCast(post, to: (@convention(c) (UnsafeMutableRawPointer, UnsafeMutablePointer<UInt8>) -> Int32).self),
+            processForPID: unsafeBitCast(forPID, to: (@convention(c) (pid_t, UnsafeMutableRawPointer) -> Int32).self))
+    }
+
+    /// Makes the target app *input-active* without raising its window or taking the user's
+    /// frontmost app away — the missing half of background delivery for Chromium-class targets.
+    ///
+    /// MEASURED 2026-09-20 (macOS 26.5.2): the full stamped + primed click sequence alone still
+    /// gets dropped by a background Brave; run this once first and the same click lands, with the
+    /// user's app still frontmost and Brave's window still behind. The effect PERSISTS, so a run
+    /// calls this once at arm time, not per click.
+    ///
+    /// Two 248-byte window-server event records (`0x0D` kind): one telling the current front
+    /// process it is losing focus, one telling the target window it is gaining it. Deliberately
+    /// does NOT call `_SLPSSetFrontProcessWithOptions` — that is the call that raises the window
+    /// and steals the user's frontmost app.
+    @discardableResult
+    static func activateWithoutRaise(pid: pid_t, windowID: CGWindowID) -> Bool {
+        guard let symbols = activationSymbols() else {
+            targetingLog.warning("activate-without-raise unavailable: a SkyLight symbol is missing")
+            return false
+        }
+        // A Carbon ProcessSerialNumber is two UInt32s; kept as raw bytes so this never depends
+        // on the deprecated Swift shim for a type it only passes through by pointer.
+        let psnSize = MemoryLayout<UInt32>.size * 2
+        let front = UnsafeMutableRawPointer.allocate(byteCount: psnSize, alignment: 8)
+        let target = UnsafeMutableRawPointer.allocate(byteCount: psnSize, alignment: 8)
+        defer { front.deallocate(); target.deallocate() }
+        front.initializeMemory(as: UInt8.self, repeating: 0, count: psnSize)
+        target.initializeMemory(as: UInt8.self, repeating: 0, count: psnSize)
+
+        guard symbols.getFrontProcess(front) == 0, symbols.processForPID(pid, target) == 0 else {
+            targetingLog.warning("activate-without-raise: could not resolve the process serial numbers")
+            return false
+        }
+
+        var record = [UInt8](repeating: 0, count: 0xF8)
+        record[0x04] = 0xF8          // record length marker
+        record[0x08] = 0x0D          // focus-change record kind
+        withUnsafeBytes(of: windowID.littleEndian) { raw in
+            for offset in 0..<4 { record[0x3C + offset] = raw[offset] }
+        }
+        record[0x8A] = 0x02          // the old front process loses focus
+        let defocused = record.withUnsafeMutableBufferPointer { symbols.postEventRecord(front, $0.baseAddress!) }
+        record[0x8A] = 0x01          // the target window gains it
+        let focused = record.withUnsafeMutableBufferPointer { symbols.postEventRecord(target, $0.baseAddress!) }
+
+        guard defocused == 0, focused == 0 else {
+            targetingLog.warning("activate-without-raise refused: defocus=\(defocused) focus=\(focused)")
+            return false
+        }
+        // AppKit needs a moment to update its active/key-window routing before the click stream
+        // arrives; without the settle the first click of a run is dropped.
+        Thread.sleep(forTimeInterval: activationSettle)
+        return true
+    }
+
+    static let activationSettle: TimeInterval = 0.050
+
+    /// One run's memory of which (pid, window) it has already activated. The activation persists,
+    /// so re-posting the focus records on every click would thrash window-server focus at click
+    /// rates for no gain; a changed window (the user switched the target's window mid-run) or a
+    /// replaced process re-arms it.
+    final class Activator: @unchecked Sendable {
+        private let lock = NSLock()
+        private var activated: (pid: pid_t, windowID: CGWindowID)?
+
+        init() {}
+
+        /// True when the target was already active or has just been activated.
+        @discardableResult
+        func activateIfNeeded(pid: pid_t, windowID: CGWindowID) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            if let activated, activated == (pid, windowID) { return true }
+            guard BackgroundPoster.activateWithoutRaise(pid: pid, windowID: windowID) else {
+                // Leave it un-armed so the next click retries rather than latching a failure.
+                return false
+            }
+            activated = (pid, windowID)
+            return true
+        }
+    }
+
+    private static func post(_ event: CGEvent?, window: Window, screenPoint: CGPoint, pid: pid_t,
+                             phase: Int64 = Phase.real, clickGroup: Int64 = 0,
+                             localOverride: CGPoint? = nil) -> Bool {
         guard let event else {
             // F5: NSEvent.mouseEvent is documented to be able to return nil. That used to
             // vanish silently — nothing posted, and the caller still counted a delivery.
@@ -425,8 +585,14 @@ enum BackgroundPoster {
         // The Chromium synthetic-event filter (cua-driver recipe): the target pid rides
         // field 40, beside the 91/92 pair above.
         event.setIntegerValueField(targetPidField, value: Int64(pid))
+        // Gesture phase and click-group id: Chromium reads these to tell the off-screen primer
+        // from the real click and to coalesce the pair into one gesture. Field 51 (the AppKit
+        // window number every working implementation agrees on) is already populated by
+        // `NSEvent.mouseEvent(with:windowNumber:)` — it is on `protectedFields` for that reason.
+        event.setIntegerValueField(gesturePhaseField, value: phase)
+        event.setIntegerValueField(clickGroupField, value: clickGroup)
         guard windowLocationResolver.setWindowLocation(
-            of: event, to: windowPoint(fromScreenPoint: screenPoint, window: window)) else {
+            of: event, to: localOverride ?? windowPoint(fromScreenPoint: screenPoint, window: window)) else {
             // Fail loud, not mis-aimed: a click the resolver can't aim never leaves the app.
             targetingLog.warning("background click lost: the window aim was refused — nothing posted")
             return false

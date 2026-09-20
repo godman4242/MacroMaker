@@ -353,7 +353,9 @@ struct StopLifecycleTests {
 
         let reply = clicker.testClick()
         #expect(reply == "Test click sent.", "a healthy click must report sent, got: \(reply)")
-        #expect(box.events.count == 2, "a click is a down and an up, got \(box.events.count)")
+        // Five, not two: a background click is a stamped move, an off-screen primer down/up,
+        // then the real down/up — the sequence Chromium-class targets need (BackgroundPoster.click).
+        #expect(box.events.count == 5, "a click is move + primer pair + down/up, got \(box.events.count)")
         for event in box.events {
             #expect(NSEvent(cgEvent: event)?.windowNumber ?? 0 > 0,
                     "the test event must name a real window of the target app")

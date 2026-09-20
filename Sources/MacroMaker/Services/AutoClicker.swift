@@ -325,7 +325,8 @@ final class AutoClicker {
                         report(count, true, "The target app quit or was replaced mid-run — the run stopped rather than click the wrong process.")
                         return
                     case .alive(let pid):
-                        if let undelivered = directClickOnce(plan, pid: pid, resolver: directRun.resolver) {
+                        if let undelivered = directClickOnce(plan, pid: pid, resolver: directRun.resolver,
+                                                            activator: directRun.activator) {
                             // Undelivered click: never counted — the counter must mean "clicks
                             // that reached the target", or stopAfterClicks lies. The warning
                             // string says WHY (no window / undeliverable event) so the banner
@@ -370,6 +371,9 @@ final class AutoClicker {
     nonisolated private struct DirectRun: Sendable {
         let bundleID: String
         let resolver = BackgroundPoster.WindowResolver()
+        /// Armed once per (pid, window): Chromium-class targets ignore background clicks until
+        /// their app is input-active. See BackgroundPoster.activateWithoutRaise.
+        let activator = BackgroundPoster.Activator()
         private var state = State.unchecked
         private enum State { case unchecked, gone }
         private let snapshot: TargetSnapshot
@@ -429,7 +433,8 @@ final class AutoClicker {
     /// (no window resolvable — even via the .optionAll fallback — or an undeliverable event).
     /// Nothing is counted when this returns a warning.
     nonisolated private static func directClickOnce(_ plan: Plan, pid: pid_t,
-                                                    resolver: BackgroundPoster.WindowResolver) -> String? {
+                                                    resolver: BackgroundPoster.WindowResolver,
+                                                    activator: BackgroundPoster.Activator) -> String? {
         // Same single-randomness rule: this point is fixed, positional jitter applies.
         let picked = plan.positionJitterPx == 0 ? plan.directScreenPoint
             : ClickGeometry.jitter(plan.directScreenPoint, amount: plan.positionJitterPx,
@@ -439,6 +444,10 @@ final class AutoClicker {
         guard let window = resolver.window(ofPID: pid, containing: picked) else {
             return "Target window not found — bring it on-screen at least once; undelivered clicks aren't counted."
         }
+        // Chromium-class targets drop every background click until their app is input-active.
+        // The effect persists for the run, so this is once per (pid, window), not per click —
+        // re-running it per click would thrash window-server focus at click rates.
+        activator.activateIfNeeded(pid: pid, windowID: window.id)
         // H5: jitter can push the point outside the window it must land in — clamp it back.
         let screenPoint = ClickGeometry.clamp(picked, to: window.bounds)
         guard BackgroundPoster.click(plan.button, screenPoint: screenPoint,

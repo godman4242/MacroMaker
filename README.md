@@ -8,6 +8,30 @@ Written in Swift and SwiftUI. Needs macOS 14 (Sonoma) or later, and runs nativel
 ## What's new in 2.0
 
 - **Direct-app targeting:** clicks and keystrokes can go to one chosen app in the background — your cursor never moves and the app can be behind other windows.
+
+### What background clicking can and cannot reach (measured 2026-09-20, macOS 26.5.2)
+
+| Target | Background clicks (you keep using another app) |
+|---|---|
+| Normal Mac apps (AppKit) | ✅ Works |
+| Chrome / Brave / Edge / Electron apps (Discord, Slack, VS Code) | ✅ Works — needs the activation + primer sequence below |
+| A background **browser tab** | ✅ Use **Web Target**: it runs JavaScript inside the tab, so no focus at all is needed |
+| **Games** — Roblox, Unity, SDL, Metal/OpenGL surfaces | ❌ **Impossible.** Not a bug, and not anti-cheat |
+
+Games read the mouse from the hardware input layer and only act on it while their app is
+frontmost. A click posted to a backgrounded game is discarded with no error: measured against
+Roblox, screenshots before and after were pixel-identical. The identical click lands the moment
+the game is frontmost. Every open-source project that does background input excludes games for
+the same reason. For a game the only options are to let it hold the foreground, or to run it in a
+separate macOS login session or VM.
+
+Chromium-class apps need two extra things, both measured — without either, the click is dropped
+silently while the app is in the background:
+1. `BackgroundPoster.activateWithoutRaise` once per run: makes the target *input-active* without
+   raising its window or taking your frontmost app away.
+2. Per click: a stamped `mouseMoved`, then an off-screen primer down/up at (-1, -1), then the real
+   down/up. Skipping the primer on later clicks goes back to being dropped, so it runs every time.
+   This puts a ~117 ms floor under a background click — about 8 clicks/second.
 - **Humanize timing:** jitter the interval, speed, drifts and surprise pauses make automation look like a person.
 - **Scheduled starts:** set a clock time and Macro Maker starts the feature then; it disarms itself after firing once.
 - **Pause on real input:** your own clicks and keys pause the run ("Paused — you took over"), with optional auto-resume after N idle seconds.
