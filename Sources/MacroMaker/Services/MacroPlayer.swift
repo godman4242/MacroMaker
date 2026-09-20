@@ -32,6 +32,14 @@ final class MacroPlayer {
         let humanizer: HumanizerSettings
     }
 
+    /// The pass count for a playback (F-11 "repeat until the stop shortcut"). Until-hotkey
+    /// is a stop CONDITION, not a fourth bound: the stop-run hotkey ends the playback, so
+    /// the repeat count and the loop toggle both come off — a 3-repeat bound on an
+    /// until-hotkey playback would end it before the keypress ever mattered.
+    nonisolated static func playbackRepeats(_ s: PlaybackSettings) -> Int? {
+        s.stopOnHotkey ? nil : (s.loopForever ? nil : max(1, s.repeatCount))
+    }
+
     func toggle(_ macro: Macro?, trigger: StartTrigger) {
         if session.phase.isActive {
             session.stop()
@@ -44,7 +52,7 @@ final class MacroPlayer {
         guard permissions.ensureAccessibility() else { return }
 
         let plan = Plan(events: macro.events,
-                        repeats: settings.loopForever ? nil : max(1, settings.repeatCount),
+                        repeats: Self.playbackRepeats(settings),
                         speed: min(max(settings.speed, 0.1), 10),
                         humanizer: settings.humanizer)
         session.start(withCountdown: trigger == .button) { [weak self] token in

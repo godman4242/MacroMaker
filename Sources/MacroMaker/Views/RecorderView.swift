@@ -118,10 +118,12 @@ struct RecorderView: View {
         @Bindable var player = player
         HStack(spacing: 16) {
             Toggle("Loop until stopped", isOn: $player.settings.loopForever)
-            if !player.settings.loopForever {
+            if !player.settings.loopForever, !player.settings.stopOnHotkey {
                 Stepper("Repeat \(player.settings.repeatCount)×", value: $player.settings.repeatCount, in: 1...10_000)
                     .monospacedDigit()
             }
+            Toggle("Until stop shortcut", isOn: $player.settings.stopOnHotkey)
+                .help("Repeats until you press the Stop-the-Current-Run shortcut (Settings ▸ Keyboard shortcuts, default F6).")
             Picker("Speed", selection: $player.settings.speed) {
                 ForEach([0.25, 0.5, 1, 2, 4], id: \.self) { speed in
                     Text("\(speed.formatted())×").tag(speed)

@@ -98,8 +98,9 @@ final class AutoClicker {
             interval = max(TickSchedule.minimumDelay, s.intervalMs / 1000)
             jitterSeconds = s.randomizeInterval ? max(0, s.randomOffsetMs) / 1000 : 0
             positionJitterPx = s.jitterEnabled ? max(0, s.jitterPx) : 0
-            maxClicks = s.stopAfterClicks ? max(1, s.maxClicks) : nil
-            maxDuration = s.stopAfterDuration ? max(0.1, s.maxDurationSeconds) : nil
+            let limits = AutoClicker.stopLimits(s)
+            maxClicks = limits.clicks
+            maxDuration = limits.duration
             stopOnFrontmostChange = s.stopOnFrontmostChange
             self.initialFrontmost = s.stopOnFrontmostChange ? initialFrontmost : nil
             restoreCursor = s.restoreCursor
@@ -107,6 +108,16 @@ final class AutoClicker {
             directAppBundleID = s.directAppBundleID
             directScreenPoint = CGPoint(x: s.directAppX, y: s.directAppY)
         }
+    }
+
+    /// The run's count/duration bounds (F-11 "repeat until the stop shortcut"). Until-hotkey
+    /// is a stop CONDITION like frontmost-change is, not a fourth bound: the run's end is
+    /// the stop-run hotkey, so the numeric limits come off entirely — a 5-click bound on an
+    /// until-hotkey run would silently end it long before the keypress ever mattered.
+    nonisolated static func stopLimits(_ s: AutoClickerSettings) -> (clicks: Int?, duration: TimeInterval?) {
+        if s.stopOnHotkey { return (nil, nil) }
+        return (s.stopAfterClicks ? max(1, s.maxClicks) : nil,
+                s.stopAfterDuration ? max(0.1, s.maxDurationSeconds) : nil)
     }
 
     /// The clock-time start feature is a menu-level concept, not a per-feature one (see AppModel.schedule).

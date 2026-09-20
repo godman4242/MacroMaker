@@ -262,7 +262,17 @@ final class AppModel {
         case .toggleRecording: toggleRecording()
         case .togglePlayback: togglePlayback(trigger)
         case .stopAll: stopAll()
+        case .stopRun: stopActiveRuns()
         }
+    }
+
+    /// The stop-run shortcut (default F6): stops anything currently running, without the
+    /// recorder-flip and beep dance of Stop Everything (F-11's "press a key to end the run").
+    func stopActiveRuns() {
+        autoClicker.session.stop()
+        keyPresser.session.stop()
+        webClicker.session.stop()
+        player.session.stop()
     }
 
     func stopAll() {

@@ -78,6 +78,12 @@ struct AutoClickerView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    Toggle("Until the stop shortcut", isOn: $clicker.settings.stopOnHotkey)
+                    if clicker.settings.stopOnHotkey {
+                        Text("The run ignores the limits above and repeats until you press the Stop-the-Current-Run shortcut (Settings ▸ Keyboard shortcuts, default F6).")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     Toggle("Pause when I use the mouse or keyboard", isOn: $clicker.settings.pauseOnRealInput)
                     if clicker.settings.pauseOnRealInput {
                         NumberField("Resume after idle", value: $clicker.settings.autoResumeSeconds,

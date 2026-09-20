@@ -77,6 +77,9 @@ struct AutoClickerSettings: Codable, Equatable, Sendable {
     var pauseOnRealInput = false
     /// Seconds of user idle before a paused run starts itself again.
     var autoResumeSeconds: Double = 5
+    /// "Repeat until the stop shortcut": the run has no count/duration bound — the stop-run
+    /// hotkey (Settings ▸ Keyboard shortcuts, default F6) ends it (F-11).
+    var stopOnHotkey = false
 
     init() {}
 
@@ -113,6 +116,7 @@ struct AutoClickerSettings: Codable, Equatable, Sendable {
         directAppY = clamped(c, .directAppY, fallback: 300, in: -20_000...20_000)
         pauseOnRealInput = decoded(c, .pauseOnRealInput, fallback: false)
         autoResumeSeconds = clamped(c, .autoResumeSeconds, fallback: 5, in: 1...600)
+        stopOnHotkey = decoded(c, .stopOnHotkey, fallback: false)
     }
 }
 
@@ -222,6 +226,9 @@ struct PlaybackSettings: Codable, Equatable, Sendable {
     var loopForever = false
     var speed: Double = 1
     var humanizer = HumanizerSettings()
+    /// "Repeat until the stop shortcut": the stop-run hotkey (default F6) ends the playback,
+    /// ignoring the repeat count and the loop toggle (F-11).
+    var stopOnHotkey = false
 
     init() {}
 
@@ -231,5 +238,6 @@ struct PlaybackSettings: Codable, Equatable, Sendable {
         loopForever = decoded(c, .loopForever, fallback: false)
         speed = clamped(c, .speed, fallback: 1, in: 0.25...4)
         humanizer = decoded(c, .humanizer, fallback: HumanizerSettings())
+        stopOnHotkey = decoded(c, .stopOnHotkey, fallback: false)
     }
 }

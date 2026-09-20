@@ -32,6 +32,8 @@ enum BuiltinHotkeyAction: String, Codable, CaseIterable, Sendable {
     case toggleRecording
     case togglePlayback
     case stopAll
+    /// Stops any active run — the "repeat until keypress" stop condition's key (F-11).
+    case stopRun
 
     var title: String {
         switch self {
@@ -41,11 +43,16 @@ enum BuiltinHotkeyAction: String, Codable, CaseIterable, Sendable {
         case .toggleRecording: "Start / stop recording"
         case .togglePlayback: "Start / stop playback"
         case .stopAll: "Stop everything"
+        case .stopRun: "Stop the current run"
         }
     }
 
-    /// Defaults use ⌃⌥ plus a mnemonic letter — a combination almost no app claims.
+    /// Defaults use ⌃⌥ plus a mnemonic letter — a combination almost no app claims. The
+    /// stop-run default is bare F6 instead: it must be pressable one-handed, mid-run,
+    /// without stacking modifiers (F-11's "press F6 to stop" semantic), and F6 is claimed
+    /// by almost no app (unlike F1–F4, which macOS uses).
     var defaultCombo: KeyCombo {
+        if self == .stopRun { return KeyCombo(keyCode: UInt32(kVK_F6), modifiers: []) }
         let key: Int = switch self {
         case .toggleAutoClicker: kVK_ANSI_C
         case .toggleKeyPresser: kVK_ANSI_K
@@ -53,6 +60,7 @@ enum BuiltinHotkeyAction: String, Codable, CaseIterable, Sendable {
         case .toggleRecording: kVK_ANSI_R
         case .togglePlayback: kVK_ANSI_P
         case .stopAll: kVK_ANSI_S
+        case .stopRun: kVK_F6   // unreachable — handled above
         }
         return KeyCombo(keyCode: UInt32(key), modifiers: [.control, .option])
     }
@@ -267,8 +275,9 @@ extension HotkeyAction {
     static let toggleRecording = HotkeyAction.builtin(.toggleRecording)
     static let togglePlayback = HotkeyAction.builtin(.togglePlayback)
     static let stopAll = HotkeyAction.builtin(.stopAll)
+    static let stopRun = HotkeyAction.builtin(.stopRun)
 
-    /// The six builtin actions in declaration order.
+    /// The builtin actions in declaration order.
     static var builtins: [HotkeyAction] { BuiltinHotkeyAction.allCases.map(HotkeyAction.builtin) }
 
     var title: String {
