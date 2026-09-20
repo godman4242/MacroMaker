@@ -91,3 +91,22 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: dir.appending(path: "Last.\(Macro.fileExtension)").path))
     }
 }
+
+    /// The gauntlet regression: a hand-edited scroll delta that fits Int but not
+    /// Int32 must decode CLAMPED to the wheel-field range — unclamped, playback
+    /// hits `Int32(dy)` and traps mid-run (exit 133).
+    @Test func hugeScrollDeltaDecodesClampedNotTrapping() throws {
+        let json = """
+        { "format": "macromaker", "version": 2, "name": "Clamp", "createdAt": "2026-09-20T10:00:00Z",
+          "events": [
+            { "t": 0.2, "type": "scroll", "x": 10, "y": 10, "dx": 3000000000, "dy": -3000000000, "flags": 0 }
+          ] }
+        """
+        let macro = try Macro(jsonData: Data(json.utf8))
+        guard case let .scroll(_, dx, dy) = macro.events[0].action else {
+            Issue.record("expected a scroll event")
+            return
+        }
+        #expect(dx == Int32.max, "dx clamped to the wheel field's range")
+        #expect(dy == Int32.min, "dy clamped to the wheel field's range")
+    }

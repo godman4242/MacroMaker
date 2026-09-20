@@ -260,7 +260,10 @@ final class MacroPlayer {
                 if case let .runMacro(id) = event.action, let chain = plan.chain {
                     var childHeld = heldKeys
                     var childButtons = heldButtons
-                    switch Self.expand(id, chain: chain, worker: worker, start: start,
+                    // The child's own events schedule from THIS step's due time (its
+                    // doc: "offsets from this step's due time") — the root start would
+                    // fire a mid-macro chain step's past-due events in a compressed burst.
+                    switch Self.expand(id, chain: chain, worker: worker, start: due,
                                       speed: plan.speed, heldKeys: &childHeld,
                                       heldButtons: &childButtons, source: source,
                                       depth: 1) {

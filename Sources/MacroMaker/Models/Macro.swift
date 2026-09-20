@@ -245,9 +245,12 @@ extension MacroEvent: Codable {
         return try coordinate(c, key)
     }
 
-    /// One scroll delta; absent decodes as 0 (the axis wasn't scrolled).
+    /// One scroll delta; absent decodes as 0 (the axis wasn't scrolled). A present value
+    /// is clamped to what an Int32 CGEvent wheel field can carry — an unbounded hand-edited
+    /// value decoded fine as Int and then trapped at `Int32(dy)` on playback.
     private static func delta(_ c: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys) -> Int {
-        ((try? c.decodeIfPresent(Int.self, forKey: key)) ?? nil) ?? 0
+        let value = ((try? c.decodeIfPresent(Int.self, forKey: key)) ?? nil) ?? 0
+        return min(max(value, Int(Int32.min)), Int(Int32.max))
     }
 
     /// The window anchor, tolerant the way the feature demands: absent keys decode as nil

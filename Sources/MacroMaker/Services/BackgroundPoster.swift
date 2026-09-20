@@ -149,8 +149,13 @@ enum BackgroundPoster {
 
     /// Bundle id → pid as a seam, for the worker-thread paths (recorder anchors, window
     /// binding at replay): they can't hop to main, and tests have no real running apps.
+    /// The default reads TargetSnapshot's lock-protected cache — safe from ANY thread.
+    /// (`MainActor.assumeIsolated` would trap on the playback worker thread; the recorder's
+    /// main-run-loop tap was fine, but the seam must honour its own doc for both callers.)
+    /// Snapshot misses resolve asynchronously on main; runs prewarm at arm-time, so a
+    /// replay's first anchored step sees a warm cache (same contract AutoClicker uses).
     nonisolated(unsafe) static var pidResolver: @Sendable (String) -> pid_t? = { bundleID in
-        MainActor.assumeIsolated { processID(forBundleID: bundleID) }
+        TargetSnapshot.shared.targetState(forBundleID: bundleID).pid
     }
 
     /// Regular apps the user could plausibly click in, without Macro Maker itself.
