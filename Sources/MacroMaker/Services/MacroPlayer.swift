@@ -46,16 +46,20 @@ final class MacroPlayer {
         let chain: ChainedMacros?
         /// "Follow the window" (F-14): anchored mouse steps translate by the window's move.
         let followWindow: Bool
+        /// "Play into" (background playback): the app every step is posted into; nil = the
+        /// real cursor (the normal replay).
+        let playInto: String?
 
         init(events: [MacroEvent], repeats: Int?, speed: Double,
              humanizer: HumanizerSettings, chain: ChainedMacros? = nil,
-             followWindow: Bool = true) {
+             followWindow: Bool = true, playInto: String? = nil) {
             self.events = events
             self.repeats = repeats
             self.speed = speed
             self.humanizer = humanizer
             self.chain = chain
             self.followWindow = followWindow
+            self.playInto = playInto
         }
     }
 
@@ -153,13 +157,30 @@ final class MacroPlayer {
             return
         }
 
+        let playInto = settings.playIntoBundleID
+        if let problem = Self.playIntoProblem(bundleID: playInto,
+                                              isRunning: BackgroundPoster.processID(forBundleID: playInto) != nil) {
+            NSSound.beep()
+            runWarning = problem
+            return
+        }
+        // The worker resolves bundle ids from TargetSnapshot's cache, whose first lookup of an
+        // id misses (it fills asynchronously on main) — without this, a run's first anchored
+        // step read "app quit" and played at the old spot, and a play-into run would stop on
+        // its first step. The Auto Clicker has always pre-warmed its target the same way.
+        for bundleID in Self.bundleIDsToPrewarm(for: macro, playInto: playInto, resolve: chain?.resolve) {
+            TargetSnapshot.shared.prewarm(bundleID: bundleID)
+        }
+
         let plan = Plan(events: macro.events,
                         repeats: Self.playbackRepeats(settings),
                         speed: min(max(settings.speed, 0.1), 10),
                         humanizer: settings.humanizer,
                         chain: chain?.chain,
-                        followWindow: settings.followWindow)
-        session.start(withCountdown: trigger == .button) { [weak self] token in
+                        followWindow: settings.followWindow,
+                        playInto: playInto.isEmpty ? nil : playInto)
+        // No countdown when playing into an app: nothing depends on where the cursor is.
+        session.start(withCountdown: trigger == .button && playInto.isEmpty) { [weak self] token in
             guard let self else { return nil }
             runID += 1
             let run = runID
@@ -210,7 +231,7 @@ final class MacroPlayer {
     /// and what happened to it, anchored at the ROOT step the user can see and edit.
     nonisolated private static func describe(_ failure: ChainFailure, resolve: ChainedMacros.Resolver) -> String {
         if let app = failure.windowApp {
-            return "The run stopped: “\(app)” has no window to follow — its window couldn't be found (step \(failure.stepIndex + 1))."
+            return "The run stopped at step \(failure.stepIndex + 1): “\(app)” quit, or has no window at that spot — nothing was clicked in its place."
         }
         let name = resolve(failure.macroID)?.name ?? failure.macroID.uuidString
         if let depth = failure.depth, depth > ChainingRules.defaultDepthLimit {
@@ -236,12 +257,17 @@ final class MacroPlayer {
         // The window-gone handshake: post() reports a missing window through this box (a
         // @Sendable closure can't capture the loop's vars), the loop reads it right after.
         let windowMiss = WindowMissBox()
+        let missingWindow: @Sendable (String) -> Bool = { app in
+            windowMiss.record(app)
+            return true
+        }
+        let into = plan.playInto.map(PlayIntoApp.init(bundleID:))
         playback: while plan.repeats.map({ progress.iteration < $0 }) ?? true {
             var heldKeys = Set<CGKeyCode>()
             var heldButtons: [MouseButton: CGPoint] = [:]
             var shifts: [MouseButton: CGSize] = [:]
             // Whatever ends this pass — completion or Stop — nothing is left pressed.
-            defer { Self.release(keys: heldKeys, buttons: heldButtons, source: source) }
+            defer { Self.release(keys: heldKeys, buttons: heldButtons, source: source, into: into) }
 
             let start = DispatchTime.now().uptimeNanoseconds
             // Humanised replay jitters each inter-event gap; the opening gap survives (the old
@@ -259,35 +285,43 @@ final class MacroPlayer {
                 // A run-macro step expands the referenced macro inline, up to the chain's
                 // depth cap; a missing macro (deleted since launch) ends the run LOUD.
                 if case let .runMacro(id) = event.action, let chain = plan.chain {
-                    var childHeld = heldKeys
-                    var childButtons = heldButtons
-                    var childShifts = shifts
                     // The child's own events schedule from THIS step's due time (its
                     // doc: "offsets from this step's due time") — the root start would
                     // fire a mid-macro chain step's past-due events in a compressed burst.
+                    // The pass's held sets go straight through, so whatever the child
+                    // presses is released at pass end HOWEVER the expansion ends — a Stop
+                    // mid-chain used to drop the child's held keys and leave them down.
                     switch Self.expand(id, chain: chain, worker: worker, start: due,
                                       speed: plan.speed, followWindow: plan.followWindow,
-                                      heldKeys: &childHeld, heldButtons: &childButtons,
-                                      shifts: &childShifts, source: source, depth: 1) {
+                                      heldKeys: &heldKeys, heldButtons: &heldButtons,
+                                      shifts: &shifts, source: source, into: into,
+                                      windowMiss: windowMiss, depth: 1) {
                     case .failed(let stepFailure):
                         // Re-point the failure at the ROOT step the user can see and edit.
                         failure = ChainFailure(stepIndex: index, macroID: stepFailure.macroID,
                                               depth: stepFailure.depth)
                         cancelled = true
                         break playback
-                    case .ran:
-                        heldKeys = childHeld
-                        heldButtons = childButtons
-                        shifts = childShifts
+                    case .cancelled:
+                        // Stop, not a failure: no "isn't in the library" warning after it.
+                        cancelled = true
+                        break playback
+                    case .ran, .windowGone:
+                        break
+                    }
+                    // A chained step that lost its window (or play-into app) fails the run
+                    // loud at the ROOT step, like a root step does.
+                    if let app = windowMiss.take() {
+                        failure = ChainFailure(windowGone: app, at: index)
+                        cancelled = true
+                        break playback
                     }
                     progress.eventIndex = index + 1
                     continue
                 }
                 post(event, heldKeys: &heldKeys, heldButtons: &heldButtons, shifts: &shifts,
-                     source: source, followWindow: plan.followWindow, missingWindow: { app in
-                         windowMiss.record(app)
-                         return true
-                     })
+                     source: source, followWindow: plan.followWindow, into: into,
+                     missingWindow: missingWindow)
                 if let app = windowMiss.take() {
                     failure = ChainFailure(windowGone: app, at: index)
                     cancelled = true
@@ -321,6 +355,10 @@ final class MacroPlayer {
     private nonisolated enum ExpansionResult {
         case ran
         case failed(ChainFailure)
+        /// Stop was pressed mid-expansion.
+        case cancelled
+        /// A step's window (or play-into app) is gone; the miss is in the run's WindowMissBox.
+        case windowGone
     }
 
     /// The window-gone report from the worker to the loop: a locked one-slot box, because a
@@ -340,6 +378,12 @@ final class MacroPlayer {
             app = nil
             return taken
         }
+
+        /// A miss is waiting (read without taking it — the root loop takes it).
+        var isPending: Bool {
+            lock.lock(); defer { lock.unlock() }
+            return app != nil
+        }
     }
 
     /// Plays the macro `id` resolves to, inline: the child's events post at their recorded
@@ -351,6 +395,8 @@ final class MacroPlayer {
                                            heldButtons: inout [MouseButton: CGPoint],
                                            shifts: inout [MouseButton: CGSize],
                                            source: EventSynthesizer.EventSource,
+                                           into: PlayIntoApp?,
+                                           windowMiss: WindowMissBox,
                                            depth: Int) -> ExpansionResult {
         guard depth <= chain.depthLimit else { return .failed(ChainFailure(stepIndex: 0, macroID: id, depth: depth)) }
         // Resolved AT RUN TIME: a macro deleted since launch is a loud failure, and one
@@ -358,20 +404,27 @@ final class MacroPlayer {
         guard let child = chain.resolve(id) else {
             return .failed(ChainFailure(stepIndex: 0, macroID: id, depth: nil))
         }
+        let missingWindow: @Sendable (String) -> Bool = { app in
+            windowMiss.record(app)
+            return true
+        }
         for event in child.events {
             let due = start + Self.dueOffsetNanos(seconds: event.time, speed: speed)
-            guard worker.sleep(untilUptime: due) else { return .failed(ChainFailure(stepIndex: 0, macroID: id, depth: nil)) }
+            guard worker.sleep(untilUptime: due) else { return .cancelled }
             if case let .runMacro(grandchild) = event.action {
                 switch expand(grandchild, chain: chain, worker: worker, start: due, speed: speed,
                               followWindow: followWindow, heldKeys: &heldKeys,
                               heldButtons: &heldButtons, shifts: &shifts,
-                              source: source, depth: depth + 1) {
+                              source: source, into: into, windowMiss: windowMiss,
+                              depth: depth + 1) {
                 case .ran: continue
-                case let .failed(failure): return .failed(failure)
+                case let other: return other
                 }
             }
             post(event, heldKeys: &heldKeys, heldButtons: &heldButtons, shifts: &shifts,
-                 source: source, followWindow: followWindow)
+                 source: source, followWindow: followWindow, into: into, missingWindow: missingWindow)
+            // Stop at the miss: the child's later steps must not type on into the front app.
+            if windowMiss.isPending { return .windowGone }
         }
         return .ran
     }
@@ -381,16 +434,27 @@ final class MacroPlayer {
                                          shifts: inout [MouseButton: CGSize],
                                          source: EventSynthesizer.EventSource,
                                          followWindow: Bool,
+                                         into: PlayIntoApp? = nil,
                                          missingWindow: (@Sendable (String) -> Bool)? = nil) {
         // Caps Lock is a toggle, not a held key: replaying its flag would force uppercase.
         let flags = CGEventFlags(rawValue: event.flags).subtracting(.maskAlphaShift)
+        // Playing into an app, a step follows only THAT app's window: a click recorded in
+        // another app must not shift by the other app's window move.
+        let followWindow = followWindow && (into == nil || event.windowAnchor?.bundleID == into?.bundleID)
         switch event.action {
         case let .mouseDown(button, point, clickCount):
             guard let at = Self.bound(point, of: event, followWindow: followWindow,
                                       missingWindow: missingWindow) else { return }
-            EventSynthesizer.postMouse(.mouseMoved, button: .left, at: at, flags: flags, source: source)
-            EventSynthesizer.postMouse(button.downEventType, button: button, at: at, clickCount: clickCount,
-                                       flags: flags, source: source)
+            if let into {
+                guard into.mouse(button, down: true, at: at, clickCount: clickCount, flags: flags) else {
+                    _ = missingWindow?(into.bundleID)
+                    return
+                }
+            } else {
+                EventSynthesizer.postMouse(.mouseMoved, button: .left, at: at, flags: flags, source: source)
+                EventSynthesizer.postMouse(button.downEventType, button: button, at: at, clickCount: clickCount,
+                                           flags: flags, source: source)
+            }
             heldButtons[button] = at
             shifts[button] = CGSize(width: at.x - point.x, height: at.y - point.y)
         case let .mouseUp(button, point, clickCount):
@@ -408,26 +472,49 @@ final class MacroPlayer {
                                              missingWindow: missingWindow) else { return }
                 at = bound
             }
+            heldButtons[button] = nil
+            if let into {
+                if !into.mouse(button, down: false, at: at, clickCount: clickCount, flags: flags) {
+                    _ = missingWindow?(into.bundleID)
+                }
+                return
+            }
             EventSynthesizer.postMouse(button.upEventType, button: button, at: at, clickCount: clickCount,
                                        flags: flags, source: source)
-            heldButtons[button] = nil
         case let .keyDown(code, isRepeat):
-            if let text = event.textOverride {
+            if let into {
+                guard into.key(code, text: event.textOverride, down: true, flags: flags, isRepeat: isRepeat) else {
+                    _ = missingWindow?(into.bundleID)
+                    return
+                }
+                if event.textOverride == nil { heldKeys.insert(code) }
+            } else if let text = event.textOverride {
                 EventSynthesizer.postText(text, down: true, flags: flags, source: source)
             } else {
                 EventSynthesizer.postKey(code, down: true, flags: flags, isRepeat: isRepeat, source: source)
                 heldKeys.insert(code)
             }
         case let .keyUp(code):
-            if let text = event.textOverride {
+            if let into {
+                // A text step rides virtual key 0 (the "a" key) — it must not erase a held a.
+                if event.textOverride == nil { heldKeys.remove(code) }
+                if !into.key(code, text: event.textOverride, down: false, flags: flags, isRepeat: false) {
+                    _ = missingWindow?(into.bundleID)
+                }
+            } else if let text = event.textOverride {
                 EventSynthesizer.postText(text, down: false, flags: flags, source: source)
             } else {
                 EventSynthesizer.postKey(code, down: false, flags: flags, source: source)
                 heldKeys.remove(code)
             }
         case let .scroll(point, dx, dy):
+            // Playing into an app, the cursor stays with the user: a scroll or a move has no
+            // app-aimed route (not measured), so it is skipped — never sent through the real
+            // cursor into whatever the user is doing. The UI says so next to the picker.
+            guard into == nil else { return }
             EventSynthesizer.postScroll(dx: dx, dy: dy, at: point, flags: flags, source: source)
         case let .move(point):
+            guard into == nil else { return }
             EventSynthesizer.postMouse(.mouseMoved, button: .left, at: point, flags: flags, source: source)
         case let .runMacro(id):
             // Handled by the play loop's expansion; posting here would double-run the child.
@@ -490,12 +577,109 @@ final class MacroPlayer {
     }
 
     nonisolated private static func release(keys: Set<CGKeyCode>, buttons: [MouseButton: CGPoint],
-                                            source: EventSynthesizer.EventSource) {
+                                            source: EventSynthesizer.EventSource, into: PlayIntoApp?) {
+        if let into {
+            // Released where they were pressed — in the app, never through the real cursor.
+            for code in keys { _ = into.key(code, text: nil, down: false, flags: [], isRepeat: false) }
+            for (button, point) in buttons { _ = into.mouse(button, down: false, at: point, clickCount: 1, flags: []) }
+            return
+        }
         for code in keys {
             EventSynthesizer.postKey(code, down: false, flags: [], source: source)
         }
         for (button, point) in buttons {
             EventSynthesizer.postMouse(button.upEventType, button: button, at: point, source: source)
+        }
+    }
+}
+
+extension MacroPlayer {
+    /// Apps measured to throw away input that arrives while they aren't the front app:
+    /// Roblox (2026-09-20, macOS 26.5.2 — a backgrounded Roblox was pixel-identical before and
+    /// after posted clicks while every post reported success). A game in this set is refused
+    /// at launch with that reason, instead of a run that silently does nothing.
+    nonisolated static let ignoresBackgroundInput: [String: String] = [
+        "com.roblox.RobloxPlayer": "Roblox",
+    ]
+
+    /// Every app a run will look up by bundle id: the play-into target and each window anchor.
+    nonisolated static func bundleIDsToPrewarm(for macro: Macro, playInto: String,
+                                               resolve: ChainedMacros.Resolver?) -> Set<String> {
+        var ids = Set(macro.events.compactMap(\.windowAnchor?.bundleID) + [playInto])
+        // Chained macros' anchors too (the launch check already refused cycles; `seen` keeps
+        // a diamond from loading one macro twice).
+        if let resolve {
+            var queue = ChainingRules.children(of: macro)
+            var seen = Set<UUID>()
+            while let id = queue.popLast() {
+                guard seen.insert(id).inserted, let child = resolve(id) else { continue }
+                ids.formUnion(child.events.compactMap(\.windowAnchor?.bundleID))
+                queue.append(contentsOf: ChainingRules.children(of: child))
+            }
+        }
+        return ids.filter { !$0.isEmpty }
+    }
+
+    /// The launch check for "Play into": nil = fine to start. The string is shown to the user.
+    nonisolated static func playIntoProblem(bundleID: String, isRunning: Bool) -> String? {
+        guard !bundleID.isEmpty else { return nil }
+        if let game = ignoresBackgroundInput[bundleID] {
+            return "\(game) ignores clicks and keys while it isn't the front app (tested on this Mac) — macOS gives input to one app at a time, and games only take it while they're in front. Set “Play into” back to “Where the cursor is” and play with \(game) in front."
+        }
+        guard isRunning else { return "The app to play into isn't running. Open it, then press Play." }
+        guard BackgroundPoster.targetingSupported else {
+            return BackgroundPoster.windowTargetingProblem ?? "This macOS build doesn't support playing into an app in the background."
+        }
+        return nil
+    }
+
+    /// "Play into" delivery for one run: steps go straight into the app's process, aimed at
+    /// its window — the Auto Clicker's measured "Send to app" route (window-aimed events, the
+    /// primer lead-in, and the activation Chromium-class apps need, sent before the first
+    /// click into each window; it tells the user's front app it lost focus). Keys alone never
+    /// activate. Worker-thread only: one run's loop is its sole caller.
+    final class PlayIntoApp: @unchecked Sendable {
+        let bundleID: String
+        private let activator = BackgroundPoster.Activator()
+        /// Each held button's window and gesture id, so its release aims where it pressed.
+        private var pressed: [MouseButton: (window: BackgroundPoster.Window, group: Int64)] = [:]
+
+        init(bundleID: String) { self.bundleID = bundleID }
+
+        /// False = the app is gone, no window of it contains the point, or the event couldn't be
+        /// aimed. The window is looked up LIVE per press (a macro's clicks move between windows;
+        /// the Auto Clicker's 300 ms cache aimed a quick second click at the first window), and
+        /// a point outside every window is refused — never aimed at the front window instead.
+        func mouse(_ button: MouseButton, down: Bool, at point: CGPoint, clickCount: Int,
+                   flags: CGEventFlags) -> Bool {
+            guard let pid = BackgroundPoster.pidResolver(bundleID) else { return false }
+            if !down, let held = pressed.removeValue(forKey: button) {
+                return BackgroundPoster.press(button, down: false, screenPoint: point, clickCount: clickCount,
+                                              window: held.window, pid: pid, group: held.group, flags: flags)
+            }
+            guard let window = BackgroundPoster.resolveWindowLive(ofPID: pid, containing: point),
+                  window.bounds.contains(point) else { return false }
+            activator.activateIfNeeded(pid: pid, windowID: window.id)
+            let group = BackgroundPoster.newClickGroup()
+            guard BackgroundPoster.press(button, down: down, screenPoint: point, clickCount: clickCount,
+                                         window: window, pid: pid, group: group, flags: flags) else { return false }
+            if down { pressed[button] = (window, group) }
+            return true
+        }
+
+        /// One key transition (or typed text) into the app. Modifier keys go as flagsChanged
+        /// with their own flag, exactly like the real-cursor replay posts them.
+        func key(_ code: CGKeyCode, text: String?, down: Bool, flags: CGEventFlags, isRepeat: Bool) -> Bool {
+            guard let pid = BackgroundPoster.pidResolver(bundleID) else { return false }
+            if let text {
+                BackgroundPoster.textEvent(text, down: down, pid: pid)
+                return true
+            }
+            guard let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down) else { return false }
+            if KeyCodes.modifierKey(for: code) != nil { event.type = .flagsChanged }
+            if isRepeat { event.setIntegerValueField(.keyboardEventAutorepeat, value: 1) }
+            BackgroundPoster.postKey(event, flags: flags.union(KeyCodes.intrinsicFlags(for: code)), pid: pid)
+            return true
         }
     }
 }

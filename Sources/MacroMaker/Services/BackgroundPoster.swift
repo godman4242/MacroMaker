@@ -493,16 +493,40 @@ enum BackgroundPoster {
                       clickCount: Int, window: Window, pid: pid_t) -> Bool {
         // One id across every event of this gesture (field 58) so the target coalesces them as
         // one click instead of unrelated taps.
-        let group = Int64(DispatchTime.now().uptimeNanoseconds & 0x7FFF_FFFF)
+        let group = newClickGroup()
+        guard press(button, down: true, screenPoint: screenPoint, clickCount: clickCount,
+                    window: window, pid: pid, group: group) else { return false }
+        if duration > 0 { Thread.sleep(forTimeInterval: duration) }
+        return press(button, down: false, screenPoint: screenPoint, clickCount: clickCount,
+                     window: window, pid: pid, group: group)
+    }
 
+    /// A fresh click-group id (field 58), shared by every event of one gesture.
+    static func newClickGroup() -> Int64 {
+        Int64(DispatchTime.now().uptimeNanoseconds & 0x7FFF_FFFF)
+    }
+
+    /// One half of `click`, for callers that time the press and the release themselves (a
+    /// replayed macro holds a button as long as the recording did). The press carries the
+    /// whole measured lead-in — stamped move, then the off-screen primer pair — before the
+    /// real down; the release is the real up alone. Both halves of a gesture share `group`.
+    /// False = the REAL event couldn't be built or aimed (nothing to count as delivered).
+    /// `flags` ride the REAL down/up only (a replayed ⌘-click stays a ⌘-click); the move and
+    /// the primer pair stay modifier-free, as the measured recipe posts them.
+    @discardableResult
+    static func press(_ button: MouseButton, down: Bool, screenPoint: CGPoint, clickCount: Int,
+                      window: Window, pid: pid_t, group: Int64, flags: CGEventFlags = []) -> Bool {
         func send(_ type: CGEventType, at point: CGPoint, localPoint: CGPoint?,
-                  state: Int, phase: Int64) -> Bool {
+                  state: Int, phase: Int64, flags: CGEventFlags = []) -> Bool {
             post(mouseEvent(type, button: button, clickCount: state,
                             screenPoint: point, window: window),
                  window: window, screenPoint: point, pid: pid,
-                 phase: phase, clickGroup: group, localOverride: localPoint)
+                 phase: phase, clickGroup: group, localOverride: localPoint, flags: flags)
         }
-
+        guard down else {
+            return send(button.upEventType, at: screenPoint, localPoint: nil,
+                        state: clickCount, phase: Phase.real, flags: flags)
+        }
         // The primers' return values are deliberately ignored: only the real click decides
         // whether this counted, and a refused primer must not be reported as a delivered click.
         _ = send(.mouseMoved, at: screenPoint, localPoint: nil, state: 0, phase: Phase.move)
@@ -513,12 +537,8 @@ enum BackgroundPoster {
         _ = send(button.upEventType, at: primerPoint, localPoint: primerPoint,
                  state: 1, phase: Phase.primerUp)
         Thread.sleep(forTimeInterval: primerSettle)
-
-        guard send(button.downEventType, at: screenPoint, localPoint: nil,
-                   state: clickCount, phase: Phase.real) else { return false }
-        if duration > 0 { Thread.sleep(forTimeInterval: duration) }
-        return send(button.upEventType, at: screenPoint, localPoint: nil,
-                    state: clickCount, phase: Phase.real)
+        return send(button.downEventType, at: screenPoint, localPoint: nil,
+                    state: clickCount, phase: Phase.real, flags: flags)
     }
 
     /// Delivery seam: swapped in tests so `click` can be asserted without hitting real processes.
@@ -657,7 +677,7 @@ enum BackgroundPoster {
 
     private static func post(_ event: CGEvent?, window: Window, screenPoint: CGPoint, pid: pid_t,
                              phase: Int64 = Phase.real, clickGroup: Int64 = 0,
-                             localOverride: CGPoint? = nil) -> Bool {
+                             localOverride: CGPoint? = nil, flags: CGEventFlags = []) -> Bool {
         guard let event else {
             // F5: NSEvent.mouseEvent is documented to be able to return nil. That used to
             // vanish silently — nothing posted, and the caller still counted a delivery.
@@ -681,8 +701,9 @@ enum BackgroundPoster {
         // not to rewrite flags — the same ordering posture applies regardless: the source's
         // state is live the moment a user is holding keys.)
         // Same contract as the HID path: explicit flags only (never the user's held keys —
-        // and no fake ⌘; background clicks stopped pretending modifiers are held).
-        event.flags = .maskNonCoalesced
+        // and no fake ⌘; background clicks stopped pretending modifiers are held). A replayed
+        // step passes its RECORDED flags; everything else passes none.
+        event.flags = flags.union(.maskNonCoalesced)
         event.setIntegerValueField(.mouseEventSubtype, value: 3)
         event.setIntegerValueField(windowField, value: Int64(window.id))
         event.setIntegerValueField(handlerWindowField, value: Int64(window.id))
@@ -726,7 +747,7 @@ enum BackgroundPoster {
         postKey(event, flags: [], pid: pid)
     }
 
-    private static func postKey(_ event: CGEvent, flags: CGEventFlags, pid: pid_t) {
+    static func postKey(_ event: CGEvent, flags: CGEventFlags, pid: pid_t) {
         // Same fresh-source rule as the mouse path: these events are built with a nil source.
         let fresh = CGEventSource(stateID: .hidSystemState)
         fresh?.localEventsSuppressionInterval = 0

@@ -1,5 +1,14 @@
 # Kickoff — background clicking into a game while another app owns the machine
 
+> **Status 2026-09-26 (v2.1.1):** still open for GAMES — nothing below has changed for Roblox.
+> Shipped around it: macro **Play into** (a recorded macro plays straight into one background
+> app — AppKit measured live: clicks, keys and typed text land with the app inactive and the
+> cursor untouched), **Brave** in Web Target (background-tab clicking), and a fix for replayed
+> clicks missing ("Follow the window" split clicks into drags). Roblox is refused up front by
+> `MacroPlayer.playIntoProblem`. Open follow-up: measure whether Chromium targets accept clicks
+> with ONLY the focus record (no defocus record to the user's front app) — if so, the one-time
+> "focus nudge" that can pause the user's own game disappears.
+
 Written 2026-09-20, after v2.1 commit `1fb0f2b` (the frontmost game route, shipped green:
 311 tests / 51 suites). Paste this whole file as the first message of a fresh session.
 

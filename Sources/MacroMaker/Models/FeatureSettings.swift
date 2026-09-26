@@ -242,6 +242,10 @@ struct PlaybackSettings: Codable, Equatable, Sendable {
     /// move since recording. ON by default — the common case is wanting the clicks to land
     /// where the window now is; turning it off is the escape hatch to pure absolute replay.
     var followWindow = true
+    /// "Play into" (background playback): the bundle id of the app the steps are posted
+    /// into — the real cursor never moves and the app can sit behind whatever you're doing.
+    /// Empty = the normal replay through the real cursor.
+    var playIntoBundleID = ""
 
     init() {}
 
@@ -253,5 +257,6 @@ struct PlaybackSettings: Codable, Equatable, Sendable {
         humanizer = decoded(c, .humanizer, fallback: HumanizerSettings())
         stopOnHotkey = decoded(c, .stopOnHotkey, fallback: false)
         followWindow = decoded(c, .followWindow, fallback: true)
+        playIntoBundleID = decoded(c, .playIntoBundleID, fallback: "")
     }
 }

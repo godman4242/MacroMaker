@@ -17,11 +17,14 @@ struct TargetAppPicker: View {
     }
 
     @Binding var bundleID: String
+    var title = "App"
+    /// What the menu shows with no app chosen.
+    var placeholder = "Choose an app…"
     /// The live app list, re-read every onAppear so menu opens always show the truth.
     @State private var apps: [BackgroundPoster.ListedApp] = []
 
     var body: some View {
-        LabeledContent("App") {
+        LabeledContent(title) {
             HStack(spacing: 6) {
                 Menu {
                     if apps.isEmpty { Text("No other apps running") }
@@ -55,7 +58,7 @@ struct TargetAppPicker: View {
 
     private var label: String {
         guard let app = apps.first(where: { $0.bundleID == bundleID }) else {
-            return bundleID.isEmpty ? "Choose an app…" : "\(bundleID) (not running)"
+            return bundleID.isEmpty ? placeholder : "\(bundleID) (not running)"
         }
         return app.name
     }

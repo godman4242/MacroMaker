@@ -127,24 +127,36 @@ struct RecorderView: View {
 
     @ViewBuilder private func playbackOptions(player: MacroPlayer) -> some View {
         @Bindable var player = player
-        HStack(spacing: 16) {
-            Toggle("Loop until stopped", isOn: $player.settings.loopForever)
-            if !player.settings.loopForever, !player.settings.stopOnHotkey {
-                Stepper("Repeat \(player.settings.repeatCount)×", value: $player.settings.repeatCount, in: 1...10_000)
-                    .monospacedDigit()
-            }
-            Toggle("Until stop shortcut", isOn: $player.settings.stopOnHotkey)
-                .help("Repeats until you press the Stop-the-Current-Run shortcut (Settings ▸ Keyboard shortcuts, default F6).")
-            Picker("Speed", selection: $player.settings.speed) {
-                ForEach([0.25, 0.5, 1, 2, 4], id: \.self) { speed in
-                    Text("\(speed.formatted())×").tag(speed)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 16) {
+                Toggle("Loop until stopped", isOn: $player.settings.loopForever)
+                if !player.settings.loopForever, !player.settings.stopOnHotkey {
+                    Stepper("Repeat \(player.settings.repeatCount)×", value: $player.settings.repeatCount, in: 1...10_000)
+                        .monospacedDigit()
                 }
+                Toggle("Until stop shortcut", isOn: $player.settings.stopOnHotkey)
+                    .help("Repeats until you press the Stop-the-Current-Run shortcut (Settings ▸ Keyboard shortcuts, default F6).")
+                Picker("Speed", selection: $player.settings.speed) {
+                    ForEach([0.25, 0.5, 1, 2, 4], id: \.self) { speed in
+                        Text("\(speed.formatted())×").tag(speed)
+                    }
+                }
+                .fixedSize()
+                Toggle("Follow the window", isOn: $player.settings.followWindow)
+                    .help("Clicks recorded inside a window land at the same spot inside it wherever it has moved. Off = replay at the exact recorded screen positions.")
+                Toggle("Humanise", isOn: $player.settings.humanizer.enabled)
+                    .help("Jitters the gap before each replayed event")
             }
-            .fixedSize()
-            Toggle("Follow the window", isOn: $player.settings.followWindow)
-                .help("Clicks recorded inside a window land at the same spot inside it wherever it has moved. Off = replay at the exact recorded screen positions.")
-            Toggle("Humanise", isOn: $player.settings.humanizer.enabled)
-                .help("Jitters the gap before each replayed event")
+            TargetAppPicker(bundleID: $player.settings.playIntoBundleID, title: "Play into",
+                            placeholder: "Where the cursor is (normal)")
+                .fixedSize()
+                .help("Play the macro into one app in the background. Before its first click into a window, the app gets a focus nudge (browser-type apps need it to accept clicks), so the app you're using may lose focus for a moment.")
+            if !player.settings.playIntoBundleID.isEmpty {
+                Text("Clicks and keys go straight into this app — your cursor stays yours, and the app can sit behind whatever you're doing. Scrolls and cursor moves are skipped. Games like Roblox ignore this: they only take input while they're the front app.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .disabled(player.session.phase.isActive)
     }
