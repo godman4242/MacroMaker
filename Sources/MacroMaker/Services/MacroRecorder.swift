@@ -197,13 +197,18 @@ final class MacroRecorder {
         liveEvents.append(MacroEvent(time: time, action: action, flags: event.flags, windowAnchor: anchor))
     }
 
-    /// The frontmost app and the origin of its window containing (or front-most at) the
-    /// click. Runs on the main run loop with the recorder, so the window server query is
-    /// cheap and the frontmost app is whatever the user actually clicked in.
+    /// The app that owns the window under the click, and that window's origin. The window
+    /// server routes a click to the TOPMOST window at its point, so that window's owner is
+    /// the target — not the frontmost app, which at mouseDown is still the PREVIOUS one
+    /// (the click is what activates the target; right after pressing Record that was Macro
+    /// Maker itself). A click on a system surface (menu bar, Dock: not layer 0) has no
+    /// window to follow and records unanchored.
     nonisolated static func anchorForMouseDown(at point: CGPoint) -> WindowAnchor? {
-        guard let bundleID = TargetSnapshot.shared.frontmostBundleID,
-              let pid = BackgroundPoster.pidResolver(bundleID),
-              let window = BackgroundPoster.resolveWindowLive(ofPID: pid, containing: point) else { return nil }
+        guard let list = BackgroundPoster.windowListCopy(.optionOnScreenOnly),
+              let top = BackgroundPoster.topmostWindowInfo(at: point, in: list),
+              let owner = top[kCGWindowOwnerPID as String] as? Int,
+              let window = BackgroundPoster.window(fromInfo: top, ownerPID: pid_t(owner)),
+              let bundleID = BackgroundPoster.bundleIDResolver(pid_t(owner)) else { return nil }
         return WindowAnchor(bundleID: bundleID, origin: window.bounds.origin)
     }
 

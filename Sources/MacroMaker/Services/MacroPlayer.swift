@@ -239,6 +239,7 @@ final class MacroPlayer {
         playback: while plan.repeats.map({ progress.iteration < $0 }) ?? true {
             var heldKeys = Set<CGKeyCode>()
             var heldButtons: [MouseButton: CGPoint] = [:]
+            var shifts: [MouseButton: CGSize] = [:]
             // Whatever ends this pass — completion or Stop — nothing is left pressed.
             defer { Self.release(keys: heldKeys, buttons: heldButtons, source: source) }
 
@@ -260,13 +261,14 @@ final class MacroPlayer {
                 if case let .runMacro(id) = event.action, let chain = plan.chain {
                     var childHeld = heldKeys
                     var childButtons = heldButtons
+                    var childShifts = shifts
                     // The child's own events schedule from THIS step's due time (its
                     // doc: "offsets from this step's due time") — the root start would
                     // fire a mid-macro chain step's past-due events in a compressed burst.
                     switch Self.expand(id, chain: chain, worker: worker, start: due,
-                                      speed: plan.speed, heldKeys: &childHeld,
-                                      heldButtons: &childButtons, source: source,
-                                      depth: 1) {
+                                      speed: plan.speed, followWindow: plan.followWindow,
+                                      heldKeys: &childHeld, heldButtons: &childButtons,
+                                      shifts: &childShifts, source: source, depth: 1) {
                     case .failed(let stepFailure):
                         // Re-point the failure at the ROOT step the user can see and edit.
                         failure = ChainFailure(stepIndex: index, macroID: stepFailure.macroID,
@@ -276,12 +278,13 @@ final class MacroPlayer {
                     case .ran:
                         heldKeys = childHeld
                         heldButtons = childButtons
+                        shifts = childShifts
                     }
                     progress.eventIndex = index + 1
                     continue
                 }
-                post(event, heldKeys: &heldKeys, heldButtons: &heldButtons, source: source,
-                     followWindow: plan.followWindow, missingWindow: { app in
+                post(event, heldKeys: &heldKeys, heldButtons: &heldButtons, shifts: &shifts,
+                     source: source, followWindow: plan.followWindow, missingWindow: { app in
                          windowMiss.record(app)
                          return true
                      })
@@ -343,9 +346,10 @@ final class MacroPlayer {
     /// offsets from this step's due time, its own run-macro steps recurse (up to the cap),
     /// and anything it holds down joins the parent's held sets so Stop releases it all.
     private nonisolated static func expand(_ id: UUID, chain: ChainedMacros, worker: WorkerThread,
-                                           start: UInt64, speed: Double,
+                                           start: UInt64, speed: Double, followWindow: Bool,
                                            heldKeys: inout Set<CGKeyCode>,
                                            heldButtons: inout [MouseButton: CGPoint],
+                                           shifts: inout [MouseButton: CGSize],
                                            source: EventSynthesizer.EventSource,
                                            depth: Int) -> ExpansionResult {
         guard depth <= chain.depthLimit else { return .failed(ChainFailure(stepIndex: 0, macroID: id, depth: depth)) }
@@ -359,21 +363,24 @@ final class MacroPlayer {
             guard worker.sleep(untilUptime: due) else { return .failed(ChainFailure(stepIndex: 0, macroID: id, depth: nil)) }
             if case let .runMacro(grandchild) = event.action {
                 switch expand(grandchild, chain: chain, worker: worker, start: due, speed: speed,
-                              heldKeys: &heldKeys, heldButtons: &heldButtons,
+                              followWindow: followWindow, heldKeys: &heldKeys,
+                              heldButtons: &heldButtons, shifts: &shifts,
                               source: source, depth: depth + 1) {
                 case .ran: continue
                 case let .failed(failure): return .failed(failure)
                 }
             }
-            post(event, heldKeys: &heldKeys, heldButtons: &heldButtons, source: source)
+            post(event, heldKeys: &heldKeys, heldButtons: &heldButtons, shifts: &shifts,
+                 source: source, followWindow: followWindow)
         }
         return .ran
     }
 
     nonisolated private static func post(_ event: MacroEvent, heldKeys: inout Set<CGKeyCode>,
                                          heldButtons: inout [MouseButton: CGPoint],
+                                         shifts: inout [MouseButton: CGSize],
                                          source: EventSynthesizer.EventSource,
-                                         followWindow: Bool = true,
+                                         followWindow: Bool,
                                          missingWindow: (@Sendable (String) -> Bool)? = nil) {
         // Caps Lock is a toggle, not a held key: replaying its flag would force uppercase.
         let flags = CGEventFlags(rawValue: event.flags).subtracting(.maskAlphaShift)
@@ -385,12 +392,22 @@ final class MacroPlayer {
             EventSynthesizer.postMouse(button.downEventType, button: button, at: at, clickCount: clickCount,
                                        flags: flags, source: source)
             heldButtons[button] = at
+            shifts[button] = CGSize(width: at.x - point.x, height: at.y - point.y)
         case let .mouseUp(button, point, clickCount):
             // No fabricated drag transition (review finding 6): a recording carries only what
             // was recorded, and replay posts exactly that — a synthetic dragged event at the
             // release point reads to apps as a jump-click, not the drag the user made.
-            guard let at = Self.bound(point, of: event, followWindow: followWindow,
-                                      missingWindow: missingWindow) else { return }
+            // The up moves by the SAME shift its down got: the recorder anchors only downs, so
+            // an up translated on its own played verbatim and split a moved-window click into
+            // a drag from the new spot back to the old one (2026-09-26).
+            let at: CGPoint
+            if let shift = shifts.removeValue(forKey: button) {
+                at = CGPoint(x: point.x + shift.width, y: point.y + shift.height)
+            } else {
+                guard let bound = Self.bound(point, of: event, followWindow: followWindow,
+                                             missingWindow: missingWindow) else { return }
+                at = bound
+            }
             EventSynthesizer.postMouse(button.upEventType, button: button, at: at, clickCount: clickCount,
                                        flags: flags, source: source)
             heldButtons[button] = nil
@@ -432,10 +449,14 @@ final class MacroPlayer {
                                                followWindow: Bool,
                                                missingWindow: (@Sendable (String) -> Bool)?) -> CGPoint? {
         guard followWindow, let anchor = event.windowAnchor else { return point }
-        guard let pid = BackgroundPoster.pidResolver(anchor.bundleID),
-              let window = BackgroundPoster.resolveWindowLive(ofPID: pid, containing: nil) else {
-            // The app quit: nothing to follow, the recorded point stands.
-            if BackgroundPoster.pidResolver(anchor.bundleID) == nil { return point }
+        // The app quit: nothing to follow, the recorded point stands.
+        guard let pid = BackgroundPoster.pidResolver(anchor.bundleID) else { return point }
+        let windows = BackgroundPoster.resolveWindowsLive(ofPID: pid)
+        // A window still at the recorded origin means nothing moved: the point stands.
+        // Measuring against the app's FRONT window instead shifted every click in a
+        // multi-window app by the gap between two unrelated windows (2026-09-26).
+        if windows.contains(where: { $0.bounds.origin == anchor.origin }) { return point }
+        guard let window = windows.first else {
             // The app runs but no window resolves: LOUD, the run can't promise this click.
             if let missingWindow, missingWindow(anchor.bundleID) { return nil }
             return point

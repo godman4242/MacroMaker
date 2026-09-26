@@ -79,10 +79,11 @@ struct WindowBindingTests {
 
     // MARK: The recorder — each mouseDown captures the anchor
 
-    /// A mouseDown during recording carries the frontmost app's bundle id and its window's
-    /// origin; key steps and scrolls don't pay for one (their points aren't replay targets
-    /// of the binding — a scroll replays where the cursor is, and a key doesn't aim).
-    @Test @MainActor func aMouseDownRecordsTheFrontmostAppAndWindowOrigin() throws {
+    /// A mouseDown during recording carries the bundle id of the app that owns the clicked
+    /// window, and that window's origin; key steps and scrolls don't pay for one (their points
+    /// aren't replay targets of the binding — a scroll replays where the cursor is, and a key
+    /// doesn't aim).
+    @Test @MainActor func aMouseDownRecordsTheClickedWindowsAppAndOrigin() throws {
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.accessory)
         let priorTap = MacroRecorder.tapBuilder
@@ -96,11 +97,14 @@ struct WindowBindingTests {
         TargetSnapshot.shared.frontmostBundleIDForTests = "com.example.app"
         let priorPID = BackgroundPoster.pidResolver
         BackgroundPoster.pidResolver = { bundleID in bundleID == "com.example.app" ? 401 : nil }
+        let priorBundle = BackgroundPoster.bundleIDResolver
+        BackgroundPoster.bundleIDResolver = { $0 == 401 ? "com.example.app" : nil }
         defer {
             MacroRecorder.tapBuilder = priorTap
             BackgroundPoster.windowListCopy = priorList
             TargetSnapshot.shared.frontmostBundleIDForTests = priorFront
             BackgroundPoster.pidResolver = priorPID
+            BackgroundPoster.bundleIDResolver = priorBundle
         }
 
         let recorder = MacroRecorder()
@@ -116,7 +120,7 @@ struct WindowBindingTests {
         let events = recorder.liveEvents
         #expect(events.count == 1, "one mouseDown recorded, got \(events.count)")
         let anchor = try #require(events.first?.windowAnchor)
-        #expect(anchor.bundleID == "com.example.app", "the frontmost app is captured")
+        #expect(anchor.bundleID == "com.example.app", "the clicked window's app is captured")
         #expect(anchor.origin == CGPoint(x: 100, y: 200),
                 "the window's frame origin is captured at the click")
     }
@@ -248,5 +252,135 @@ struct WindowBindingTests {
         box.lock.unlock()
         #expect(posted.contains(CGPoint(x: 130, y: 240)),
                 "the toggle off means the recorded point verbatim, got \(posted)")
+    }
+
+    // MARK: 2026-09-26 — replay bugs that made recorded clicks miss
+
+    /// Posts captured by a test, plus the seams every replay test swaps.
+    private final class Posted: @unchecked Sendable {
+        private let lock = NSLock()
+        private var events: [(type: CGEventType, point: CGPoint)] = []
+        func add(_ event: CGEvent) {
+            lock.lock(); defer { lock.unlock() }
+            events.append((event.type, event.location))
+        }
+        func points(of type: CGEventType) -> [CGPoint] {
+            lock.lock(); defer { lock.unlock() }
+            return events.filter { $0.type == type }.map(\.point)
+        }
+    }
+
+    private static func window(pid: Int, number: Int, x: Int, y: Int, layer: Int = 0) -> [String: Any] {
+        [kCGWindowOwnerPID as String: pid, kCGWindowLayer as String: layer,
+         kCGWindowNumber as String: number,
+         kCGWindowBounds as String: ["X": x, "Y": y, "Width": 600, "Height": 400]]
+    }
+
+    private static func replay(_ plan: MacroPlayer.Plan, windows: [[String: Any]]) -> Posted {
+        let posted = Posted()
+        let priorPoster = EventSynthesizer.eventPoster
+        let priorList = BackgroundPoster.windowListCopy
+        let priorPID = BackgroundPoster.pidResolver
+        EventSynthesizer.eventPoster = { posted.add($0) }
+        BackgroundPoster.windowListCopy = { _ in windows }
+        BackgroundPoster.pidResolver = { $0 == "com.example.app" ? 401 : nil }
+        defer {
+            EventSynthesizer.eventPoster = priorPoster
+            BackgroundPoster.windowListCopy = priorList
+            BackgroundPoster.pidResolver = priorPID
+        }
+        let done = DispatchSemaphore(value: 0)
+        _ = WorkerThread.start(name: "binding-replay") { worker in
+            MacroPlayer.play(plan, worker: worker) { _, _ in }
+            done.signal()
+        }
+        _ = done.wait(timeout: .now() + 5)
+        return posted
+    }
+
+    /// The recorder anchors only the mouseDown (see `anchorForMouseDown`) — so a replay that
+    /// translated the down but played the un-anchored up verbatim split every moved-window
+    /// click into a DRAG from the new spot back to the old one. The up must land where its
+    /// down landed: a click stays a click.
+    @Test func aRecordedClickStaysAClickWhenTheWindowMoved() {
+        let anchor = WindowAnchor(bundleID: "com.example.app", origin: CGPoint(x: 100, y: 200))
+        let plan = MacroPlayer.Plan(events: [
+            MacroEvent(time: 0, action: .mouseDown(.left, CGPoint(x: 130, y: 240), clickCount: 1),
+                       flags: 0, windowAnchor: anchor),
+            // Exactly what the recorder writes: the up carries NO anchor.
+            MacroEvent(time: 0.01, action: .mouseUp(.left, CGPoint(x: 130, y: 240), clickCount: 1), flags: 0),
+        ], repeats: 1, speed: 1, humanizer: HumanizerSettings(), followWindow: true)
+        let posted = Self.replay(plan, windows: [Self.window(pid: 401, number: 7, x: 250, y: 220)])
+        #expect(posted.points(of: .leftMouseDown) == [CGPoint(x: 280, y: 260)])
+        #expect(posted.points(of: .leftMouseUp) == [CGPoint(x: 280, y: 260)],
+                "the up must land where the down did — got \(posted.points(of: .leftMouseUp))")
+    }
+
+    /// An app with two windows: the click was recorded in the BACK one, which hasn't moved.
+    /// Replay used to measure the delta against the app's FRONT window — shifting every
+    /// click by the distance between two unrelated windows. A window still sitting at the
+    /// recorded origin means nothing moved: the click plays exactly where it was recorded.
+    @Test func replayMeasuresAgainstTheRecordedWindowNotTheFrontOne() {
+        let anchor = WindowAnchor(bundleID: "com.example.app", origin: CGPoint(x: 100, y: 200))
+        let plan = MacroPlayer.Plan(events: [
+            MacroEvent(time: 0, action: .mouseDown(.left, CGPoint(x: 130, y: 240), clickCount: 1),
+                       flags: 0, windowAnchor: anchor),
+        ], repeats: 1, speed: 1, humanizer: HumanizerSettings(), followWindow: true)
+        let posted = Self.replay(plan, windows: [
+            Self.window(pid: 401, number: 8, x: 900, y: 500),   // front window, elsewhere
+            Self.window(pid: 401, number: 7, x: 100, y: 200),   // the recorded one, unmoved
+        ])
+        #expect(posted.points(of: .leftMouseDown) == [CGPoint(x: 130, y: 240)],
+                "an unmoved recorded window means no shift — got \(posted.points(of: .leftMouseDown))")
+    }
+
+    /// A chained macro's steps obey the "Follow the window" toggle like the root's do —
+    /// OFF means the recorded point verbatim at every depth.
+    @Test func aChainedMacroObeysTheFollowWindowToggle() {
+        let anchor = WindowAnchor(bundleID: "com.example.app", origin: CGPoint(x: 100, y: 200))
+        let child = Macro(name: "Child", createdAt: Date(), events: [
+            MacroEvent(time: 0, action: .mouseDown(.left, CGPoint(x: 130, y: 240), clickCount: 1),
+                       flags: 0, windowAnchor: anchor),
+        ])
+        let childID = UUID()
+        let plan = MacroPlayer.Plan(events: [MacroEvent(time: 0, action: .runMacro(childID), flags: 0)],
+                                    repeats: 1, speed: 1, humanizer: HumanizerSettings(),
+                                    chain: ChainedMacros { $0 == childID ? child : nil },
+                                    followWindow: false)
+        let posted = Self.replay(plan, windows: [Self.window(pid: 401, number: 7, x: 250, y: 220)])
+        #expect(posted.points(of: .leftMouseDown) == [CGPoint(x: 130, y: 240)],
+                "toggle off must mean verbatim inside a chain too — got \(posted.points(of: .leftMouseDown))")
+    }
+
+    /// The anchor names the app that OWNS the clicked window. At the moment of a mouseDown
+    /// the frontmost app is still the PREVIOUS one (the click is what activates the target) —
+    /// usually Macro Maker itself right after pressing Record — so the first click of nearly
+    /// every recording was bound to the wrong app's window, and moving that window shifted it.
+    @Test @MainActor func theAnchorIsTheClickedWindowsOwnerNotTheFrontmostApp() {
+        let priorList = BackgroundPoster.windowListCopy
+        let priorPID = BackgroundPoster.pidResolver
+        let priorBundle = BackgroundPoster.bundleIDResolver
+        let priorFront = TargetSnapshot.shared.frontmostBundleIDForTests
+        BackgroundPoster.windowListCopy = { _ in [
+            Self.window(pid: 999, number: 3, x: 1500, y: 0, layer: 25), // a status-bar surface elsewhere
+            Self.window(pid: 402, number: 9, x: 400, y: 300),          // the clicked window (topmost here)
+            Self.window(pid: 401, number: 7, x: 100, y: 200),          // the frontmost app's window
+        ] }
+        BackgroundPoster.pidResolver = { ["com.example.app": 401, "com.example.target": 402][$0] }
+        BackgroundPoster.bundleIDResolver = { [401: "com.example.app", 402: "com.example.target"][$0] }
+        TargetSnapshot.shared.frontmostBundleIDForTests = "com.example.app"
+        defer {
+            BackgroundPoster.windowListCopy = priorList
+            BackgroundPoster.pidResolver = priorPID
+            BackgroundPoster.bundleIDResolver = priorBundle
+            TargetSnapshot.shared.frontmostBundleIDForTests = priorFront
+        }
+
+        let anchor = MacroRecorder.anchorForMouseDown(at: CGPoint(x: 450, y: 350))
+        #expect(anchor == WindowAnchor(bundleID: "com.example.target", origin: CGPoint(x: 400, y: 300)),
+                "the window under the click owns the anchor — got \(String(describing: anchor))")
+        // A click on a non-app surface (menu bar, Dock: layer ≠ 0) has no window to follow.
+        #expect(MacroRecorder.anchorForMouseDown(at: CGPoint(x: 1510, y: 10)) == nil,
+                "a click on a system surface plays absolute")
     }
 }

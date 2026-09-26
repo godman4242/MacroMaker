@@ -152,16 +152,20 @@ enum BackgroundPoster {
     /// layer-0 stacking says. The FIRST entry containing the point wins; a zero-size
     /// window never matches.
     static func topmostWindowOwner(at point: CGPoint, in list: [[String: Any]]) -> pid_t? {
-        for info in list {
+        (topmostWindowInfo(at: point, in: list)?[kCGWindowOwnerPID as String] as? Int).map { pid_t($0) }
+    }
+
+    /// The topmost on-screen entry at a point (any layer, same rule as `topmostWindowOwner`) —
+    /// the recorder also needs its layer and bounds, not just its owner.
+    static func topmostWindowInfo(at point: CGPoint, in list: [[String: Any]]) -> [String: Any]? {
+        list.first { info in
             guard let boundsDict = info[kCGWindowBounds as String] as? [String: Any] as CFDictionary?,
                   let bounds = CGRect(dictionaryRepresentation: boundsDict),
                   bounds.width > 0, bounds.height > 0,
-                  bounds.contains(point),
-                  let owner = info[kCGWindowOwnerPID as String] as? Int
-            else { continue }
-            return pid_t(owner)
+                  info[kCGWindowOwnerPID as String] is Int
+            else { return false }
+            return bounds.contains(point)
         }
-        return nil
     }
 
     /// Live topmost owner at a point — the single-shot lookups (test click, status line).
@@ -254,6 +258,12 @@ enum BackgroundPoster {
     /// replay's first anchored step sees a warm cache (same contract AutoClicker uses).
     nonisolated(unsafe) static var pidResolver: @Sendable (String) -> pid_t? = { bundleID in
         TargetSnapshot.shared.targetState(forBundleID: bundleID).pid
+    }
+
+    /// Pid → bundle id, the reverse seam: the recorder names the app that OWNS the clicked
+    /// window (not whichever app was frontmost a moment before the click activated it).
+    nonisolated(unsafe) static var bundleIDResolver: @Sendable (pid_t) -> String? = { pid in
+        NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
     }
 
     /// Regular apps the user could plausibly click in, without Macro Maker itself.
