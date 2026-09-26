@@ -125,7 +125,7 @@ struct WebTargetView: View {
     private func locatorTip(_ kind: WebTargetSettings.LocatorKind) -> String {
         switch kind {
         case .css:
-            "Tip: right-click the element in the browser ▸ Inspect, then right-click the highlighted code ▸ Copy ▸ Copy selector (Chrome) or Selector Path (Safari)."
+            "Tip: right-click the element in the browser ▸ Inspect, then right-click the highlighted code ▸ Copy ▸ Copy selector (Chrome, Brave) or Selector Path (Safari)."
         case .xpath:
             "Tip: right-click the element ▸ Inspect, then right-click the highlighted code ▸ Copy ▸ Copy XPath (Chrome) or XPath (Safari)."
         case .coordinates:

@@ -61,7 +61,7 @@ silently while the app is in the background:
 |---|---|
 | **Auto Clicker** | Left, right or middle clicks every N ms, with optional jitter. Clicks at the cursor, a fixed point, inside a rectangle, or inside a chosen app in the background. Can burst clicks, hold a button down, stop after N clicks or a time limit — or repeat until you press the stop shortcut (F6). |
 | **Key Presser** | Presses any key: letters, digits, `!@#$`, space, enter, tab, arrows, F1–F20, or combos like `cmd+shift+z`. **Auto press** repeats it on an interval; **hold down** keeps it pressed with key repeat. Can type into a chosen app in the background. |
-| **Web Target** | Clicks an element in a Safari or Chrome tab, found by CSS selector, XPath or page coordinates. It works by running JavaScript inside the tab, so the tab can be in the background while you use other apps. |
+| **Web Target** | Clicks an element in a Safari, Chrome or Brave tab, found by CSS selector, XPath or page coordinates. It works by running JavaScript inside the tab, so the tab can be in the background while you use other apps. |
 | **Macro Recorder** | Records mouse clicks, key presses, scrolling and cursor movement, replays them with the original timing (repeatable, looped, 0.25×–4× speed, humanized). The built-in step editor renames, re-times, reorders and deletes steps, inserts waits, typed text and **Run Macro** steps (play another library macro at that point — chains refuse loops and nesting past 3, and a deleted reference stops the run with a warning), and edits a click's coordinates. Save/open as `.macromaker`, and keep them in the **Library** with a per-macro hotkey. |
 
 Intended for UI automation and accessibility use. Use of autoclickers may violate the terms of some games and services.
@@ -123,7 +123,7 @@ macOS blocks apps from controlling your computer until you allow them. Macro Mak
 **Web Target also needs a one-time browser setting:**
 
 - **Safari:** Settings ▸ Advanced ▸ tick *Show features for web developers* (older Safari: *Show Develop menu in menu bar*). Then Develop ▸ Developer Settings… ▸ *Allow JavaScript from Apple Events* (older Safari: the item is directly in the Develop menu).
-- **Chrome:** View ▸ Developer ▸ *Allow JavaScript from Apple Events*.
+- **Chrome / Brave:** View ▸ Developer ▸ *Allow JavaScript from Apple Events*.
 
 > **Rebuilt the app and a permission stopped working even though its switch is on?**
 > macOS ties each permission to one exact build of the app. Unsigned builds count as a new app after every rebuild.
@@ -150,7 +150,7 @@ macOS blocks apps from controlling your computer until you allow them. Macro Mak
 - **"Until the stop shortcut"** on the Auto Clicker and the Recorder's playback options makes a run repeat indefinitely and end the moment you press **F6** (change it in Settings ▸ Keyboard shortcuts) — the run ignores its click/time/repeat limits, because the stop shortcut *is* the stop condition.
 
 - **Fixed point:** click *Pick with Cursor…* and hover over the target for 3 seconds. Coordinates are screen points measured from the top-left corner of the main display.
-- **Finding a CSS selector:** in the browser, right-click the element ▸ Inspect. Then right-click the highlighted code ▸ Copy ▸ *Copy selector* (Chrome) or *Selector Path* (Safari).
+- **Finding a CSS selector:** in the browser, right-click the element ▸ Inspect. Then right-click the highlighted code ▸ Copy ▸ *Copy selector* (Chrome, Brave) or *Selector Path* (Safari).
 - **Recording:** clicks, typing, scrolling and cursor movement inside Macro Maker's own windows are not recorded. The shortcut you use to start and stop recording is trimmed out automatically. Cursor moves are thinned to at most one per 100 ms — only the last move before a click matters, not every pixel — and scrolling records each wheel notch.
 - **Run Macro steps (chaining):** right-click any step in the table ▸ *Insert Run Macro…* to play another library macro at that point. The referenced macro is resolved at play time, so renaming or re-editing it keeps the chain working. A chain can't repeat a macro and can't nest more than 3 deep — both are refused before playback starts, with the reason shown on the tab; a chain step whose macro was deleted stops the run with a warning naming it, never a silent skip.
 - **Follow the window:** every recorded click captures the app that owns the window it was clicked in, and that window's position. With **Follow the window** on (default), replay moves each click — press and release together — by how far that window has moved — a macro recorded on a window in one place keeps working after you move it. Turn it off for exact recorded screen positions. If the app or its window is gone at replay, the run stops with a warning instead of clicking wherever the old coordinates now point. Recordings made before this feature (and clicks whose window couldn't be identified) simply replay at their recorded positions.
@@ -236,7 +236,7 @@ How the main pieces work:
 
 ## Limitations
 
-- **Web Target** clicks are synthetic JavaScript events (`isTrusted = false`), and a few sites ignore those. It clicks in the top-level page only, not inside iframes. Only Safari and Google Chrome are supported.
+- **Web Target** clicks are synthetic JavaScript events (`isTrusted = false`), and a few sites ignore those. It clicks in the top-level page only, not inside iframes. Safari, Google Chrome and Brave are supported.
 - **Recorder** captures clicks, key presses, scrolling and (throttled) cursor movement. A drag is replayed as press, the recorded moves, then release.
 - Replayed clicks land at the recorded screen positions unless the step carries a window anchor and **Follow the window** is on — then they follow the window's current position. A different display arrangement with no anchor still changes where they land.
 - Rebuilding an unsigned app resets its permissions (see *First launch*).

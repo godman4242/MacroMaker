@@ -43,6 +43,14 @@ import Testing
         _ = try compile(BrowserScripting.source(for: .chrome))
     }
 
+    /// Brave speaks Chrome's scripting dictionary (`execute … javascript`, tab `title`), not
+    /// Safari's — the compile against Brave's own dictionary is what proves the syntax.
+    @Test(.enabled(if: NSWorkspace.shared.urlForApplication(withBundleIdentifier: Browser.brave.bundleIdentifier) != nil,
+                   "Brave Browser isn't installed"))
+    func braveScriptCompiles() throws {
+        _ = try compile(BrowserScripting.source(for: .brave))
+    }
+
     @Test func errorMapping() {
         func map(_ number: Int, _ message: String, _ browser: Browser = .safari) -> BrowserScriptError {
             BrowserScripting.error(from: .init(number: number, message: message), browser: browser)
@@ -51,6 +59,7 @@ import Testing
         #expect(map(-600, "Application isn't running.") == .notRunning(.safari))
         #expect(map(8, "Safari got an error: You must enable the 'Allow JavaScript from Apple Events' option in Safari's Develop menu to use 'do JavaScript'.") == .javaScriptDisabled(.safari))
         #expect(map(12, "Google Chrome got an error: Executing JavaScript through AppleScript is turned off.", .chrome) == .javaScriptDisabled(.chrome))
+        #expect(map(12, "Brave Browser got an error: Executing JavaScript through AppleScript is turned off.", .brave) == .javaScriptDisabled(.brave))
         #expect(map(1, "Something else") == .failed("Something else"))
     }
 }

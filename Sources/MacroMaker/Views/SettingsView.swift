@@ -67,7 +67,7 @@ struct SettingsView: View {
                     model.permissions.requestInputMonitoring()
                     model.permissions.open(.inputMonitoring)
                 }
-                PermissionRow(title: "Automation", detail: "Asked the first time Web Target controls Safari or Chrome.",
+                PermissionRow(title: "Automation", detail: "Asked the first time Web Target controls Safari, Chrome or Brave.",
                               isGranted: nil) {
                     model.permissions.open(.automation)
                 }

@@ -151,7 +151,7 @@ struct KeyPresserSettings: Codable, Equatable, Sendable {
 }
 
 enum Browser: String, Codable, CaseIterable, Identifiable, Sendable {
-    case safari, chrome
+    case safari, chrome, brave
 
     var id: Self { self }
 
@@ -159,6 +159,7 @@ enum Browser: String, Codable, CaseIterable, Identifiable, Sendable {
         switch self {
         case .safari: "Safari"
         case .chrome: "Google Chrome"
+        case .brave: "Brave Browser"
         }
     }
 
@@ -166,6 +167,7 @@ enum Browser: String, Codable, CaseIterable, Identifiable, Sendable {
         switch self {
         case .safari: "com.apple.Safari"
         case .chrome: "com.google.Chrome"
+        case .brave: "com.brave.Browser"
         }
     }
 
@@ -174,6 +176,7 @@ enum Browser: String, Codable, CaseIterable, Identifiable, Sendable {
         switch self {
         case .safari: "Safari ▸ Settings ▸ Advanced ▸ tick “Show features for web developers”, then Develop ▸ Developer Settings ▸ “Allow JavaScript from Apple Events”"
         case .chrome: "Chrome menu bar ▸ View ▸ Developer ▸ “Allow JavaScript from Apple Events”"
+        case .brave: "Brave menu bar ▸ View ▸ Developer ▸ “Allow JavaScript from Apple Events”"
         }
     }
 }

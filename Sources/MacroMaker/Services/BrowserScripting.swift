@@ -36,7 +36,7 @@ enum BrowserScriptError: LocalizedError, Equatable {
     }
 }
 
-/// Runs JavaScript inside a specific Safari or Chrome tab through AppleScript.
+/// Runs JavaScript inside a specific Safari, Chrome or Brave tab through AppleScript.
 ///
 /// Main-actor only: `NSAppleScript` is not thread-safe. Each browser's script is compiled once;
 /// every click then calls one of its handlers with arguments passed as Apple Event parameters
@@ -146,11 +146,12 @@ final class BrowserScripting {
     }
 
     /// Safari and Chrome name things differently: Safari runs `do JavaScript … in tab` and calls a
-    /// tab's title `name`; Chrome uses `execute tab … javascript` and `title`.
+    /// tab's title `name`; Chrome uses `execute tab … javascript` and `title`. Brave is Chromium
+    /// and speaks Chrome's dictionary (compile-checked against Brave's own in the tests).
     static func source(for browser: Browser) -> String {
         let (runInTab, titleProperty) = switch browser {
         case .safari: ("do JavaScript js in tab i of w", "name")
-        case .chrome: ("execute (tab i of w) javascript js", "title")
+        case .chrome, .brave: ("execute (tab i of w) javascript js", "title")
         }
         return """
         on run_js(urlFragment, js)
