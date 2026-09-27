@@ -69,6 +69,11 @@ Intended for UI automation and accessibility use. Use of autoclickers may violat
 
 Every feature has a **global keyboard shortcut**: a key combo that works while any app is in front. Everything can also be started from the **menu bar icon**.
 
+### On phones
+
+- **Android:** [Macro Maker for Android](https://github.com/godman4242/macro-maker-android) — a free auto-tapper with a floating panel (taps only: Android gives apps no way to press keys in other apps).
+- **iPhone:** no app can tap inside other apps on iOS, so there is no iPhone version. Free options: iOS's built-in Switch Control **Recipes** (Settings → Accessibility → Switch Control), or iPhone Mirroring on a Mac with this app's "It's a game" mode (untested).
+
 ---
 
 ## Build
